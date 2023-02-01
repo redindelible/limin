@@ -18,7 +18,7 @@ impl Source {
                 line_starts.push(i+1);
             }
         }
-        line_starts.push(text.len());
+        line_starts.push(text.len()+1);
         Source { name: name.to_owned(), text: text.to_owned(), line_starts: line_starts.into_boxed_slice() }
     }
 
@@ -26,7 +26,7 @@ impl Source {
         let starts_idx = self.line_starts.binary_search(&idx).map_or_else(|x| x, |x| x);
         let line_start = self.line_starts[starts_idx];
         let line_end = self.line_starts[starts_idx+1];
-        &self.text[line_start..line_end]
+        &self.text[line_start..line_end-1]
     }
 }
 
@@ -38,36 +38,66 @@ mod test {
     #[test]
     fn test_line_starts_empty() {
         let s = Source::from_text("test","");
-        assert_eq!(s.line_starts, vec![0, 0].into());
+        assert_eq!(s.line_starts, vec![0, 1].into());
     }
 
     #[test]
     fn test_line_starts_one_line() {
         let s = Source::from_text("test","a");
-        assert_eq!(s.line_starts, vec![0, 1].into());
+        assert_eq!(s.line_starts, vec![0, 2].into());
     }
 
     #[test]
     fn test_line_starts_empty_line() {
         let s = Source::from_text("test","\n");
-        assert_eq!(s.line_starts, vec![0, 1, 1].into());
+        assert_eq!(s.line_starts, vec![0, 1, 2].into());
     }
 
     #[test]
     fn test_line_starts_1() {
         let s = Source::from_text("test","a\na");
-        assert_eq!(s.line_starts, vec![0, 2, 3].into());
+        assert_eq!(s.line_starts, vec![0, 2, 4].into());
     }
 
     #[test]
     fn test_line_starts_empty_lines() {
         let s = Source::from_text("test","a\n\n be");
-        assert_eq!(s.line_starts, vec![0, 2, 3, 6].into());
+        assert_eq!(s.line_starts, vec![0, 2, 3, 7].into());
     }
 
     #[test]
     fn test_get_line_empty() {
         let s = Source::from_text("test", "");
         assert_eq!(s.get_line_on(0), "");
+    }
+
+    #[test]
+    fn test_get_line_one() {
+        let s = Source::from_text("test", "a");
+        assert_eq!(s.get_line_on(0), "a");
+    }
+
+    #[test]
+    fn test_get_line_new_empty() {
+        let s = Source::from_text("test", "\n");
+        assert_eq!(s.get_line_on(0), "");
+        assert_eq!(s.get_line_on(1), "");
+    }
+
+    #[test]
+    fn test_get_line_two() {
+        let s = Source::from_text("test", "a\nb");
+        assert_eq!(s.get_line_on(0), "a");
+        assert_eq!(s.get_line_on(1), "b");
+        assert_eq!(s.get_line_on(2), "b");
+    }
+
+    #[test]
+    fn test_get_line_three() {
+        let s = Source::from_text("test", "a\nb\n");
+        assert_eq!(s.get_line_on(0), "a");
+        assert_eq!(s.get_line_on(1), "b");
+        assert_eq!(s.get_line_on(2), "b");
+        assert_eq!(s.get_line_on(3), "");
     }
 }
