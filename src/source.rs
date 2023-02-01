@@ -1,17 +1,18 @@
-struct Source {
-    name: String,
-    text: String,
+pub struct Source {
+    pub name: String,
+    pub text: String,
     line_starts: Box<[usize]>
 }
 
-struct Location<'a> {
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub struct Location<'a> {
     pub source: &'a Source,
     pub start: usize,
     pub len: usize
 }
 
 impl Source {
-    fn from_text(name: &str, text: &str) -> Source {
+    pub fn from_text(name: &str, text: &str) -> Source {
         let mut line_starts = vec![0];
         for (i, c) in text.char_indices() {
             if c == '\n' {
@@ -29,6 +30,14 @@ impl Source {
         &self.text[line_start..line_end-1]
     }
 }
+
+
+impl PartialEq for Source {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.text == other.text
+    }
+}
+impl Eq for Source { }
 
 
 #[cfg(test)]
