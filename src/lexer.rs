@@ -2,9 +2,10 @@ use std::fmt::{Debug, Formatter};
 use unicode_ident::{is_xid_continue, is_xid_start};
 use crate::source::{Location, Source};
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub enum TokenType {
-    IDENTIFIER
+    IDENTIFIER,
+    EOF
 }
 
 #[derive(Copy, Clone)]
@@ -13,6 +14,12 @@ pub struct Token<'a> {
     pub text: &'a str,
     pub leading_ws: bool,
     pub loc: Location<'a>
+}
+
+impl<'a> Token<'a> {
+    pub fn eof(source: &'a Source) -> Self {
+        Token { typ: TokenType::EOF, text: "", leading_ws: false, loc: source.eof() }
+    }
 }
 
 impl PartialEq<Self> for Token<'_> {
@@ -29,14 +36,14 @@ impl Debug for Token<'_> {
     }
 }
 
-struct Lexer<'a> {
+pub struct Lexer<'a> {
     source: &'a Source,
     chars: Box<[(usize, char)]>,
     _idx: usize
 }
 
 impl<'a> Lexer<'a> {
-    fn lex(source: &'a Source) -> Box<[Token<'a>]> {
+    pub fn lex(source: &'a Source) -> Box<[Token<'a>]> {
         let mut lexer = Lexer::new(source);
         let mut tokens = Vec::new();
         while let Some(tok) = lexer.lex_token() {
