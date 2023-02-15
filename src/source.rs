@@ -11,6 +11,7 @@ pub struct Location<'a> {
     pub len: usize
 }
 
+#[derive(Eq, PartialEq, Debug)]
 pub struct RenderedLocation {
     pub line: String,
     pub line_no: usize,
@@ -39,7 +40,7 @@ impl Source {
     }
 
     fn get_line_on(&self, idx: usize) -> LineInfo {
-        let line_no = self.line_starts.binary_search(&idx).map_or_else(|x| x, |x| x);
+        let line_no = self.line_starts.binary_search(&idx).map_or_else(|x| x - 1, |x| x);
         let line_start = self.line_starts[line_no];
         let line_end = self.line_starts[line_no+1];
         let text = &self.text[line_start..line_end-1];
@@ -60,15 +61,22 @@ impl PartialEq for Source {
 impl Eq for Source { }
 
 
-// impl Location<'_> {
-//     pub fn render() -> RenderedLocation {
-//
-//     }
-// }
+impl Location<'_> {
+    pub fn render(&self) -> RenderedLocation {
+        let line = self.source.get_line_on(self.start);
+        RenderedLocation {
+            line: line.text.to_owned(),
+            line_no: line.line_no,
+            line_idx: self.start - line.line_start,
+            len: self.len.min(line.text.len() - (self.start - line.line_start)),
+            is_multiline: line.text.len() - (self.start - line.line_start) < self.len
+        }
+    }
+}
 
 #[cfg(test)]
 mod test {
-    use crate::source::Source;
+    use crate::source::{Location, RenderedLocation, Source};
 
     #[test]
     fn test_line_starts_empty() {
@@ -133,6 +141,26 @@ mod test {
     }
 
     #[test]
+    fn test_get_line_longer() {
+        let s = Source::from_text("test", "ba");
+        let line_info = s.get_line_on(0);
+        assert_eq!(line_info.text, "ba");
+        assert_eq!(line_info.line_no, 0);
+        assert_eq!(line_info.line_start, 0);
+
+        assert_eq!(s.get_line_on(0), s.get_line_on(1));
+    }
+
+    #[test]
+    fn test_get_line_and_half() {
+        let s = Source::from_text("test", "\nb");
+        let line_info = s.get_line_on(1);
+        assert_eq!(line_info.text, "b");
+        assert_eq!(line_info.line_no, 1);
+        assert_eq!(line_info.line_start, 1);
+    }
+
+    #[test]
     fn test_get_line_two() {
         let s = Source::from_text("test", "a\nb");
         let line_info = s.get_line_on(0);
@@ -140,12 +168,12 @@ mod test {
         assert_eq!(line_info.line_no, 0);
         assert_eq!(line_info.line_start, 0);
 
-        let line_info = s.get_line_on(1);
+        let line_info = s.get_line_on(2);
         assert_eq!(line_info.text, "b");
         assert_eq!(line_info.line_no, 1);
         assert_eq!(line_info.line_start, 2);
 
-        assert_eq!(s.get_line_on(1), s.get_line_on(2));
+        assert_eq!(s.get_line_on(0), s.get_line_on(1));
     }
 
     #[test]
@@ -156,17 +184,14 @@ mod test {
         assert_eq!(line_info.line_no, 0);
         assert_eq!(line_info.line_start, 0);
 
-        let line_info = s.get_line_on(1);
+        assert_eq!(s.get_line_on(0), s.get_line_on(1));
+
+        let line_info = s.get_line_on(2);
         assert_eq!(line_info.text, "b");
         assert_eq!(line_info.line_no, 1);
         assert_eq!(line_info.line_start, 2);
 
-        assert_eq!(s.get_line_on(1), s.get_line_on(2));
-
-        let line_info = s.get_line_on(3);
-        assert_eq!(line_info.text, "");
-        assert_eq!(line_info.line_no, 2);
-        assert_eq!(line_info.line_start, 4);
+        assert_eq!(s.get_line_on(2), s.get_line_on(3));
     }
 
     #[test]
@@ -195,5 +220,61 @@ mod test {
         let s = Source::from_text("test", "gasda\nawaqer\na");
         assert_eq!(s.eof().start, 14);
         assert_eq!(s.eof().len, 1);
+    }
+
+    #[test]
+    fn test_render_short() {
+        let s = Source::from_text("test", "a");
+        let loc = Location { source: &s, start: 0, len: 1 };
+        let r = loc.render();
+        assert_eq!(r, RenderedLocation { line: "a".into(), line_no: 0, line_idx: 0, len: 1, is_multiline: false});
+    }
+
+    #[test]
+    fn test_render_longer() {
+        let s = Source::from_text("test", "abad");
+        let loc = Location { source: &s, start: 1, len: 3 };
+        let r = loc.render();
+        assert_eq!(r, RenderedLocation { line: "abad".into(), line_no: 0, line_idx: 1, len: 3, is_multiline: false});
+    }
+
+    #[test]
+    fn test_render_second_line() {
+        let s = Source::from_text("test", "\na");
+        let loc = Location { source: &s, start: 1, len: 1 };
+        let r = loc.render();
+        assert_eq!(r, RenderedLocation { line: "a".into(), line_no: 1, line_idx: 0, len: 1, is_multiline: false});
+    }
+
+    #[test]
+    fn test_render_long_line() {
+        let s = Source::from_text("test", "\naba");
+        let loc = Location { source: &s, start: 2, len: 2 };
+        let r = loc.render();
+        assert_eq!(r, RenderedLocation { line: "aba".into(), line_no: 1, line_idx: 1, len: 2, is_multiline: false});
+    }
+
+    #[test]
+    fn test_render_multiline() {
+        let s = Source::from_text("test", "asda\naba");
+        let loc = Location { source: &s, start: 0, len: 6 };
+        let r = loc.render();
+        assert_eq!(r, RenderedLocation { line: "asda".into(), line_no: 0, line_idx: 0, len: 4, is_multiline: true});
+    }
+
+    #[test]
+    fn test_render_multiline_edgecase() {
+        let s = Source::from_text("test", "asda\naba");
+        let loc = Location { source: &s, start: 0, len: 5 };
+        let r = loc.render();
+        assert_eq!(r, RenderedLocation { line: "asda".into(), line_no: 0, line_idx: 0, len: 4, is_multiline: true});
+    }
+
+    #[test]
+    fn test_render_multiline_edgecase_2() {
+        let s = Source::from_text("test", "asda\naba");
+        let loc = Location { source: &s, start: 0, len: 4 };
+        let r = loc.render();
+        assert_eq!(r, RenderedLocation { line: "asda".into(), line_no: 0, line_idx: 0, len: 4, is_multiline: false});
     }
 }
