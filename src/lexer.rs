@@ -49,6 +49,7 @@ impl<'a> Lexer<'a> {
         while let Some(tok) = lexer.lex_token() {
             tokens.push(tok);
         }
+        tokens.push(Token { typ: TokenType::EOF, text: "", leading_ws: false, loc: source.eof()});
         tokens.into_boxed_slice()
     }
 
@@ -119,31 +120,35 @@ mod test {
         Token { typ, text, leading_ws, loc: Location { source, start: 0, len: 0} }
     }
 
+    fn token_eof(source: &Source) -> Token {
+        Token { typ: EOF, text: "", leading_ws: false, loc: source.eof() }
+    }
+
     #[test]
     fn lex_empty() {
         let s = Source::from_text("<test>", "");
         let toks = Lexer::lex(&s);
-        assert_eq!(toks, vec![].into());
+        assert_eq!(toks, vec![token_eof(&s)].into());
     }
 
     #[test]
     fn lex_one() {
         let s = Source::from_text("<test>", "alpha");
         let toks = Lexer::lex(&s);
-        assert_eq!(toks, vec![token(&s, IDENTIFIER, "alpha", false)].into());
+        assert_eq!(toks, vec![token(&s, IDENTIFIER, "alpha", false), token_eof(&s)].into());
     }
 
     #[test]
     fn lex_one_ws() {
         let s = Source::from_text("<test>", "  alpha ");
         let toks = Lexer::lex(&s);
-        assert_eq!(toks, vec![token(&s, IDENTIFIER, "alpha", true)].into());
+        assert_eq!(toks, vec![token(&s, IDENTIFIER, "alpha", true), token_eof(&s)].into());
     }
 
     #[test]
     fn lex_two_ws() {
         let s = Source::from_text("<test>", "alpha   beta");
         let toks = Lexer::lex(&s);
-        assert_eq!(toks, vec![token(&s, IDENTIFIER, "alpha", false), token(&s, IDENTIFIER, "beta", true)].into());
+        assert_eq!(toks, vec![token(&s, IDENTIFIER, "alpha", false), token(&s, IDENTIFIER, "beta", true), token_eof(&s)].into());
     }
 }
