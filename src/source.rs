@@ -1,3 +1,5 @@
+use std::fmt::{Debug, Formatter};
+
 pub struct Source {
     pub name: String,
     pub text: String,
@@ -71,6 +73,12 @@ impl Location<'_> {
             len: self.len.min(line.text.len() - (self.start - line.line_start)),
             is_multiline: line.text.len() - (self.start - line.line_start) < self.len
         }
+    }
+}
+
+impl Debug for Location<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Location(source: {}, {}, {})", self.source.name, self.start, self.len)
     }
 }
 

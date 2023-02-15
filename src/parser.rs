@@ -5,7 +5,8 @@ use crate::lexer::{Lexer, Token, TokenType};
 
 
 enum ParserError<'a> {
-    UnexpectedToken(Token<'a>, TokenType)
+    UnexpectedToken(Token<'a>, Vec<TokenType>),
+    UnusedTokens(Token<'a>)
 }
 
 type ParseResult<T> = Result<T, usize>;
@@ -21,6 +22,9 @@ impl<'a> Parser<'a> {
     fn parse(source: &'a Source) -> Result<Expr<'a>, Vec<ParserError<'a>>> {
         let mut parser = Self::new(source);
         let expr = parser.parse_expr();
+        if parser.curr().typ != TokenType::EOF {
+            parser.errors.push(ParserError::UnusedTokens(parser.curr()));
+        }
         match expr {
             Ok(expr) if parser.errors.is_empty() => {
                 Ok(expr)
@@ -59,8 +63,26 @@ impl<'a> Parser<'a> {
                 Ok(Expr::Name(ExprNameData { name: tok.text.to_owned(), loc: tok.loc }))
             },
             _ => {
-                todo!()
+                self.errors.push(ParserError::UnexpectedToken(self.curr(), vec![TokenType::IDENTIFIER]));
+                Err(0)
             }
         }
+    }
+}
+
+
+#[cfg(test)]
+mod test {
+    use crate::ast::Expr;
+    use crate::parser::{Parser, ParserError};
+    use crate::source::Source;
+
+    #[test]
+    fn test_expr_single_ident() {
+        let s = Source::from_text("test", "hello");
+        let mut p = Parser::new(&s);
+        let e = p.parse_expr().unwrap();
+
+        assert!(matches!(e, Expr::Name( .. )));
     }
 }
