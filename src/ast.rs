@@ -1,12 +1,25 @@
 use crate::source::Location;
 
-#[derive(Debug)]
-pub enum Expr<'a> {
-    Name(ExprNameData<'a>)
+pub enum TopLevel {
+
 }
 
-#[derive(Debug)]
-pub struct ExprNameData<'a> {
-    pub name: String,
-    pub loc: Location<'a>
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum BinOp {
+    LessThan,
+    GreaterThan
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum Expr<'a> {
+    Name { name: String, loc: Location<'a> },
+    BinOp { left: Box<Expr<'a>>, op: BinOp, right: Box<Expr<'a>> },
+    Call { callee: Box<Expr<'a>>, arguments: Vec<Box<Expr<'a>>> },
+    GenericCall { callee: Box<Expr<'a>>, generic_arguments: Vec<Box<Type<'a>>>, arguments: Vec<Box<Expr<'a>>> }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum Type<'a> {
+    Name { name: String, loc: Location<'a> }
 }

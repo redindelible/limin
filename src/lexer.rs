@@ -1,12 +1,26 @@
 use std::fmt::{Debug, Formatter};
+use phf::phf_map;
 use unicode_ident::{is_xid_continue, is_xid_start};
 use crate::source::{Location, Source};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub enum TokenType {
-    IDENTIFIER,
+    Identifier,
+    LessThan,
+    GreaterThan,
+    LeftParenthesis,
+    RightParenthesis,
+    Comma,
     EOF
 }
+
+const BASIC_TOKENS: phf::Map<char, TokenType> = phf_map! {
+    '<' => TokenType::LessThan,
+    '>' => TokenType::GreaterThan,
+    '(' => TokenType::LeftParenthesis,
+    ')' => TokenType::RightParenthesis,
+    ',' => TokenType::Comma
+};
 
 #[derive(Copy, Clone)]
 pub struct Token<'a> {
@@ -89,6 +103,13 @@ impl<'a> Lexer<'a> {
         let mut leading_ws = false;
         while !self.is_done() {
             match self.curr() {
+                c if BASIC_TOKENS.contains_key(&c) => {
+                    let start = self.idx();
+                    let ttype = BASIC_TOKENS[&c];
+                    self.advance();
+                    let end = self.idx();
+                    return Some(self.create_token(ttype, start, end, leading_ws));
+                }
                 c if c.is_ascii_whitespace() => {
                     leading_ws = true;
                     self.advance();
@@ -99,10 +120,10 @@ impl<'a> Lexer<'a> {
                         self.advance();
                     }
                     let end = self.idx();
-                    return Some(self.create_token(TokenType::IDENTIFIER, start, end, leading_ws));
+                    return Some(self.create_token(TokenType::Identifier, start, end, leading_ws));
                 }
                 _ => {
-                    self.advance();
+                    todo!()
                 }
             }
         };
@@ -135,20 +156,20 @@ mod test {
     fn lex_one() {
         let s = Source::from_text("<test>", "alpha");
         let toks = Lexer::lex(&s);
-        assert_eq!(toks, vec![token(&s, IDENTIFIER, "alpha", false), token_eof(&s)].into());
+        assert_eq!(toks, vec![token(&s, Identifier, "alpha", false), token_eof(&s)].into());
     }
 
     #[test]
     fn lex_one_ws() {
         let s = Source::from_text("<test>", "  alpha ");
         let toks = Lexer::lex(&s);
-        assert_eq!(toks, vec![token(&s, IDENTIFIER, "alpha", true), token_eof(&s)].into());
+        assert_eq!(toks, vec![token(&s, Identifier, "alpha", true), token_eof(&s)].into());
     }
 
     #[test]
     fn lex_two_ws() {
         let s = Source::from_text("<test>", "alpha   beta");
         let toks = Lexer::lex(&s);
-        assert_eq!(toks, vec![token(&s, IDENTIFIER, "alpha", false), token(&s, IDENTIFIER, "beta", true), token_eof(&s)].into());
+        assert_eq!(toks, vec![token(&s, Identifier, "alpha", false), token(&s, Identifier, "beta", true), token_eof(&s)].into());
     }
 }
