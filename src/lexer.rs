@@ -11,6 +11,9 @@ pub enum TokenType {
     LeftParenthesis,
     RightParenthesis,
     Comma,
+    Colon,
+    Minus,
+    Fn,
     EOF
 }
 
@@ -19,7 +22,13 @@ const BASIC_TOKENS: phf::Map<char, TokenType> = phf_map! {
     '>' => TokenType::GreaterThan,
     '(' => TokenType::LeftParenthesis,
     ')' => TokenType::RightParenthesis,
+    ':' => TokenType::Colon,
+    '-' => TokenType::Minus,
     ',' => TokenType::Comma
+};
+
+const KEYWORDS: phf::Map<&str, TokenType> = phf_map! {
+    "fn" => TokenType::Fn
 };
 
 #[derive(Copy, Clone)]
@@ -120,7 +129,14 @@ impl<'a> Lexer<'a> {
                         self.advance();
                     }
                     let end = self.idx();
-                    return Some(self.create_token(TokenType::Identifier, start, end, leading_ws));
+
+                    let token = self.create_token(TokenType::Identifier, start, end, leading_ws);
+
+                    return if KEYWORDS.contains_key(token.text) {
+                        Some(self.create_token(KEYWORDS[token.text], start, end, leading_ws))
+                    } else {
+                        Some(token)
+                    }
                 }
                 _ => {
                     todo!()

@@ -1,4 +1,4 @@
-use crate::ast::{BinOp, Expr, Type};
+use crate::ast::{BinOp, Expr, Parameter, TopLevel, Type};
 use crate::source::Source;
 use crate::lexer::{Lexer, Token, TokenType};
 
@@ -6,6 +6,7 @@ use crate::lexer::{Lexer, Token, TokenType};
 #[derive(Debug)]
 enum ParserError<'a> {
     UnexpectedToken(Token<'a>, Vec<TokenType>),
+    ExpectedSymbol(Token<'a>, &'static str),
     UnusedTokens(Token<'a>)
 }
 
@@ -56,6 +57,14 @@ impl<'a> Parser<'a> {
         self.tokens[self.idx]
     }
 
+    fn peek(&self) -> Token<'a> {
+        if self.idx + 1 >= self.idx {
+            self.tokens[self.idx]
+        } else {
+            self.tokens[self.idx+1]
+        }
+    }
+
     fn advance(&mut self) -> Token<'a> {
         let ret = self.curr();
         if self.idx + 1 < self.tokens.len() {
@@ -73,6 +82,19 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn expect_symbol(&mut self, first: TokenType, second: TokenType, name: &'static str) -> ParseResult<()> {
+        if self.curr().typ == first && !self.curr().leading_ws && self.peek().typ == second {
+            Ok(())
+        } else {
+            self.errors.push(ParserError::ExpectedSymbol(self.curr(), name));
+            Err(0)
+        }
+    }
+
+    fn matches_symbol(&mut self, first: TokenType, second: TokenType) -> bool {
+        self.curr().typ == first && !self.curr().leading_ws && self.peek().typ == second
+    }
+
     fn delimited_parse<T>(&mut self, left: TokenType, right: TokenType, mut each: impl FnMut(&mut Self) -> ParseResult<T>) -> ParseResult<Vec<Box<T>>> {
         self.expect(left)?;
         let mut items = Vec::new();
@@ -87,6 +109,27 @@ impl<'a> Parser<'a> {
         }
         self.expect(right)?;
         Ok(items)
+    }
+
+    fn parse_function(&mut self) -> ParseResult<TopLevel<'a>> {
+        self.expect(TokenType::Fn)?;
+        let name = self.expect(TokenType::Identifier)?;
+        let parameters = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, Self::parse_parameter)?;
+        let return_type = if self.matches_symbol(TokenType::Minus, TokenType::GreaterThan) {
+            self.expect_symbol(TokenType::Minus, TokenType::GreaterThan, "->")?;
+            Some(Box::new(self.parse_type()?))
+        } else {
+            None
+        };
+        let body = Box::new(self.parse_expr()?);
+        Ok(TopLevel::Function { name: name.text.to_owned(), parameters, return_type, body })
+    }
+
+    fn parse_parameter(&mut self) -> ParseResult<Parameter<'a>> {
+        let name = self.expect(TokenType::Identifier)?;
+        self.expect(TokenType::Colon)?;
+        let typ = Box::new(self.parse_type()?);
+        Ok(Parameter { name: name.text.to_owned(), typ })
     }
 
     fn parse_expr(&mut self) -> ParseResult<Expr<'a>> {
@@ -184,7 +227,7 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod test {
-    use crate::ast::{BinOp, Expr, Type};
+    use crate::ast::{BinOp, Expr, TopLevel, Type};
     use crate::parser::Parser;
     use crate::source::Source;
 
@@ -218,7 +261,7 @@ mod test {
         let e = p.parse_expr().unwrap();
 
         let Expr::BinOp { left, op: BinOp::LessThan, right } = e else { panic!() };
-        let Expr::Name { name, ..} = left.as_ref() else { panic!() };
+        let Expr::Name { name, .. } = left.as_ref() else { panic!() };
         assert_eq!(name, "hello");
         let Expr::Name { name, .. } = right.as_ref() else { panic!() };
         assert_eq!(name, "ad");
@@ -261,5 +304,22 @@ mod test {
 
         let Expr::Call { callee, arguments } = e else { panic!() };
         assert_eq!(arguments.len(), 1);
+    }
+
+    #[test]
+    fn test_function() {
+        let s = Source::from_text("test", r"
+            fn main() a
+        ");
+        let mut p = Parser::new(&s);
+        let top = p.parse_function().unwrap();
+
+        let TopLevel::Function { name, parameters, return_type, body } = top else {
+            panic!("{:?}", top);
+        };
+        assert_eq!(name, "main");
+        assert_eq!(parameters, vec![]);
+        assert!(return_type.is_none());
+        assert!(matches!(body.as_ref(), Expr::Name { name, ..} if name == "a"));
     }
 }
