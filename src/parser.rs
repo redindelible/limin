@@ -3,6 +3,7 @@ use crate::source::Source;
 use crate::lexer::{Lexer, Token, TokenType};
 
 
+#[derive(Debug)]
 enum ParserError<'a> {
     UnexpectedToken(Token<'a>, Vec<TokenType>),
     UnusedTokens(Token<'a>)
@@ -67,8 +68,25 @@ impl<'a> Parser<'a> {
         if self.curr().typ == ttype {
             Ok(self.advance())
         } else {
+            self.errors.push(ParserError::UnexpectedToken(self.curr(), vec![ttype]));
             Err(0)
         }
+    }
+
+    fn delimited_parse<T>(&mut self, left: TokenType, right: TokenType, mut each: impl FnMut(&mut Self) -> ParseResult<T>) -> ParseResult<Vec<Box<T>>> {
+        self.expect(left)?;
+        let mut items = Vec::new();
+        while self.curr().typ != TokenType::RightParenthesis {
+            let argument = each(self)?;
+            items.push(Box::new(argument));
+            if self.curr().typ == TokenType::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(right)?;
+        Ok(items)
     }
 
     fn parse_expr(&mut self) -> ParseResult<Expr<'a>> {
@@ -80,12 +98,12 @@ impl<'a> Parser<'a> {
         loop {
             match self.curr().typ {
                 TokenType::LessThan => {
-                    let tok = self.advance();
+                    self.advance();
                     let right = self.parse_call()?;
                     left = Expr::BinOp { left: Box::new(left), op: BinOp::LessThan, right: Box::new(right) };
                 },
                 TokenType::GreaterThan => {
-                    let tok = self.advance();
+                    self.advance();
                     let right = self.parse_call()?;
                     left = Expr::BinOp { left: Box::new(left), op: BinOp::GreaterThan, right: Box::new(right) };
                 }
@@ -100,47 +118,14 @@ impl<'a> Parser<'a> {
         loop {
             match self.curr().typ {
                 TokenType::LeftParenthesis => {
-                    let tok = self.advance();
-                    let mut arguments = Vec::new();
-                    while self.curr().typ != TokenType::RightParenthesis {
-                        let argument = self.parse_expr()?;
-                        arguments.push(Box::new(argument));
-                        if self.curr().typ == TokenType::Comma {
-                            self.advance();
-                        } else {
-                            break;
-                        }
-                    }
-                    let end = self.expect(TokenType::RightParenthesis)?;
+                    let arguments = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, Self::parse_expr)?;
                     left = Expr::Call { callee: Box::new(left), arguments };
                 }
                 TokenType::LessThan => {
                     let state = self.store();
                     let result: Result<_, usize> = (|| {
-                        let _ = self.advance();
-                        let mut type_arguments = Vec::new();
-                        while self.curr().typ != TokenType::GreaterThan {
-                            let type_argument = self.parse_type()?;
-                            type_arguments.push(Box::new(type_argument));
-                            if self.curr().typ == TokenType::Comma {
-                                self.advance();
-                            } else {
-                                break;
-                            }
-                        };
-                        self.expect(TokenType::GreaterThan)?;
-                        self.expect(TokenType::LeftParenthesis)?;
-                        let mut arguments = Vec::new();
-                        while self.curr().typ != TokenType::RightParenthesis {
-                            let argument = self.parse_expr()?;
-                            arguments.push(Box::new(argument));
-                            if self.curr().typ == TokenType::Comma {
-                                self.advance();
-                            } else {
-                                break;
-                            }
-                        }
-                        let end = self.expect(TokenType::RightParenthesis)?;
+                        let type_arguments = self.delimited_parse(TokenType::LessThan, TokenType::GreaterThan, Self::parse_type)?;
+                        let arguments = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, Self::parse_expr)?;
                         Ok((type_arguments, arguments))
                     })();
                     match result {
@@ -216,7 +201,7 @@ mod test {
     fn test_expr_call() {
         let s = Source::from_text("test", "hello(ad)");
         let mut p = Parser::new(&s);
-        let e = p.parse_expr().unwrap();
+        let e = p.parse_expr().unwrap_or_else(|_| panic!("{:?}", p.errors));
 
         let Expr::Call { callee, arguments } = e else { panic!() };
         let Expr::Name { name, ..} = callee.as_ref() else { panic!() };
