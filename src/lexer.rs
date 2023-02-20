@@ -6,6 +6,7 @@ use crate::source::{Location, Source};
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub enum TokenType {
     Identifier,
+    Integer,
     LessThan,
     GreaterThan,
     LeftParenthesis,
@@ -118,11 +119,19 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     let end = self.idx();
                     return Some(self.create_token(ttype, start, end, leading_ws));
-                }
+                },
                 c if c.is_ascii_whitespace() => {
                     leading_ws = true;
                     self.advance();
-                }
+                },
+                c if c.is_ascii_digit() => {
+                    let start = self.idx();
+                    while self.curr().is_ascii_digit() {
+                        self.advance();
+                    }
+                    let end = self.idx();
+                    return Some(self.create_token(TokenType::Integer, start, end, leading_ws));
+                },
                 c if is_xid_start(c) => {
                     let start = self.idx();
                     while is_xid_continue(self.curr()) {
@@ -137,7 +146,7 @@ impl<'a> Lexer<'a> {
                     } else {
                         Some(token)
                     }
-                }
+                },
                 _ => {
                     todo!()
                 }

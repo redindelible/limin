@@ -7,6 +7,7 @@ use crate::lexer::{Lexer, Token, TokenType};
 enum ParserError<'a> {
     UnexpectedToken(Token<'a>, Vec<TokenType>),
     ExpectedSymbol(Token<'a>, &'static str),
+    CouldNotParseNumber(Token<'a>, &'static str),
     UnusedTokens(Token<'a>)
 }
 
@@ -193,6 +194,14 @@ impl<'a> Parser<'a> {
                 let tok = self.advance();
                 Ok(Expr::Name { name: tok.text.to_owned(), loc: tok.loc })
             },
+            TokenType::Integer => {
+                let tok = self.advance();
+                let Ok(num) = tok.text.parse::<u64>() else {
+                    self.errors.push(ParserError::CouldNotParseNumber(tok, "64-bit integer"));
+                    return Err(0);
+                };
+                Ok(Expr::Integer { number: num, loc: tok.loc })
+            }
             TokenType::LeftParenthesis => {
                 self.advance();
                 let expr = self.parse_expr()?;
@@ -309,7 +318,7 @@ mod test {
     #[test]
     fn test_function() {
         let s = Source::from_text("test", r"
-            fn main() a
+            fn main() 0
         ");
         let mut p = Parser::new(&s);
         let top = p.parse_function().unwrap();
@@ -320,6 +329,6 @@ mod test {
         assert_eq!(name, "main");
         assert_eq!(parameters, vec![]);
         assert!(return_type.is_none());
-        assert!(matches!(body.as_ref(), Expr::Name { name, ..} if name == "a"));
+        assert!(matches!(body.as_ref(), Expr::Integer { number: 0, .. }));
     }
 }
