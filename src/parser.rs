@@ -1,4 +1,4 @@
-use crate::ast::{BinOp, Expr, Parameter, TopLevel, Type};
+use crate::ast::{BinOp, Expr, Parameter, Stmt, TopLevel, Type};
 use crate::source::Source;
 use crate::lexer::{Lexer, Token, TokenType};
 
@@ -133,6 +133,35 @@ impl<'a> Parser<'a> {
         Ok(Parameter { name: name.text.to_owned(), typ })
     }
 
+    fn parse_stmt(&mut self) -> ParseResult<Stmt<'a>> {
+        match self.curr().typ {
+            TokenType::Return => self.parse_return(),
+            TokenType::Let => self.parse_decl(),
+            _ => self.parse_expr_stmt()
+        }
+    }
+
+    fn parse_return(&mut self) -> ParseResult<Stmt<'a>> {
+        self.expect(TokenType::Return)?;
+        let value = Box::new(self.parse_expr()?);
+        Ok(Stmt::Return { value })
+    }
+
+    fn parse_decl(&mut self) -> ParseResult<Stmt<'a>> {
+        self.expect(TokenType::Let)?;
+        let name = self.expect(TokenType::Identifier)?.text.to_owned();
+        self.expect(TokenType::Colon)?;
+        let typ = Box::new(self.parse_type()?);
+        self.expect(TokenType::Equal)?;
+        let value = Box::new(self.parse_expr()?);
+        Ok(Stmt::Decl { name, typ, value })
+    }
+
+    fn parse_expr_stmt(&mut self) -> ParseResult<Stmt<'a>> {
+        let expr = Box::new(self.parse_expr()?);
+        Ok(Stmt::Expr { expr })
+    }
+
     fn parse_expr(&mut self) -> ParseResult<Expr<'a>> {
         Ok(self.parse_comparison()?)
     }
@@ -188,6 +217,24 @@ impl<'a> Parser<'a> {
         Ok(left)
     }
 
+    fn parse_block(&mut self) -> ParseResult<Expr<'a>> {
+        self.expect(TokenType::LeftBrace)?;
+        let mut stmts = Vec::new();
+        let mut trailing_semicolon = true;
+        while self.curr().typ != TokenType::RightBrace {
+            let stmt = Box::new(self.parse_stmt()?);
+            stmts.push(stmt);
+            if self.curr().typ == TokenType::Semicolon {
+                self.advance();
+            } else {
+                trailing_semicolon = false;
+                break;
+            }
+        }
+        self.expect(TokenType::RightBrace)?;
+        Ok(Expr::Block { stmts, trailing_semicolon })
+    }
+
     fn parse_terminal(&mut self) -> ParseResult<Expr<'a>> {
         match self.curr().typ {
             TokenType::Identifier => {
@@ -208,6 +255,9 @@ impl<'a> Parser<'a> {
                 self.expect(TokenType::RightParenthesis)?;
                 Ok(expr)
             },
+            TokenType::LeftBrace => {
+                self.parse_block()
+            }
             _ => {
                 self.errors.push(ParserError::UnexpectedToken(self.curr(), vec![TokenType::Identifier, TokenType::LeftParenthesis]));
                 Err(0)
@@ -318,10 +368,15 @@ mod test {
     #[test]
     fn test_function() {
         let s = Source::from_text("test", r"
-            fn main() 0
+            fn main() {
+                let a: int = 0;
+                return 0;
+            }
         ");
         let mut p = Parser::new(&s);
-        let top = p.parse_function().unwrap();
+        let top = p.parse_function().unwrap_or_else(|_| {
+            panic!("{:?}", p.errors)
+        });
 
         let TopLevel::Function { name, parameters, return_type, body } = top else {
             panic!("{:?}", top);
@@ -329,6 +384,5 @@ mod test {
         assert_eq!(name, "main");
         assert_eq!(parameters, vec![]);
         assert!(return_type.is_none());
-        assert!(matches!(body.as_ref(), Expr::Integer { number: 0, .. }));
     }
 }

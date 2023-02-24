@@ -12,6 +12,14 @@ pub struct Parameter<'a> {
 }
 
 #[derive(Debug, Eq, PartialEq)]
+pub enum Stmt<'a> {
+    Decl { name: String, typ: Box<Type<'a>>, value: Box<Expr<'a>> },
+    Return { value: Box<Expr<'a>> },
+    Expr { expr: Box<Expr<'a>> }
+}
+
+
+#[derive(Debug, Eq, PartialEq)]
 pub enum BinOp {
     LessThan,
     GreaterThan
@@ -23,7 +31,8 @@ pub enum Expr<'a> {
     BinOp { left: Box<Expr<'a>>, op: BinOp, right: Box<Expr<'a>> },
     Call { callee: Box<Expr<'a>>, arguments: Vec<Box<Expr<'a>>> },
     GenericCall { callee: Box<Expr<'a>>, generic_arguments: Vec<Box<Type<'a>>>, arguments: Vec<Box<Expr<'a>>> },
-    Integer { number: u64, loc: Location<'a> }
+    Integer { number: u64, loc: Location<'a> },
+    Block { stmts: Vec<Box<Stmt<'a>>>, trailing_semicolon: bool }
 }
 
 #[derive(Debug, Eq, PartialEq)]

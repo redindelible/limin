@@ -3,17 +3,17 @@ use typed_arena::Arena;
 use crate::source::Location;
 
 pub struct NameDecl<'s> {
-    name: String,
-    typ: Type<'s>,
-    decl: Location<'s>
+    pub name: String,
+    pub typ: Type,
+    pub decl: Location<'s>
 }
 
-pub enum Type<'s> {
+pub enum Type {
     Integer { bits: u8 }
 }
 
 pub struct HIR<'s> {
-    names: Arena<NameDecl<'s>>
+    pub names: Arena<NameDecl<'s>>
 }
 
 pub enum Expr<'ir> {

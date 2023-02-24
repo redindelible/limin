@@ -11,10 +11,16 @@ pub enum TokenType {
     GreaterThan,
     LeftParenthesis,
     RightParenthesis,
+    LeftBrace,
+    RightBrace,
+    Equal,
     Comma,
     Colon,
+    Semicolon,
     Minus,
     Fn,
+    Let,
+    Return,
     EOF
 }
 
@@ -23,13 +29,19 @@ const BASIC_TOKENS: phf::Map<char, TokenType> = phf_map! {
     '>' => TokenType::GreaterThan,
     '(' => TokenType::LeftParenthesis,
     ')' => TokenType::RightParenthesis,
+    '{' => TokenType::LeftBrace,
+    '}' => TokenType::RightBrace,
+    '=' => TokenType::Equal,
     ':' => TokenType::Colon,
+    ';' => TokenType::Semicolon,
     '-' => TokenType::Minus,
     ',' => TokenType::Comma
 };
 
 const KEYWORDS: phf::Map<&str, TokenType> = phf_map! {
-    "fn" => TokenType::Fn
+    "fn" => TokenType::Fn,
+    "let" => TokenType::Let,
+    "return" => TokenType::Return
 };
 
 #[derive(Copy, Clone)]
