@@ -1,4 +1,4 @@
-use crate::ast::{BinOp, Expr, Parameter, Stmt, TopLevel, Type};
+use crate::ast::*;
 use crate::source::Source;
 use crate::lexer::{Lexer, Token, TokenType};
 
@@ -23,20 +23,19 @@ struct Parser<'a> {
 struct Point { idx: usize, err_len: usize }
 
 impl<'a> Parser<'a> {
-    fn parse(source: &'a Source) -> Result<Expr<'a>, Vec<ParserError<'a>>> {
+    fn parse(source: &'a Source) -> Result<AST<'a>, Vec<ParserError<'a>>> {
         let mut parser = Self::new(source);
-        let expr = parser.parse_expr();
-        if parser.curr().typ != TokenType::EOF {
-            parser.errors.push(ParserError::UnusedTokens(parser.curr()));
-        }
-        match expr {
-            Ok(expr) if parser.errors.is_empty() => {
-                Ok(expr)
-            },
-            _ => {
-                Err(parser.errors)
-            }
-        }
+
+        let mut top_levels = Vec::new();
+        while parser.idx < parser.tokens.len() {
+            let top_level = match parser.parse_function() {
+                Ok(n) => n,
+                Err(_) => return Err(parser.errors)
+            };
+            top_levels.push(top_level);
+        };
+        let file = File { top_levels };
+        Ok(AST { files: vec![file] })
     }
 
     fn new(source: &'a Source) -> Parser<'a> {

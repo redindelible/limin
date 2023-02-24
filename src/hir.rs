@@ -16,6 +16,11 @@ pub struct HIR<'s> {
     pub names: Arena<NameDecl<'s>>
 }
 
+pub struct Function<'ir> {
+    pub name: String,
+    pub body: Expr<'ir>
+}
+
 pub enum Expr<'ir> {
     Name { decl: &'ir NameDecl<'ir> }
 }

@@ -1,6 +1,16 @@
 use crate::source::Location;
 
 #[derive(Debug, Eq, PartialEq)]
+pub struct AST<'a> {
+    pub files: Vec<File<'a>>
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct File<'a> {
+    pub top_levels: Vec<TopLevel<'a>>
+}
+
+#[derive(Debug, Eq, PartialEq)]
 pub enum TopLevel<'a> {
     Function { name: String, parameters: Vec<Box<Parameter<'a>>>, return_type: Option<Box<Type<'a>>>, body: Box<Expr<'a>> }
 }

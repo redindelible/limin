@@ -10,3 +10,5 @@ dunce = "1.0.2"
 unicode-ident = "1.0.5"
 phf = { version = "0.11.1", features = ["macros"] }
 typed-arena = "2.0.2"
+async-std = "1.12.0"
+async-scoped = { version= "0.7.1", features = ["use-async-std"] }
