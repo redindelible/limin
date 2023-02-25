@@ -28,7 +28,7 @@ impl<'a> Parser<'a> {
 
         let mut top_levels = Vec::new();
         while parser.idx < parser.tokens.len() {
-            let top_level = match parser.parse_function() {
+            let top_level = match parser.parse_top_level() {
                 Ok(n) => n,
                 Err(_) => return Err(parser.errors)
             };
@@ -109,6 +109,40 @@ impl<'a> Parser<'a> {
         }
         self.expect(right)?;
         Ok(items)
+    }
+
+    fn parse_top_level(&mut self) -> ParseResult<TopLevel<'a>> {
+        match self.curr().typ {
+            TokenType::Struct => self.parse_struct(),
+            TokenType::Fn => self.parse_function(),
+            _ => {
+                self.errors.push(ParserError::UnexpectedToken(self.curr(), vec![TokenType::Struct, TokenType::Fn]));
+                Err(0)
+            }
+        }
+    }
+
+    fn parse_struct(&mut self) -> ParseResult<TopLevel<'a>> {
+        self.expect(TokenType::Struct)?;
+        let name = self.expect(TokenType::Identifier)?.text.to_owned();
+
+        let mut items = Vec::new();
+        self.expect(TokenType::LeftBrace)?;
+        while self.curr().typ != TokenType::RightBrace {
+            let item = self.parse_struct_item()?;
+            items.push(item);
+        }
+        self.expect(TokenType::RightBrace)?;
+
+        Ok(TopLevel::Struct { name, items })
+    }
+
+    fn parse_struct_item(&mut self) -> ParseResult<StructItem<'a>> {
+        let name = self.expect(TokenType::Identifier)?.text.to_owned();
+        self.expect(TokenType::Colon)?;
+        let typ = Box::new(self.parse_type()?);
+        self.expect(TokenType::Semicolon)?;
+        Ok(StructItem::Field { name, typ })
     }
 
     fn parse_function(&mut self) -> ParseResult<TopLevel<'a>> {
@@ -383,5 +417,18 @@ mod test {
         assert_eq!(name, "main");
         assert_eq!(parameters, vec![]);
         assert!(return_type.is_none());
+    }
+
+    #[test]
+    fn test_struct() {
+        let s = Source::from_text("test", r"
+            struct thing {
+                first: int;
+            }
+        ");
+        let mut p = Parser::new(&s);
+        let top = p.parse_struct().unwrap_or_else(|_| {
+            panic!("{:?}", p.errors)
+        });
     }
 }

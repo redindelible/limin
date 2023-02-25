@@ -21,6 +21,7 @@ pub enum TokenType {
     Fn,
     Let,
     Return,
+    Struct,
     EOF
 }
 
@@ -41,7 +42,8 @@ const BASIC_TOKENS: phf::Map<char, TokenType> = phf_map! {
 const KEYWORDS: phf::Map<&str, TokenType> = phf_map! {
     "fn" => TokenType::Fn,
     "let" => TokenType::Let,
-    "return" => TokenType::Return
+    "return" => TokenType::Return,
+    "struct" => TokenType::Struct
 };
 
 #[derive(Copy, Clone)]

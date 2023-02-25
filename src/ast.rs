@@ -12,7 +12,13 @@ pub struct File<'a> {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum TopLevel<'a> {
-    Function { name: String, parameters: Vec<Box<Parameter<'a>>>, return_type: Option<Box<Type<'a>>>, body: Box<Expr<'a>> }
+    Function { name: String, parameters: Vec<Box<Parameter<'a>>>, return_type: Option<Box<Type<'a>>>, body: Box<Expr<'a>> },
+    Struct { name: String, items: Vec<StructItem<'a>> }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum StructItem<'a> {
+    Field { name: String, typ: Box<Type<'a>> }
 }
 
 #[derive(Debug, Eq, PartialEq)]
