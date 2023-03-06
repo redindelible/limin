@@ -5,6 +5,7 @@ use crate::source::Location;
 new_key_type! {
     pub struct NameKey;
     pub struct TypeKey;
+    pub struct StructKey;
 }
 
 pub struct NameDecl<'s> {
@@ -13,19 +14,25 @@ pub struct NameDecl<'s> {
     pub decl: Location<'s>
 }
 
-pub struct TypeDecl<'s> {
-    pub name: String,
-    pub typ: Type,
-    pub decl: Location<'s>
-}
-
 pub enum Type {
-    Integer { bits: u8 }
+    Integer { bits: u8 },
+    Struct { struct_: StructKey }
 }
 
 pub struct HIR<'s> {
     pub names: SlotMap<NameKey, NameDecl<'s>>,
-    pub types: SlotMap<TypeKey, TypeDecl<'s>>
+
+    pub structs: SlotMap<StructKey, Struct<'s>>,
+}
+
+pub struct Struct<'ir> {
+    pub name: String,
+    pub fields: HashMap<String, StructField<'ir>>
+}
+
+pub struct StructField<'ir> {
+    pub name: String,
+    pub typ: Type
 }
 
 pub struct Function<'ir> {
