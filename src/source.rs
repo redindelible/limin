@@ -1,4 +1,6 @@
+use std::cmp::{min, max};
 use std::fmt::{Debug, Formatter};
+use std::ops::Add;
 
 pub struct Source {
     pub name: String,
@@ -73,6 +75,17 @@ impl Location<'_> {
             len: self.len.min(line.text.len() - (self.start - line.line_start)),
             is_multiline: line.text.len() - (self.start - line.line_start) < self.len
         }
+    }
+}
+
+impl<'s> Add for Location<'s> {
+    type Output = Location<'s>;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        if rhs.source != self.source { panic!("sources must be the same") };
+        let start = min(self.start, rhs.start);
+        let end = max(self.start + self.len, rhs.start + rhs.len);
+        Location { source: self.source, start, len: end - start}
     }
 }
 

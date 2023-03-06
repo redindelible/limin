@@ -18,7 +18,7 @@ pub enum TopLevel<'a> {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum StructItem<'a> {
-    Field { name: String, typ: Box<Type<'a>> }
+    Field { name: String, typ: Box<Type<'a>>, loc: Location<'a> }
 }
 
 #[derive(Debug, Eq, PartialEq)]

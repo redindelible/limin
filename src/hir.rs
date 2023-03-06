@@ -14,6 +14,7 @@ pub struct NameDecl<'s> {
     pub decl: Location<'s>
 }
 
+#[derive(Copy, Clone)]
 pub enum Type {
     Integer { bits: u8 },
     Struct { struct_: StructKey }
@@ -32,7 +33,8 @@ pub struct Struct<'ir> {
 
 pub struct StructField<'ir> {
     pub name: String,
-    pub typ: Type
+    pub typ: Type,
+    pub loc: Location<'ir>
 }
 
 pub struct Function<'ir> {

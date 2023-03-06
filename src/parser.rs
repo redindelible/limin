@@ -138,11 +138,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_struct_item(&mut self) -> ParseResult<StructItem<'a>> {
-        let name = self.expect(TokenType::Identifier)?.text.to_owned();
+        let name = self.expect(TokenType::Identifier)?;
         self.expect(TokenType::Colon)?;
         let typ = Box::new(self.parse_type()?);
-        self.expect(TokenType::Semicolon)?;
-        Ok(StructItem::Field { name, typ })
+        let end = self.expect(TokenType::Semicolon)?;
+        Ok(StructItem::Field { name: name.text.to_owned(), typ, loc: name.loc + end.loc })
     }
 
     fn parse_function(&mut self) -> ParseResult<TopLevel<'a>> {
