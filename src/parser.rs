@@ -163,7 +163,7 @@ impl<'a> Parser<'a> {
         let name = self.expect(TokenType::Identifier)?;
         self.expect(TokenType::Colon)?;
         let typ = Box::new(self.parse_type()?);
-        Ok(Parameter { name: name.text.to_owned(), typ })
+        Ok(Parameter { name: name.text.to_owned(), loc: name.loc + typ.loc(), typ })
     }
 
     fn parse_stmt(&mut self) -> ParseResult<Stmt<'a>> {

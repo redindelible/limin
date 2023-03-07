@@ -24,7 +24,8 @@ pub enum StructItem<'a> {
 #[derive(Debug, Eq, PartialEq)]
 pub struct Parameter<'a> {
     pub name: String,
-    pub typ: Box<Type<'a>>
+    pub typ: Box<Type<'a>>,
+    pub loc: Location<'a>
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -54,4 +55,12 @@ pub enum Expr<'a> {
 #[derive(Debug, Eq, PartialEq)]
 pub enum Type<'a> {
     Name { name: String, loc: Location<'a> }
+}
+
+impl<'s> Type<'s> {
+    pub fn loc(&self) -> Location<'s> {
+        match self {
+            Self::Name { loc, .. } => *loc
+        }
+    }
 }
