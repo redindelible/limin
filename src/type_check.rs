@@ -3,12 +3,17 @@ use async_scoped::AsyncScope;
 use async_std::sync::Mutex;
 use slotmap::{new_key_type, SecondaryMap, SlotMap};
 use crate::ast;
-use crate::hir::{HIR, NameKey, NameInfo, TypeKey, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody};
+use crate::hir::{HIR, NameKey, NameInfo, TypeKey, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr};
+use crate::source::Location;
+
+#[derive(Debug)]
+enum TypeCheckError<'a> {
+    CouldNotResolveName(String, Location<'a>)
+}
 
 new_key_type! {
     struct NamespaceKey;
 }
-
 
 #[derive(Default)]
 struct Namespace {
@@ -47,7 +52,9 @@ struct TypeCheck<'s> {
     structs: Mutex<SlotMap<StructKey, Struct<'s>>>,
     function_prototypes: Mutex<SlotMap<FunctionKey, FunctionPrototype<'s>>>,
     function_bodies: Mutex<SecondaryMap<FunctionKey, FunctionBody<'s>>>,
-    namespaces: Mutex<SlotMap<NamespaceKey, Namespace>>
+    namespaces: Mutex<SlotMap<NamespaceKey, Namespace>>,
+
+    errors: Mutex<Vec<TypeCheckError<'s>>>
 }
 
 impl Progress {
@@ -69,7 +76,8 @@ impl<'s> TypeCheck<'s> {
             structs: Mutex::new(SlotMap::with_key()),
             function_prototypes: Mutex::new(SlotMap::with_key()),
             function_bodies: Mutex::new(SecondaryMap::new()),
-            namespaces: Mutex::new(SlotMap::with_key())
+            namespaces: Mutex::new(SlotMap::with_key()),
+            errors: Mutex::new(Vec::new())
         }
     }
 
@@ -170,7 +178,8 @@ impl<'s> TypeCheck<'s> {
         let prototype = FunctionPrototype { name, params, ret, sig: signature };
 
         let key = self.function_prototypes.lock().await.insert(prototype);
-        let name = self.names.lock().await.insert(NameInfo::Function { func: key });
+        let name_key = self.names.lock().await.insert(NameInfo::Function { func: key });
+        self.namespaces.lock().await[global].insert_name(name.clone(), name_key);
 
         self.wait_functions_signatures().await;
     }
@@ -180,6 +189,20 @@ impl<'s> TypeCheck<'s> {
             ast::Type::Name { name, .. } => {
                 let ns = &self.namespaces.lock().await[in_namespace];
                 ns.types[name].clone()
+            }
+        }
+    }
+
+    async fn resolve_expr(&self, ast_expr: &ast::Expr<'s>, ns: NamespaceKey) -> Expr {
+        match ast_expr {
+            ast::Expr::Name { name, loc } => {
+                match self.namespaces.lock().await[ns].get_name(name) {
+                    Some(name_key) => Expr::Name { decl: name_key, loc: *loc },
+                    None => Expr::Errored { loc: *loc }
+                }
+            }
+            ast::Expr::Integer { number, loc } => {
+
             }
         }
     }

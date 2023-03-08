@@ -58,5 +58,7 @@ pub struct Parameter<'ir> {
 }
 
 pub enum Expr<'ir> {
-    Name { decl: NameKey, loc: Location<'ir> }
+    Name { decl: NameKey, loc: Location<'ir> },
+    Integer { num: u64, loc: Location<'ir> },
+    Errored { loc: Location<'ir> }
 }
