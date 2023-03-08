@@ -1,5 +1,5 @@
 use crate::ast::*;
-use crate::source::Source;
+use crate::source::{Source, HasLoc, Location};
 use crate::lexer::{Lexer, Token, TokenType};
 
 
@@ -95,8 +95,8 @@ impl<'a> Parser<'a> {
         self.curr().typ == first && !self.curr().leading_ws && self.peek().typ == second
     }
 
-    fn delimited_parse<T>(&mut self, left: TokenType, right: TokenType, mut each: impl FnMut(&mut Self) -> ParseResult<T>) -> ParseResult<Vec<Box<T>>> {
-        self.expect(left)?;
+    fn delimited_parse<T>(&mut self, left: TokenType, right: TokenType, mut each: impl FnMut(&mut Self) -> ParseResult<T>) -> ParseResult<(Vec<Box<T>>, Location<'a>)> {
+        let start = self.expect(left)?;
         let mut items = Vec::new();
         while self.curr().typ != TokenType::RightParenthesis {
             let argument = each(self)?;
@@ -107,8 +107,8 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        self.expect(right)?;
-        Ok(items)
+        let end = self.expect(right)?;
+        Ok((items, start.loc + end.loc))
     }
 
     fn parse_top_level(&mut self) -> ParseResult<TopLevel<'a>> {
@@ -148,7 +148,7 @@ impl<'a> Parser<'a> {
     fn parse_function(&mut self) -> ParseResult<TopLevel<'a>> {
         self.expect(TokenType::Fn)?;
         let name = self.expect(TokenType::Identifier)?;
-        let parameters = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, Self::parse_parameter)?;
+        let (parameters, _) = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, Self::parse_parameter)?;
         let return_type = if self.matches_symbol(TokenType::Minus, TokenType::GreaterThan) {
             self.expect_symbol(TokenType::Minus, TokenType::GreaterThan, "->")?;
             Some(Box::new(self.parse_type()?))
@@ -206,12 +206,14 @@ impl<'a> Parser<'a> {
                 TokenType::LessThan => {
                     self.advance();
                     let right = self.parse_call()?;
-                    left = Expr::BinOp { left: Box::new(left), op: BinOp::LessThan, right: Box::new(right) };
+                    let loc = left.loc() + right.loc();
+                    left = Expr::BinOp { left: Box::new(left), op: BinOp::LessThan, right: Box::new(right), loc };
                 },
                 TokenType::GreaterThan => {
                     self.advance();
                     let right = self.parse_call()?;
-                    left = Expr::BinOp { left: Box::new(left), op: BinOp::GreaterThan, right: Box::new(right) };
+                    let loc = left.loc() + right.loc();
+                    left = Expr::BinOp { left: Box::new(left), op: BinOp::GreaterThan, right: Box::new(right), loc };
                 }
                 _ => { break; }
             }
@@ -224,8 +226,9 @@ impl<'a> Parser<'a> {
         loop {
             match self.curr().typ {
                 TokenType::LeftParenthesis => {
-                    let arguments = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, Self::parse_expr)?;
-                    left = Expr::Call { callee: Box::new(left), arguments };
+                    let (arguments, args_loc) = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, Self::parse_expr)?;
+                    let loc = left.loc() + args_loc;
+                    left = Expr::Call { callee: Box::new(left), arguments, loc };
                 }
                 TokenType::LessThan => {
                     let state = self.store();
@@ -235,8 +238,9 @@ impl<'a> Parser<'a> {
                         Ok((type_arguments, arguments))
                     })();
                     match result {
-                        Ok((generic_arguments, arguments)) => {
-                            left = Expr::GenericCall { callee: Box::new(left), generic_arguments, arguments };
+                        Ok(((generic_arguments, _), (arguments, args_loc))) => {
+                            let loc = left.loc() + args_loc;
+                            left = Expr::GenericCall { callee: Box::new(left), generic_arguments, arguments, loc};
                         },
                         Err(_) => {
                             self.revert(state);
@@ -251,7 +255,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_block(&mut self) -> ParseResult<Expr<'a>> {
-        self.expect(TokenType::LeftBrace)?;
+        let start = self.expect(TokenType::LeftBrace)?;
         let mut stmts = Vec::new();
         let mut trailing_semicolon = true;
         while self.curr().typ != TokenType::RightBrace {
@@ -264,8 +268,8 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        self.expect(TokenType::RightBrace)?;
-        Ok(Expr::Block { stmts, trailing_semicolon })
+        let end = self.expect(TokenType::RightBrace)?;
+        Ok(Expr::Block { stmts, trailing_semicolon, loc: start.loc + end.loc })
     }
 
     fn parse_terminal(&mut self) -> ParseResult<Expr<'a>> {
@@ -338,7 +342,7 @@ mod test {
         let mut p = Parser::new(&s);
         let e = p.parse_expr().unwrap_or_else(|_| panic!("{:?}", p.errors));
 
-        let Expr::Call { callee, arguments } = e else { panic!() };
+        let Expr::Call { callee, arguments, .. } = e else { panic!() };
         let Expr::Name { name, ..} = callee.as_ref() else { panic!() };
         assert_eq!(name, "hello");
         assert_eq!(arguments.len(), 1);
@@ -352,7 +356,7 @@ mod test {
         let mut p = Parser::new(&s);
         let e = p.parse_expr().unwrap();
 
-        let Expr::BinOp { left, op: BinOp::LessThan, right } = e else { panic!() };
+        let Expr::BinOp { left, op: BinOp::LessThan, right, .. } = e else { panic!() };
         let Expr::Name { name, .. } = left.as_ref() else { panic!() };
         assert_eq!(name, "hello");
         let Expr::Name { name, .. } = right.as_ref() else { panic!() };
@@ -365,7 +369,7 @@ mod test {
         let mut p = Parser::new(&s);
         let e = p.parse_expr().unwrap();
 
-        let Expr::GenericCall { callee, generic_arguments, arguments } = e else { panic!() };
+        let Expr::GenericCall { callee, generic_arguments, arguments, .. } = e else { panic!() };
         let Expr::Name { name, ..} = callee.as_ref() else { panic!() };
         assert_eq!(name, "hello");
         assert_eq!(generic_arguments.len(), 1);
@@ -385,7 +389,7 @@ mod test {
         let mut p = Parser::new(&s);
         let e = p.parse_expr().unwrap();
 
-        let Expr::BinOp { left, op: BinOp::GreaterThan, right } = e else { panic!("{:?}", e) };
+        let Expr::BinOp { left, op: BinOp::GreaterThan, right, .. } = e else { panic!("{:?}", e) };
     }
 
     #[test]
@@ -394,7 +398,7 @@ mod test {
         let mut p = Parser::new(&s);
         let e = p.parse_expr().unwrap();
 
-        let Expr::Call { callee, arguments } = e else { panic!() };
+        let Expr::Call { callee, arguments, .. } = e else { panic!() };
         assert_eq!(arguments.len(), 1);
     }
 

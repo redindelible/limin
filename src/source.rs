@@ -15,6 +15,10 @@ pub struct Location<'a> {
     pub len: usize
 }
 
+pub trait HasLoc<'a> {
+    fn loc(&self) -> Location<'a>;
+}
+
 #[derive(Eq, PartialEq, Debug)]
 pub struct RenderedLocation {
     pub line: String,

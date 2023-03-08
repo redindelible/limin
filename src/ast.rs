@@ -1,4 +1,4 @@
-use crate::source::Location;
+use crate::source::{HasLoc, Location};
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct AST<'a> {
@@ -45,11 +45,24 @@ pub enum BinOp {
 #[derive(Debug, Eq, PartialEq)]
 pub enum Expr<'a> {
     Name { name: String, loc: Location<'a> },
-    BinOp { left: Box<Expr<'a>>, op: BinOp, right: Box<Expr<'a>> },
-    Call { callee: Box<Expr<'a>>, arguments: Vec<Box<Expr<'a>>> },
-    GenericCall { callee: Box<Expr<'a>>, generic_arguments: Vec<Box<Type<'a>>>, arguments: Vec<Box<Expr<'a>>> },
+    BinOp { left: Box<Expr<'a>>, op: BinOp, right: Box<Expr<'a>>, loc: Location<'a> },
+    Call { callee: Box<Expr<'a>>, arguments: Vec<Box<Expr<'a>>>, loc: Location<'a> },
+    GenericCall { callee: Box<Expr<'a>>, generic_arguments: Vec<Box<Type<'a>>>, arguments: Vec<Box<Expr<'a>>>, loc: Location<'a> },
     Integer { number: u64, loc: Location<'a> },
-    Block { stmts: Vec<Box<Stmt<'a>>>, trailing_semicolon: bool }
+    Block { stmts: Vec<Box<Stmt<'a>>>, trailing_semicolon: bool, loc: Location<'a> }
+}
+
+impl<'a> HasLoc<'a> for Expr<'a> {
+    fn loc(&self) -> Location<'a> {
+        match self {
+            Expr::Name { loc, .. } => *loc,
+            Expr::BinOp { loc, .. } => *loc,
+            Expr::Call { loc, .. } => *loc,
+            Expr::GenericCall { loc, .. } => *loc,
+            Expr::Integer { loc, .. } => *loc,
+            Expr::Block { loc, .. } => *loc
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -57,10 +70,10 @@ pub enum Type<'a> {
     Name { name: String, loc: Location<'a> }
 }
 
-impl<'s> Type<'s> {
-    pub fn loc(&self) -> Location<'s> {
+impl<'s> HasLoc<'s> for Type<'s> {
+    fn loc(&self) -> Location<'s> {
         match self {
-            Self::Name { loc, .. } => *loc
+            Type::Name { loc, .. } => *loc
         }
     }
 }
