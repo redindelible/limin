@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use crate::ast::*;
 use crate::source::{Source, HasLoc, Location};
 use crate::lexer::{Lexer, Token, TokenType};

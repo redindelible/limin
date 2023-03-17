@@ -71,18 +71,14 @@ impl<'a> TypeCheck<'a> {
     fn resolve_type(&self, ns: NamespaceKey, typ: &ast::Type<'a>) -> Type {
         match typ {
             ast::Type::Name { name, loc } => {
-                match self.get_type(ns, name) {
-                    Some(t) => t,
-                    None => {
-                        match self.namespaces[ns].parent {
-                            Some(parent) => self.resolve_type(parent, typ),
-                            None => {
-                                self.push_error(TypeCheckError::CouldNotResolveType(name.clone(), *loc));
-                                Type::Errored
-                            }
-                        }
-                    }
+                if let Some(t) = self.get_type(ns, name) {
+                    return t;
                 }
+                if let Some(parent) = self.namespaces[ns].parent {
+                    return self.resolve_type(parent, typ);
+                }
+                self.push_error(TypeCheckError::CouldNotResolveType(name.clone(), *loc));
+                Type::Errored
             }
         }
     }
