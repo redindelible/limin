@@ -20,7 +20,7 @@ pub enum Type {
     Errored,
     Integer { bits: u8 },
     Struct { struct_: StructKey },
-    Function { params: Vec<Box<Type>>, ret: Box<Type> }
+    Function { params: Vec<Type>, ret: Box<Type> }
 }
 
 #[derive(Default)]

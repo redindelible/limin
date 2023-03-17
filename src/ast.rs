@@ -14,10 +14,20 @@ pub struct File<'a> {
 }
 
 impl<'a> File<'a> {
-    pub fn iter_structs(&self) -> impl Iterator<Item = (&String, &Vec<StructItem<'a>>)>  {
+    pub fn iter_structs(&self) -> impl Iterator<Item = &Struct<'a>>  {
         self.top_levels.iter().filter_map(|t|
-            if let TopLevel::Struct { name, items} = t {
-                Some((name, items))
+            if let TopLevel::Struct(struct_) = t {
+                Some(struct_)
+            } else {
+                None
+            }
+        )
+    }
+
+    pub fn iter_functions(&self) -> impl Iterator<Item = &Function<'a>>  {
+        self.top_levels.iter().filter_map(|t|
+            if let TopLevel::Function(function) = t {
+                Some(function)
             } else {
                 None
             }
@@ -27,8 +37,22 @@ impl<'a> File<'a> {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum TopLevel<'a> {
-    Function { name: String, parameters: Vec<Box<Parameter<'a>>>, return_type: Option<Box<Type<'a>>>, body: Box<Expr<'a>> },
-    Struct { name: String, items: Vec<StructItem<'a>> }
+    Function(Function<'a>),
+    Struct(Struct<'a>)
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct Function<'a>  {
+    pub name: String,
+    pub parameters: Vec<Box<Parameter<'a>>>,
+    pub return_type: Option<Box<Type<'a>>>,
+    pub body: Box<Expr<'a>>
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct Struct<'a> {
+    pub name: String,
+    pub items: Vec<StructItem<'a>>
 }
 
 #[derive(Debug, Eq, PartialEq)]

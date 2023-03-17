@@ -65,7 +65,7 @@ impl<'a> Parser<'a> {
     }
 
     fn peek(&self) -> Token<'a> {
-        if self.idx + 1 >= self.idx {
+        if self.idx + 1 >= self.tokens.len() {
             self.tokens[self.idx]
         } else {
             self.tokens[self.idx+1]
@@ -90,7 +90,8 @@ impl<'a> Parser<'a> {
     }
 
     fn expect_symbol(&mut self, first: TokenType, second: TokenType, name: &'static str) -> ParseResult<()> {
-        if self.curr().typ == first && !self.curr().leading_ws && self.peek().typ == second {
+        if self.curr().typ == first && !self.peek().leading_ws && self.peek().typ == second {
+            self.advance(); self.advance();
             Ok(())
         } else {
             self.errors.push(ParserError::ExpectedSymbol(self.curr(), name));
@@ -99,7 +100,7 @@ impl<'a> Parser<'a> {
     }
 
     fn matches_symbol(&mut self, first: TokenType, second: TokenType) -> bool {
-        self.curr().typ == first && !self.curr().leading_ws && self.peek().typ == second
+        self.curr().typ == first && !self.peek().leading_ws && self.peek().typ == second
     }
 
     fn delimited_parse<T>(&mut self, left: TokenType, right: TokenType, mut each: impl FnMut(&mut Self) -> ParseResult<T>) -> ParseResult<(Vec<Box<T>>, Location<'a>)> {
@@ -141,7 +142,7 @@ impl<'a> Parser<'a> {
         }
         self.expect(TokenType::RightBrace)?;
 
-        Ok(TopLevel::Struct { name, items })
+        Ok(TopLevel::Struct(Struct { name, items }))
     }
 
     fn parse_struct_item(&mut self) -> ParseResult<StructItem<'a>> {
@@ -163,7 +164,7 @@ impl<'a> Parser<'a> {
             None
         };
         let body = Box::new(self.parse_expr()?);
-        Ok(TopLevel::Function { name: name.text.to_owned(), parameters, return_type, body })
+        Ok(TopLevel::Function( Function { name: name.text.to_owned(), parameters, return_type, body }))
     }
 
     fn parse_parameter(&mut self) -> ParseResult<Parameter<'a>> {
@@ -330,7 +331,7 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod test {
-    use crate::ast::{BinOp, Expr, TopLevel, Type};
+    use crate::ast::{BinOp, Expr, Function, TopLevel, Type};
     use crate::parser::{parse, Parser};
     use crate::source::Source;
 
@@ -422,12 +423,33 @@ mod test {
             panic!("{:?}", p.errors)
         });
 
-        let TopLevel::Function { name, parameters, return_type, body } = top else {
+        let TopLevel::Function(Function { name, parameters, return_type, body }) = top else {
             panic!("{:?}", top);
         };
         assert_eq!(name, "main");
         assert_eq!(parameters, vec![]);
         assert!(return_type.is_none());
+    }
+
+    #[test]
+    fn test_function_return() {
+        let s = Source::from_text("test", r"
+            fn main() -> int {
+                let a: int = 0;
+                return 0;
+            }
+        ");
+        let mut p = Parser::new(&s);
+        let top = p.parse_function().unwrap_or_else(|_| {
+            panic!("{:?}", p.errors)
+        });
+
+        let TopLevel::Function(Function { name, parameters, return_type, body }) = top else {
+            panic!("{:?}", top);
+        };
+        assert_eq!(name, "main");
+        assert_eq!(parameters, vec![]);
+        assert!(return_type.is_some());
     }
 
     #[test]

@@ -43,6 +43,7 @@ enum FilePaths {
 struct TypeCheck<'a> {
     root: NamespaceKey,
     namespaces: SlotMap<NamespaceKey, Namespace>,
+    names: SlotMap<NameKey, NameInfo>,
     errors: RefCell<Vec<TypeCheckError<'a>>>,
 }
 
@@ -50,7 +51,7 @@ impl<'a> TypeCheck<'a> {
     fn new() -> TypeCheck<'a> {
         let mut namespaces = SlotMap::with_key();
         let root = namespaces.insert(Namespace::new(None));
-        TypeCheck { root, namespaces, errors: Default::default() }
+        TypeCheck { root, namespaces, names: SlotMap::with_key(), errors: Default::default() }
     }
 
     fn get_type(&self, ns: NamespaceKey, name: &str) -> Option<Type> {
@@ -61,10 +62,23 @@ impl<'a> TypeCheck<'a> {
         self.namespaces[ns].types.insert(name, typ);
     }
 
+    fn add_name(&mut self, ns: NamespaceKey, name: String, info: NameInfo) -> NameKey {
+        let key = self.names.insert(info);
+        self.namespaces[ns].names.insert(name, key);
+        key
+    }
+
     fn get_struct_key(&self, file: NamespaceKey, name: &str) -> StructKey {
         match self.namespaces[file].types[name] {
             Type::Struct { struct_ } => struct_,
             _ => panic!("not a struct")
+        }
+    }
+
+    fn get_function_key(&self, file: NamespaceKey, name: &str) -> FunctionKey {
+        match self.names[self.namespaces[file].names[name]] {
+            NameInfo::Function { func } => func,
+            _ => panic!("not a function")
         }
     }
 
@@ -122,6 +136,17 @@ struct CollectedFields<'a> {
     structs: SlotMap<StructKey, Struct<'a>>,
 }
 
+struct CollectedFunctions<'a> {
+    checker: TypeCheck<'a>,
+
+    file_namespaces: HashMap<PathBuf, NamespaceKey>,
+
+    files: HashMap<PathBuf, ast::File<'a>>,
+    structs: SlotMap<StructKey, Struct<'a>>,
+
+    function_signatures: SlotMap<FunctionKey, FunctionPrototype<'a>>
+}
+
 fn collect_structs(initial: Initial) -> CollectedStructs {
     let Initial { mut checker, files } = initial;
     let mut structs = SlotMap::with_key();
@@ -130,7 +155,7 @@ fn collect_structs(initial: Initial) -> CollectedStructs {
     for (file_path, file) in &files {
         let file_ns = checker.namespaces.insert(Namespace::new(Some(checker.root)));
         file_namespaces.insert(file_path.clone(), file_ns);
-        for (name, _) in file.iter_structs() {
+        for ast::Struct { name, .. } in file.iter_structs() {
             // if common.get_type(file_ns, &name).is_some() {
             //     common.push_error(TypeCheckError::CouldNotResolveName(name.clone(), ))
             // }
@@ -152,7 +177,7 @@ fn collect_fields(collected: CollectedStructs) -> CollectedFields {
 
     for (file_path, file) in &files {
         let file_ns = file_namespaces[file_path];
-        for (name, items) in file.iter_structs() {
+        for ast::Struct { name, items} in file.iter_structs() {
             let key = checker.get_struct_key(file_ns, name);
             let struct_ = &mut structs[key];
             for item in items {
@@ -170,13 +195,39 @@ fn collect_fields(collected: CollectedStructs) -> CollectedFields {
 }
 
 
+fn collect_functions(collected: CollectedFields) -> CollectedFunctions {
+    let CollectedFields {
+        mut checker, files,
+        file_namespaces, structs
+    } = collected;
+    let mut functions = SlotMap::with_key();
+
+    for (file_path, file) in &files {
+        let file_ns = file_namespaces[file_path];
+        for func in file.iter_functions() {
+            let mut params = Vec::new();
+            for param in &func.parameters {
+                let typ = checker.resolve_type(file_ns, &param.typ);
+                params.push(Parameter { name: param.name.clone(), typ, loc: param.loc})
+            }
+            let ret = func.return_type.as_ref().map_or(Type::Unit, |t| checker.resolve_type(file_ns, t));
+            let sig = Type::Function { params: params.iter().map(|p| p.typ.clone()).collect(), ret: Box::new(ret.clone()) };
+            let key = functions.insert(FunctionPrototype { name: func.name.clone(), params, ret, sig });
+            checker.add_name(file_ns, func.name.clone(), NameInfo::Function { func: key });
+        }
+    }
+
+    CollectedFunctions { checker, files, file_namespaces, structs, function_signatures: functions }
+}
+
+
 #[cfg(test)]
 mod test {
     use std::path::Path;
     use crate::ast;
     use crate::hir::{Struct, Type};
     use crate::source::Source;
-    use crate::type_check::{collect_fields, collect_structs, Initial};
+    use crate::type_check::{collect_fields, collect_functions, collect_structs, Initial};
 
     fn parse(s: &Source) -> ast::AST {
         crate::parser::parse(s).unwrap()
@@ -237,5 +288,46 @@ mod test {
         assert_eq!(beta.fields.len(), 2);
         assert_eq!(beta.fields["x"].typ, Type::Boolean);
         assert_eq!(beta.fields["z"].typ, Type::Struct { struct_: beta_key });
+    }
+
+    #[test]
+    fn verify_collect_functions() {
+        let s = Source::from_text("<test>", r"
+            struct Alpha { }
+
+            struct Beta { }
+
+            fn aleph(a: i32) -> Alpha { }
+
+            fn bet(b: Beta, c: Gamma) -> bool { }
+
+            struct Gamma { }
+        ");
+        let ast = parse(&s);
+
+        let initial = Initial::new(ast);
+        let mut collected = collect_functions(collect_fields(collect_structs(initial)));
+
+        assert_eq!(collected.checker.errors.get_mut(), &vec![]);
+
+        let funcs: Vec<_> = collected.function_signatures.values().collect();
+
+        let file = collected.file_namespaces[Path::new("<test>")];
+
+        let alpha_key = collected.checker.get_struct_key(file, "Alpha");
+        let beta_key = collected.checker.get_struct_key(file, "Beta");
+        let gamma_key = collected.checker.get_struct_key(file, "Gamma");
+        let aleph_key = collected.checker.get_function_key(file, "aleph");
+        let bet_key = collected.checker.get_function_key(file, "bet");
+
+        let aleph = &collected.function_signatures[aleph_key];
+        let Type::Function { params, ret} = &aleph.sig else { panic!("{:?}", &aleph.sig) };
+        assert_eq!(ret.as_ref(), &Type::Struct { struct_: alpha_key });
+        assert_eq!(params, &vec![Type::Integer { bits: 32 }]);
+
+        let bet = &collected.function_signatures[bet_key];
+        let Type::Function { params, ret} = &bet.sig else { panic!("{:?}", &bet.sig) };
+        assert_eq!(ret.as_ref(), &Type::Boolean);
+        assert_eq!(params, &vec![Type::Struct { struct_: beta_key }, Type::Struct { struct_: gamma_key }]);
     }
 }
