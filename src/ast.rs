@@ -1,13 +1,28 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
 use crate::source::{HasLoc, Location};
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct AST<'a> {
-    pub files: Vec<File<'a>>
+    pub files: HashMap<PathBuf, File<'a>>
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct File<'a> {
+    pub path: PathBuf,
     pub top_levels: Vec<TopLevel<'a>>
+}
+
+impl<'a> File<'a> {
+    pub fn iter_structs(&self) -> impl Iterator<Item = (&String, &Vec<StructItem<'a>>)>  {
+        self.top_levels.iter().filter_map(|t|
+            if let TopLevel::Struct { name, items} = t {
+                Some((name, items))
+            } else {
+                None
+            }
+        )
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]

@@ -1,9 +1,10 @@
 use std::cmp::{min, max};
 use std::fmt::{Debug, Formatter};
 use std::ops::Add;
+use std::path::PathBuf;
 
 pub struct Source {
-    pub name: String,
+    pub path: PathBuf,
     pub text: String,
     line_starts: Box<[usize]>
 }
@@ -44,7 +45,7 @@ impl Source {
             }
         }
         line_starts.push(text.len()+1);
-        Source { name: name.to_owned(), text: text.to_owned(), line_starts: line_starts.into_boxed_slice() }
+        Source { path: PathBuf::from(name), text: text.to_owned(), line_starts: line_starts.into_boxed_slice() }
     }
 
     fn get_line_on(&self, idx: usize) -> LineInfo {
@@ -63,7 +64,7 @@ impl Source {
 
 impl PartialEq for Source {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.text == other.text
+        self.path == other.path && self.text == other.text
     }
 }
 impl Eq for Source { }
@@ -95,7 +96,7 @@ impl<'s> Add for Location<'s> {
 
 impl Debug for Location<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Location(source: {}, {}, {})", self.source.name, self.start, self.len)
+        write!(f, "Location(source: {:?}, {}, {})", self.source.path, self.start, self.len)
     }
 }
 

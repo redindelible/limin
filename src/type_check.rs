@@ -1,14 +1,14 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
-use async_scoped::AsyncScope;
-use async_recursion::async_recursion;
-use async_std::sync::Mutex;
-use slotmap::{new_key_type, SecondaryMap, SlotMap};
+use std::path::PathBuf;
+use slotmap::{new_key_type, SlotMap};
 use crate::ast;
 use crate::hir::{HIR, NameKey, NameInfo, TypeKey, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, LogicOp};
 use crate::source::Location;
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 enum TypeCheckError<'a> {
+    NameDuplicated(String, Location<'a>),
     CouldNotResolveName(String, Location<'a>),
     CouldNotResolveType(String, Location<'a>),
     IncompatibleTypes(Type, Type, Location<'a>),
@@ -21,245 +21,225 @@ new_key_type! {
 
 #[derive(Default)]
 struct Namespace {
+    parent: Option<NamespaceKey>,
     names: HashMap<String, NameKey>,
     types: HashMap<String, Type>,
     namespaces: HashMap<String, NamespaceKey>
 }
 
-struct Progress {
-    collect_type_names: async_std::sync::Barrier,
-    collect_types: async_std::sync::Barrier,
-    collect_function_signatures: async_std::sync::Barrier
-}
-
-struct TypeCheck<'s> {
-    progress: Progress,
-    hir: Mutex<HIR<'s>>,
-    namespaces: Mutex<SlotMap<NamespaceKey, Namespace>>,
-
-    errors: Mutex<Vec<TypeCheckError<'s>>>
-}
-
-impl Progress {
-    fn new(num_types: usize, num_funcs: usize) -> Self {
-        Self {
-            collect_type_names: async_std::sync::Barrier::new(num_types),
-            collect_types: async_std::sync::Barrier::new(num_types + num_funcs),
-            collect_function_signatures: async_std::sync::Barrier::new(num_funcs),
+impl Namespace {
+    fn new(parent: Option<NamespaceKey>) -> Namespace {
+        Namespace {
+            parent, ..Default::default()
         }
     }
 }
 
-type ExpectedType = Option<Type>;
+enum FilePaths {
+    File(PathBuf),
+    Folder(HashMap<String, Box<FilePaths>>)
+}
 
-impl<'s> TypeCheck<'s> {
-    fn new(num_types: usize, num_funcs: usize) -> Self {
-        TypeCheck {
-            progress: Progress::new(num_types, num_funcs),
-            hir: Default::default(),
-            namespaces: Default::default(),
-            errors: Default::default()
+struct TypeCheck<'a> {
+    root: NamespaceKey,
+    namespaces: SlotMap<NamespaceKey, Namespace>,
+    errors: RefCell<Vec<TypeCheckError<'a>>>,
+}
+
+impl<'a> TypeCheck<'a> {
+    fn new() -> TypeCheck<'a> {
+        let mut namespaces = SlotMap::with_key();
+        let root = namespaces.insert(Namespace::new(None));
+        TypeCheck { root, namespaces, errors: Default::default() }
+    }
+
+    fn get_type(&self, ns: NamespaceKey, name: &str) -> Option<Type> {
+        self.namespaces[ns].types.get(name).cloned()
+    }
+
+    fn add_type(&mut self, ns: NamespaceKey, name: String, typ: Type) {
+        self.namespaces[ns].types.insert(name, typ);
+    }
+
+    fn get_struct_key(&self, file: NamespaceKey, name: &str) -> StructKey {
+        match self.namespaces[file].types[name] {
+            Type::Struct { struct_ } => struct_,
+            _ => panic!("not a struct")
         }
     }
 
-    async fn wait_type_names_collected(&self) {
-        self.progress.collect_type_names.wait().await;
-    }
-
-    async fn wait_types_collected(&self) {
-        self.progress.collect_types.wait().await;
-    }
-
-    async fn wait_functions_signatures(&self) {
-        self.progress.collect_function_signatures.wait().await;
-    }
-
-    async fn insert_namespace(&self, namespace: Namespace) -> NamespaceKey {
-        self.namespaces.lock().await.insert(namespace)
-    }
-
-    async fn add_type_to_ns(&self, ns: NamespaceKey, name: String, typ: Type) {
-        self.namespaces.lock().await[ns].types.insert(name, typ);
-    }
-
-    async fn add_name_to_ns(&self, ns: NamespaceKey, name: String, name_key: NameKey) {
-        self.namespaces.lock().await[ns].names.insert(name, name_key);
-    }
-
-    async fn get_type_from_ns(&self, ns: NamespaceKey, name: &str) -> Option<Type> {
-        self.namespaces.lock().await[ns].types.get(name).cloned()
-    }
-
-    async fn get_name_from_ns(&self, ns: NamespaceKey, name: &str) -> Option<NameKey> {
-        self.namespaces.lock().await[ns].names.get(name).cloned()
-    }
-
-    pub fn check(ast: ast::AST<'s>) -> () {
-        let mut num_types = 0;
-        let mut num_funcs = 0;
-        for file in &ast.files {
-            for top_level in &file.top_levels {
-                match top_level {
-                    ast::TopLevel::Struct { items, .. } => {
-                        num_types += 1;
-                    }
-                    ast::TopLevel::Function { .. } => {
-                        num_funcs += 1;
-                    }
-                }
-            }
-        }
-
-        let mut checker = TypeCheck::new(num_types, num_funcs);
-        let global = checker.namespaces.get_mut().insert(Namespace { ..Default::default() });
-
-        AsyncScope::scope_and_block(|scope| {
-            for file in ast.files {
-                for top_level in file.top_levels {
-                    match top_level {
-                        ast::TopLevel::Struct { .. } => scope.spawn(checker.handle_struct(top_level, global)),
-                        ast::TopLevel::Function { .. } => scope.spawn(checker.handle_function(top_level, global))
-                    }
-                }
-            }
-        });
-    }
-
-    async fn handle_struct(&self, struct_: ast::TopLevel<'s>, global: NamespaceKey) {
-        let ast::TopLevel::Struct { name, items } = struct_ else { panic!("arg must be a struct") };
-
-        let key = {
-            let struct_ = Struct { name: name.clone(), fields: HashMap::new() };
-            let key = self.hir.lock().await.add_struct(struct_);
-            self.add_type_to_ns(global, name.clone(), Type::Struct { struct_: key }).await;
-            key
-        };
-
-        self.wait_type_names_collected().await;
-
-        {
-            let mut hir = self.hir.lock().await;
-            let ir_struct = hir.get_struct(key);
-            for item in &items {
-                if let ast::StructItem::Field { name, typ, loc } = item {
-                    let resolved_type = self.resolve_type(typ.as_ref(), global).await;
-                    ir_struct.fields.insert(name.clone(), StructField {
-                        name: name.clone(), typ: resolved_type, loc: *loc
-                    });
-                }
-            }
-        }
-
-        self.wait_types_collected().await;
-    }
-
-
-    async fn handle_function(&self, func: ast::TopLevel<'s>, global: NamespaceKey) {
-        let ast::TopLevel::Function { name, parameters, return_type, body } = func else { panic!("arg must be a struct") };
-
-        self.wait_types_collected().await;
-
-        let ret = match return_type {
-            Some(t) => self.resolve_type(&t, global).await,
-            None => Type::Unit
-        };
-        let params = {
-            let mut params = Vec::new();
-            for param in parameters {
-                let param_ = Parameter { name: name.clone(), typ: self.resolve_type(&param.typ, global).await, loc: param.loc };
-                params.push(param_);
-            };
-            params
-        };
-
-        let signature = Type::Function { params: params.iter().map(|p| Box::new(p.typ.clone())).collect(), ret: Box::new(ret.clone()) };
-        let prototype = FunctionPrototype { name: name.clone(), params, ret, sig: signature };
-
-        let key = self.hir.lock().await.add_prototype(prototype);
-        let name_key = self.hir.lock().await.add_name(NameInfo::Function { func: key });
-        self.add_name_to_ns(global, name.clone(), name_key).await;
-
-        self.wait_functions_signatures().await;
-    }
-
-    async fn resolve_type(&self, ast_type: &ast::Type<'s>, in_namespace: NamespaceKey) -> Type {
-        match ast_type {
+    fn resolve_type(&self, ns: NamespaceKey, typ: &ast::Type<'a>) -> Type {
+        match typ {
             ast::Type::Name { name, loc } => {
-                match self.get_type_from_ns(in_namespace, name).await {
+                match self.get_type(ns, name) {
                     Some(t) => t,
                     None => {
-                        self.errors.lock().await.push(TypeCheckError::CouldNotResolveType(name.clone(), *loc));
-                        Type::Errored
+                        match self.namespaces[ns].parent {
+                            Some(parent) => self.resolve_type(parent, typ),
+                            None => {
+                                self.push_error(TypeCheckError::CouldNotResolveType(name.clone(), *loc));
+                                Type::Errored
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    async fn unify_types(&self, dest_type: ExpectedType, source_type: ExpectedType, loc: Location<'s>) -> (Type, Type) {
-        match (dest_type, source_type) {
-            (Some(a), Some(Type::Errored)) => (a, Type::Errored),
-            (Some(Type::Errored), Some(a)) => (Type::Errored, a),
+    fn push_error(&self, err: TypeCheckError<'a>) {
+        self.errors.borrow_mut().push(err);
+    }
+}
 
-            (Some(Type::Integer { bits: dest_bits }), Some(Type::Integer { bits: source_bits })) => {
-                if dest_bits < source_bits {
+struct Initial<'a> {
+    checker: TypeCheck<'a>,
 
-                }
-                (Type::Integer { bits: dest_bits }, Type::Integer { bits: source_bits })
-            }
+    files: HashMap<PathBuf, ast::File<'a>>
+}
 
-            (Some(a), Some(b)) => {
-                self.errors.lock().await.push(TypeCheckError::IncompatibleTypes(a.clone(), b.clone(), loc));
-                (a, b)
-            }
+impl Initial<'_> {
+    fn new(ast: ast::AST) -> Initial {
+        let mut checker = TypeCheck::new();
+        checker.add_type(checker.root, "i32".to_owned(), Type::Integer { bits: 32 });
+        checker.add_type(checker.root, "i64".to_owned(), Type::Integer { bits: 64 });
+        checker.add_type(checker.root, "bool".to_owned(), Type::Boolean);
+        Initial { checker, files: ast.files }
+    }
+}
 
-            (None, Some(a)) => (a.clone(), a),
-            (Some(a), None) => (a.clone(), a),
+struct CollectedStructs<'a> {
+    checker: TypeCheck<'a>,
 
-            (None, None) => {
-                self.errors.lock().await.push(TypeCheckError::NotEnoughInfoToInfer(loc));
-                (Type::Errored, Type::Errored)
-            }
+    file_namespaces: HashMap<PathBuf, NamespaceKey>,
+
+    files: HashMap<PathBuf, ast::File<'a>>,
+    structs: SlotMap<StructKey, Struct<'a>>,
+}
+
+struct CollectedFields<'a> {
+    checker: TypeCheck<'a>,
+
+    file_namespaces: HashMap<PathBuf, NamespaceKey>,
+
+    files: HashMap<PathBuf, ast::File<'a>>,
+    structs: SlotMap<StructKey, Struct<'a>>,
+}
+
+fn collect_structs(initial: Initial) -> CollectedStructs {
+    let Initial { mut checker, files } = initial;
+    let mut structs = SlotMap::with_key();
+    let mut file_namespaces = HashMap::new();
+    
+    for (file_path, file) in &files {
+        let file_ns = checker.namespaces.insert(Namespace::new(Some(checker.root)));
+        file_namespaces.insert(file_path.clone(), file_ns);
+        for (name, _) in file.iter_structs() {
+            // if common.get_type(file_ns, &name).is_some() {
+            //     common.push_error(TypeCheckError::CouldNotResolveName(name.clone(), ))
+            // }
+            let struct_key = structs.insert(Struct { name: name.clone(), fields: HashMap::new() });
+            checker.add_type(file_ns, name.clone(), Type::Struct { struct_: struct_key });
         }
     }
 
-    #[async_recursion]
-    async fn resolve_expr(&self, ast_expr: &ast::Expr<'s>, expected_type: ExpectedType, ns: NamespaceKey) -> Expr {
-        match ast_expr {
-            ast::Expr::Name { name, loc } => {
-                let matched = self.get_name_from_ns(ns, name).await;
-                match matched {
-                    Some(name_key) => {
-                        let source_type = self.hir.lock().await.type_of_name(name_key);
-                        self.unify_types(expected_type, Some(source_type), *loc).await;
-                        Expr::Name { decl: name_key, loc: *loc }
-                    },
-                    None => {
-                        self.errors.lock().await.push(TypeCheckError::CouldNotResolveName(name.clone(), *loc));
-                        Expr::Errored { loc: *loc }
-                    }
+    CollectedStructs {
+        checker, file_namespaces, files, structs
+    }
+}
+
+fn collect_fields(collected: CollectedStructs) -> CollectedFields {
+    let CollectedStructs {
+        checker, files,
+        file_namespaces, mut structs
+    } = collected;
+
+    for (file_path, file) in &files {
+        let file_ns = file_namespaces[file_path];
+        for (name, items) in file.iter_structs() {
+            let key = checker.get_struct_key(file_ns, name);
+            let struct_ = &mut structs[key];
+            for item in items {
+                if let ast::StructItem::Field { name, typ, loc } = item {
+                    let resolved = checker.resolve_type(file_ns, typ);
+                    struct_.fields.insert(name.clone(), StructField { name: name.clone(), typ: resolved, loc: *loc });
                 }
             }
-            ast::Expr::Integer { number, loc } => {
-                self.unify_types(expected_type, Some(Type::Integer { bits: 64 }), *loc).await;
-                Expr::Integer { num: *number, loc: *loc}
-            }
-            ast::Expr::BinOp { left, op, right, loc } => {
-                let left = Box::new(self.resolve_expr(left, None, ns).await);
-                let right = Box::new(self.resolve_expr(right, None, ns).await);
-                self.unify_types(expected_type, Some(Type::Boolean), *loc).await;
-                match op {
-                    ast::BinOp::LessThan => Expr::LogicBinOp { left, right, op: LogicOp::LessThan },
-                    ast::BinOp::GreaterThan => Expr::LogicBinOp { left, right, op: LogicOp::GreaterThan }
-                }
-            }
-            _ => todo!()
         }
+    };
+
+    CollectedFields {
+        checker, file_namespaces, files, structs
     }
 }
 
 
 #[cfg(test)]
 mod test {
+    use std::path::Path;
+    use crate::ast;
+    use crate::hir::{Struct, Type};
+    use crate::source::Source;
+    use crate::type_check::{collect_fields, collect_structs, Initial};
 
+    fn parse(s: &Source) -> ast::AST {
+        crate::parser::parse(s).unwrap()
+    }
+
+    #[test]
+    fn verify_collect_structs() {
+        let s = Source::from_text("<test>", r"
+            struct Alpha { }
+
+            struct Beta { }
+        ");
+        let ast = parse(&s);
+
+        let initial = Initial::new(ast);
+        let collected = collect_structs(initial);
+
+        let structs: Vec<&Struct> = collected.structs.values().collect();
+
+        let expected_names = vec!["Alpha", "Beta"];
+        assert!(expected_names.iter().all(|&name| structs.iter().any(|s| s.name == name)));
+    }
+
+    #[test]
+    fn verify_collect_fields() {
+        let s = Source::from_text("<test>", r"
+            struct Alpha {
+                x: i32;
+                y: Alpha;
+                z: Beta;
+            }
+
+            struct Beta {
+                x: bool;
+                z: Beta;
+            }
+        ");
+        let ast = parse(&s);
+
+        let initial = Initial::new(ast);
+        let mut collected = collect_fields(collect_structs(initial));
+
+        assert_eq!(collected.checker.errors.get_mut(), &vec![]);
+
+        let file = collected.file_namespaces[Path::new("<test>")];
+
+        let alpha_key = collected.checker.get_struct_key(file, "Alpha");
+        let beta_key = collected.checker.get_struct_key(file, "Beta");
+
+        let alpha = &collected.structs[alpha_key];
+        assert_eq!(alpha.fields.len(), 3);
+        assert_eq!(alpha.fields["x"].typ, Type::Integer { bits: 32 });
+        assert_eq!(alpha.fields["y"].typ, Type::Struct { struct_: alpha_key });
+        assert_eq!(alpha.fields["z"].typ, Type::Struct { struct_: beta_key });
+
+        let beta = &collected.structs[beta_key];
+
+        assert_eq!(beta.fields.len(), 2);
+        assert_eq!(beta.fields["x"].typ, Type::Boolean);
+        assert_eq!(beta.fields["z"].typ, Type::Struct { struct_: beta_key });
+    }
 }

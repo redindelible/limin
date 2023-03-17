@@ -13,8 +13,7 @@ pub enum NameInfo {
     Function { func: FunctionKey }
 }
 
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Type {
     Unit,
     Boolean,

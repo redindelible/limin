@@ -1,10 +1,16 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
 use crate::ast::*;
 use crate::source::{Source, HasLoc, Location};
 use crate::lexer::{Lexer, Token, TokenType};
 
 
+pub fn parse(source: &Source) -> Result<AST, Vec<ParserError>> {
+    Parser::parse(source)
+}
+
 #[derive(Debug)]
-enum ParserError<'a> {
+pub enum ParserError<'a> {
     UnexpectedToken(Token<'a>, Vec<TokenType>),
     ExpectedSymbol(Token<'a>, &'static str),
     CouldNotParseNumber(Token<'a>, &'static str),
@@ -27,15 +33,17 @@ impl<'a> Parser<'a> {
         let mut parser = Self::new(source);
 
         let mut top_levels = Vec::new();
-        while parser.idx < parser.tokens.len() {
+        while parser.curr().typ != TokenType::EOF {
             let top_level = match parser.parse_top_level() {
                 Ok(n) => n,
                 Err(_) => return Err(parser.errors)
             };
             top_levels.push(top_level);
         };
-        let file = File { top_levels };
-        Ok(AST { files: vec![file] })
+        let file = File { path: source.path.clone(),  top_levels };
+        let mut files = HashMap::new();
+        files.insert(file.path.clone(), file);
+        Ok(AST { files })
     }
 
     fn new(source: &'a Source) -> Parser<'a> {
@@ -324,7 +332,7 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod test {
     use crate::ast::{BinOp, Expr, TopLevel, Type};
-    use crate::parser::Parser;
+    use crate::parser::{parse, Parser};
     use crate::source::Source;
 
     #[test]
@@ -434,5 +442,21 @@ mod test {
         let top = p.parse_struct().unwrap_or_else(|_| {
             panic!("{:?}", p.errors)
         });
+    }
+
+    #[test]
+    fn test_ast() {
+        let s = Source::from_text("test", r"
+            fn main() {
+                let a: int = 0;
+                return 0;
+            }
+
+            struct thing {
+                first: int;
+            }
+        ");
+
+        let ast = parse(&s).unwrap();
     }
 }
