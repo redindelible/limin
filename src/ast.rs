@@ -69,9 +69,9 @@ pub struct Parameter<'a> {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Stmt<'a> {
-    Decl { name: String, typ: Box<Type<'a>>, value: Box<Expr<'a>> },
-    Return { value: Box<Expr<'a>> },
-    Expr { expr: Box<Expr<'a>> }
+    Decl { name: String, typ: Option<Box<Type<'a>>>, value: Box<Expr<'a>>, loc: Location<'a> },
+    Return { value: Box<Expr<'a>>, loc: Location<'a> },
+    Expr { expr: Box<Expr<'a>>, loc: Location<'a> }
 }
 
 
@@ -88,7 +88,7 @@ pub enum Expr<'a> {
     Call { callee: Box<Expr<'a>>, arguments: Vec<Box<Expr<'a>>>, loc: Location<'a> },
     GenericCall { callee: Box<Expr<'a>>, generic_arguments: Vec<Box<Type<'a>>>, arguments: Vec<Box<Expr<'a>>>, loc: Location<'a> },
     Integer { number: u64, loc: Location<'a> },
-    Block { stmts: Vec<Box<Stmt<'a>>>, trailing_semicolon: bool, loc: Location<'a> }
+    Block { stmts: Vec<Box<Stmt<'a>>>, trailing_expr: Option<Box<Expr<'a>>>, loc: Location<'a> }
 }
 
 impl<'a> HasLoc<'a> for Expr<'a> {

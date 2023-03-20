@@ -183,24 +183,31 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_return(&mut self) -> ParseResult<Stmt<'a>> {
-        self.expect(TokenType::Return)?;
+        let start = self.expect(TokenType::Return)?;
         let value = Box::new(self.parse_expr()?);
-        Ok(Stmt::Return { value })
+        let loc = start.loc + value.loc();
+        Ok(Stmt::Return { value, loc })
     }
 
     fn parse_decl(&mut self) -> ParseResult<Stmt<'a>> {
-        self.expect(TokenType::Let)?;
+        let start = self.expect(TokenType::Let)?;
         let name = self.expect(TokenType::Identifier)?.text.to_owned();
         self.expect(TokenType::Colon)?;
-        let typ = Box::new(self.parse_type()?);
+        let typ = if self.curr().typ != TokenType::Equal {
+             Some(Box::new(self.parse_type()?))
+        } else {
+            None
+        };
         self.expect(TokenType::Equal)?;
         let value = Box::new(self.parse_expr()?);
-        Ok(Stmt::Decl { name, typ, value })
+        let loc = start.loc + value.loc();
+        Ok(Stmt::Decl { name, typ, value, loc })
     }
 
     fn parse_expr_stmt(&mut self) -> ParseResult<Stmt<'a>> {
         let expr = Box::new(self.parse_expr()?);
-        Ok(Stmt::Expr { expr })
+        let loc = expr.loc();
+        Ok(Stmt::Expr { expr, loc })
     }
 
     fn parse_expr(&mut self) -> ParseResult<Expr<'a>> {
@@ -265,19 +272,23 @@ impl<'a> Parser<'a> {
     fn parse_block(&mut self) -> ParseResult<Expr<'a>> {
         let start = self.expect(TokenType::LeftBrace)?;
         let mut stmts = Vec::new();
-        let mut trailing_semicolon = true;
+        let mut trailing_expr = None;
         while self.curr().typ != TokenType::RightBrace {
             let stmt = Box::new(self.parse_stmt()?);
-            stmts.push(stmt);
             if self.curr().typ == TokenType::Semicolon {
+                stmts.push(stmt);
                 self.advance();
             } else {
-                trailing_semicolon = false;
+                if let Stmt::Expr { expr, .. } = *stmt {
+                    trailing_expr = Some(expr);
+                } else {
+                    self.expect(TokenType::Semicolon)?;  // will error
+                }
                 break;
             }
         }
         let end = self.expect(TokenType::RightBrace)?;
-        Ok(Expr::Block { stmts, trailing_semicolon, loc: start.loc + end.loc })
+        Ok(Expr::Block { stmts, trailing_expr, loc: start.loc + end.loc })
     }
 
     fn parse_terminal(&mut self) -> ParseResult<Expr<'a>> {

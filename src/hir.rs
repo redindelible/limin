@@ -4,13 +4,13 @@ use crate::source::Location;
 
 new_key_type! {
     pub struct NameKey;
-    pub struct TypeKey;
     pub struct StructKey;
     pub struct FunctionKey;
 }
 
-pub enum NameInfo {
-    Function { func: FunctionKey }
+pub enum NameInfo<'ir> {
+    Function { func: FunctionKey },
+    Local { containing: FunctionKey, typ: Type, loc: Location<'ir> }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,40 +23,31 @@ pub enum Type {
     Function { params: Vec<Type>, ret: Box<Type> }
 }
 
+
 #[derive(Default)]
 pub struct HIR<'s> {
-    pub names: SlotMap<NameKey, NameInfo>,
+    pub names: SlotMap<NameKey, NameInfo<'s>>,
     pub structs: SlotMap<StructKey, Struct<'s>>,
     pub function_prototypes: SlotMap<FunctionKey, FunctionPrototype<'s>>,
     pub function_bodies: SecondaryMap<FunctionKey, FunctionBody<'s>>
 }
 
 impl<'s> HIR<'s> {
-    pub fn add_struct(&mut self, struct_: Struct<'s>) -> StructKey {
-        self.structs.insert(struct_)
-    }
-
-    pub fn get_struct(&mut self, struct_: StructKey) -> &mut Struct<'s> {
-        &mut self.structs[struct_]
-    }
-
-    pub fn add_prototype(&mut self, proto: FunctionPrototype<'s>) -> FunctionKey {
-        self.function_prototypes.insert(proto)
-    }
-
-    pub fn add_name(&mut self, name: NameInfo) -> NameKey {
-        self.names.insert(name)
-    }
-
-    pub fn get_name(&mut self, name: NameKey) -> &mut NameInfo {
-        &mut self.names[name]
-    }
-
     pub fn type_of_name(&self, name: NameKey) -> Type {
         match &self.names[name] {
-            NameInfo::Function { func } => {
-                self.function_prototypes[*func].sig.clone()
-            }
+            NameInfo::Function { func } => self.function_prototypes[*func].sig.clone(),
+            NameInfo::Local { typ, .. } => typ.clone()
+        }
+    }
+
+    pub fn type_of_expr(&self, expr: &Expr<'s>) -> Type {
+        match expr {
+            Expr::Name { decl, .. } => self.type_of_name(*decl),
+            Expr::Integer { .. } => Type::Integer { bits: 32 },
+            Expr::Unit { .. } => Type::Unit,
+            Expr::LogicBinOp { .. } => Type::Boolean,
+            Expr::Block { trailing_expr, .. } => self.type_of_expr(trailing_expr),
+            Expr::Errored { .. } => Type::Errored
         }
     }
 }
@@ -84,6 +75,7 @@ pub struct FunctionBody<'ir> {
     pub body: Expr<'ir>
 }
 
+#[derive(Clone)]
 pub struct Parameter<'ir> {
     pub name: String,
     pub typ: Type,
@@ -98,6 +90,14 @@ pub enum LogicOp {
 pub enum Expr<'ir> {
     Name { decl: NameKey, loc: Location<'ir> },
     Integer { num: u64, loc: Location<'ir> },
-    LogicBinOp { left: Box<Expr<'ir>>, op: LogicOp, right: Box<Expr<'ir>> },
+    Unit { loc: Location<'ir> },
+    LogicBinOp { left: Box<Expr<'ir>>, op: LogicOp, right: Box<Expr<'ir>>, loc: Location<'ir> },
+    Block { stmts: Vec<Stmt<'ir>>, trailing_expr: Box<Expr<'ir>>, loc: Location<'ir> },
     Errored { loc: Location<'ir> }
+}
+
+pub enum Stmt<'ir> {
+    Decl { decl: NameKey, value: Expr<'ir>, loc: Location<'ir> },
+    Return { value: Expr<'ir>, loc: Location<'ir> },
+    Expr { expr: Expr<'ir>, loc: Location<'ir> }
 }
