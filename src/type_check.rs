@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use crate::ast;
-use crate::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, LogicOp, Stmt};
+use crate::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, LogicOp, Stmt, MayBreak};
 use crate::source::Location;
 use crate::type_check::type_check_state::NamespaceKey;
+
+pub fn resolve_types(ast: ast::AST) -> Result<HIR, Vec<TypeCheckError>> {
+    collect_function_bodies(collect_functions(collect_fields(collect_structs(initialize(ast)))))
+}
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum TypeCheckError<'a> {
@@ -175,7 +179,7 @@ fn collect_structs(initial: Initial) -> CollectedStructs {
 }
 
 
-pub fn resolve_type<'a>(checker: &TypeCheck<'a>, ns: NamespaceKey, typ: &ast::Type<'a>) -> Type {
+fn resolve_type<'a>(checker: &TypeCheck<'a>, ns: NamespaceKey, typ: &ast::Type<'a>) -> Type {
     match typ {
         ast::Type::Name { name, loc } => {
             if let Some(t) = checker.namespaces[ns].types.get(name) {
@@ -304,6 +308,10 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
         self.checker.add_name(self.namespace, name, info)
     }
 
+    fn name_info(&self, name: NameKey) -> &NameInfo<'a> {
+        &self.checker.hir.names[name]
+    }
+
     fn resolve_type(&mut self, typ: &ast::Type<'a>) -> Type {
         resolve_type(self.checker, self.namespace, typ)
     }
@@ -312,31 +320,49 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
         self.checker.type_of_expr(expr)
     }
 
+    fn check(&self, got_type: Type, expected: ExpectedType, loc: &Location<'a>) -> bool {
+        match expected {
+            Some(Type::Errored) => false,
+            None => true,
+            Some(t) => {
+                let is_compat = self.checker.hir.is_subtype(&got_type, &t);
+                if !is_compat {
+                    self.push_error(TypeCheckError::IncompatibleTypes{
+                        expected: t,
+                        got: got_type,
+                        loc: *loc
+                    })
+                }
+                is_compat
+            }
+        }
+    }
+
     fn resolve_expr(&mut self, expr: &ast::Expr<'a>, yield_type: ExpectedType) -> Expr<'a> {
         match expr {
             ast::Expr::Integer { number, loc } => {
-                match yield_type {
-                    Some(Type::Integer { bits: 32 }) | Some(Type::Errored) | None => {
-                        Expr::Integer { num: *number, loc: *loc }
-                    },
-                    Some(typ) => {
-                        self.push_error(TypeCheckError::IncompatibleTypes{
-                            expected: typ,
-                            got: Type::Integer { bits: 32 },
-                            loc: *loc
-                        });
-                        Expr::Errored { loc: *loc }
-                    }
+                let compat = self.check(Type::Integer { bits: 32 }, yield_type, loc);
+                if compat {
+                    Expr::Integer { num: *number, loc: *loc }
+                } else {
+                    Expr::Errored { loc: *loc }
                 }
             }
             ast::Expr::Name { name, loc } => {
                 let resolved = self.resolve_name(name);
-                match resolved {
-                    Some(key) => Expr::Name { decl: key, loc: *loc },
+                let decl = match resolved {
+                    Some(key) => key,
                     None => {
                         self.push_error(TypeCheckError::CouldNotResolveName(name.clone(), *loc));
-                        Expr::Errored { loc: *loc }
+                        return Expr::Errored { loc: *loc };
                     }
+                };
+                let typ = self.checker.hir.type_of_name(decl);
+                let compat = self.check(typ, yield_type, loc);
+                if compat {
+                    Expr::Name { decl, loc: *loc }
+                } else {
+                    Expr::Errored { loc: *loc }
                 }
             },
             ast::Expr::Block { stmts, trailing_expr, loc } => {
@@ -347,10 +373,18 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                     checker: self.checker
                 };
                 let stmts: Vec<_> = stmts.iter().map(|stmt| child.resolve_stmt(stmt)).collect();
-                let trailing_expr = Box::new(match trailing_expr {
-                    Some(e) => child.resolve_expr(e, yield_type),
-                    None => Expr::Unit { loc: *loc }
-                });
+                let always_breaks = stmts.iter().any(|stmt| stmt.does_break());
+
+                let trailing_expr = match trailing_expr {
+                    Some(e) => Some(Box::new(child.resolve_expr(e, yield_type))),
+                    None => {
+                        if always_breaks {
+                            None
+                        } else {
+                            Some(Box::new(Expr::Unit { loc: *loc }))
+                        }
+                    }
+                };
                 Expr::Block { stmts, trailing_expr, loc: *loc }
             }
             c => {
@@ -392,9 +426,9 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
 mod test {
     use std::path::Path;
     use crate::ast;
-    use crate::hir::{Type};
+    use crate::hir::{FunctionKey, HIR, Parameter, StructKey, Type};
     use crate::source::Source;
-    use crate::type_check::{collect_fields, collect_function_bodies, collect_functions, collect_structs, initialize};
+    use crate::type_check::{collect_fields, collect_function_bodies, collect_functions, collect_structs, initialize, resolve_types};
 
     fn parse(s: &Source) -> ast::AST {
         crate::parser::parse(s).unwrap()
@@ -499,6 +533,14 @@ mod test {
         assert_eq!(params, &vec![Type::Struct { struct_: beta_key }, Type::Struct { struct_: gamma_key }]);
     }
 
+    fn get_struct_with_name(hir: &HIR, name: &str) -> StructKey {
+        hir.structs.iter().find(|(key, struc)| struc.name == name).unwrap().0
+    }
+
+    fn get_func_with_name(hir: &HIR, name: &str) -> FunctionKey {
+        hir.function_prototypes.iter().find(|(key, proto)| proto.name == name).unwrap().0
+    }
+
     #[test]
     fn verify_collect_function_bodies() {
         let s = Source::from_text("<test>", r"
@@ -515,5 +557,40 @@ mod test {
 
         let initial = initialize(ast);
         let _ = collect_function_bodies(collect_functions(collect_fields(collect_structs(initial)))).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_types_1() {
+        let s = Source::from_text("<test>", r"
+            struct Alpha {
+                a: i32;
+                b: Alpha;
+            }
+
+            fn aleph(thing: Alpha) -> Alpha {
+                return thing;
+            }
+        ");
+        let ast = parse(&s);
+
+        resolve_types(ast).unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_resolve_types_2() {
+        let s = Source::from_text("<test>", r"
+            struct Alpha {
+                a: i32;
+                b: Alpha;
+            }
+
+            fn aleph(thing: Alpha) -> Alpha {
+                return 1;
+            }
+        ");
+        let ast = parse(&s);
+
+        resolve_types(ast).unwrap();
     }
 }
