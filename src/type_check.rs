@@ -22,7 +22,7 @@ mod type_check_state {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use slotmap::{new_key_type, SlotMap};
-    use crate::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, LogicOp, Stmt};
+    use crate::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, FunctionKey, FunctionPrototype, Expr};
     pub use crate::type_check::TypeCheckError;
 
     new_key_type! {
@@ -238,7 +238,7 @@ fn collect_functions(collected: CollectedFields) -> CollectedFunctions {
 }
 
 fn collect_function_bodies(collected: CollectedFunctions) -> Result<HIR, Vec<TypeCheckError>> {
-    let CollectedFunctions { mut checker, files, file_namespaces, root } = collected;
+    let CollectedFunctions { mut checker, files, file_namespaces, .. } = collected;
 
     for (file_path, file) in &files {
         let file_ns = file_namespaces[file_path];
@@ -426,7 +426,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
 mod test {
     use std::path::Path;
     use crate::ast;
-    use crate::hir::{FunctionKey, HIR, Parameter, StructKey, Type};
+    use crate::hir::{FunctionKey, HIR, StructKey, Type};
     use crate::source::Source;
     use crate::type_check::{collect_fields, collect_function_bodies, collect_functions, collect_structs, initialize, resolve_types};
 
@@ -470,7 +470,7 @@ mod test {
         let ast = parse(&s);
 
         let initial = initialize(ast);
-        let mut collected = collect_fields(collect_structs(initial));
+        let collected = collect_fields(collect_structs(initial));
 
         let file = collected.file_namespaces[Path::new("<test>")];
 
@@ -520,8 +520,6 @@ mod test {
 
         let hir = collected.checker.finalize().unwrap();
 
-        let funcs: Vec<_> = hir.function_prototypes.values().collect();
-
         let aleph = &hir.function_prototypes[aleph_key];
         let Type::Function { params, ret} = &aleph.sig else { panic!("{:?}", &aleph.sig) };
         assert_eq!(ret.as_ref(), &Type::Struct { struct_: alpha_key });
@@ -534,11 +532,11 @@ mod test {
     }
 
     fn get_struct_with_name(hir: &HIR, name: &str) -> StructKey {
-        hir.structs.iter().find(|(key, struc)| struc.name == name).unwrap().0
+        hir.structs.iter().find(|(_, struc)| struc.name == name).unwrap().0
     }
 
     fn get_func_with_name(hir: &HIR, name: &str) -> FunctionKey {
-        hir.function_prototypes.iter().find(|(key, proto)| proto.name == name).unwrap().0
+        hir.function_prototypes.iter().find(|(_, proto)| proto.name == name).unwrap().0
     }
 
     #[test]

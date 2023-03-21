@@ -408,7 +408,7 @@ mod test {
         let mut p = Parser::new(&s);
         let e = p.parse_expr().unwrap();
 
-        let Expr::BinOp { left, op: BinOp::GreaterThan, right, .. } = e else { panic!("{:?}", e) };
+        let Expr::BinOp { op: BinOp::GreaterThan, .. } = e else { panic!("{:?}", e) };
     }
 
     #[test]
@@ -417,7 +417,7 @@ mod test {
         let mut p = Parser::new(&s);
         let e = p.parse_expr().unwrap();
 
-        let Expr::Call { callee, arguments, .. } = e else { panic!() };
+        let Expr::Call { arguments, .. } = e else { panic!() };
         assert_eq!(arguments.len(), 1);
     }
 
@@ -434,7 +434,7 @@ mod test {
             panic!("{:?}", p.errors)
         });
 
-        let TopLevel::Function(Function { name, parameters, return_type, body }) = top else {
+        let TopLevel::Function(Function { name, parameters, return_type, .. }) = top else {
             panic!("{:?}", top);
         };
         assert_eq!(name, "main");
@@ -455,7 +455,7 @@ mod test {
             panic!("{:?}", p.errors)
         });
 
-        let TopLevel::Function(Function { name, parameters, return_type, body }) = top else {
+        let TopLevel::Function(Function { name, parameters, return_type, .. }) = top else {
             panic!("{:?}", top);
         };
         assert_eq!(name, "main");
@@ -471,7 +471,7 @@ mod test {
             }
         ");
         let mut p = Parser::new(&s);
-        let top = p.parse_struct().unwrap_or_else(|_| {
+        let _ = p.parse_struct().unwrap_or_else(|_| {
             panic!("{:?}", p.errors)
         });
     }
@@ -489,6 +489,6 @@ mod test {
             }
         ");
 
-        let ast = parse(&s).unwrap();
+        parse(&s).unwrap();
     }
 }
