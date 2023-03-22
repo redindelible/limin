@@ -591,4 +591,55 @@ mod test {
 
         resolve_types(ast).unwrap();
     }
+
+    #[test]
+    #[should_panic]
+    fn test_resolve_types_3() {
+        let s = Source::from_text("<test>", r"
+            struct Alpha {
+                a: i32;
+                b: Alpha;
+            }
+
+            fn aleph(thing: Alpha) -> Alpha {
+                1
+            }
+        ");
+        let ast = parse(&s);
+
+        resolve_types(ast).unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_resolve_types_4() {
+        let s = Source::from_text("<test>", r"
+            struct Alpha {
+                a: i32;
+                b: Alpha;
+            }
+
+            fn aleph(thing: Alpha) {
+                return 1;
+            }
+        ");
+        let ast = parse(&s);
+
+        resolve_types(ast).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_types_5() {
+        let s = Source::from_text("<test>", r"
+            struct Alpha {
+                a: i32;
+                b: Alpha;
+            }
+
+            fn aleph(thing: Alpha) { }
+        ");
+        let ast = parse(&s);
+
+        resolve_types(ast).unwrap();
+    }
 }
