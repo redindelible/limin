@@ -7,7 +7,7 @@ pub type FunctionRef = Rc<Function>;
 
 pub type StructRef = Rc<NamedStruct>;
 
-pub type TypeRef = Box<Type>;
+pub type TypeRef = Rc<Type>;
 
 pub enum Type {
     Void,
@@ -57,7 +57,11 @@ impl Types {
     }
 
     pub fn int(bits: u8) -> TypeRef {
-        Box::new(Type::Integer(bits))
+        Rc::new(Type::Integer(bits))
+    }
+
+    pub fn int_constant(bits: u8, value: u64) -> Constant {
+        Constant::Integer { ty: Types::int(bits), value }
     }
 
     fn emit(&self) -> String {
@@ -105,26 +109,73 @@ impl Module {
 }
 
 trait Value {
-    fn _emit_value(&self) -> String;
+    fn emit_value(&self) -> String;
+
+    fn ty(&self) -> TypeRef;
 }
 
-enum Constant {
-    ZeroInitializer,
+pub enum Constant {
+    ZeroInitializer(TypeRef),
     Integer {
-        bits: u8,
+        ty: TypeRef,
         value: u64
     },
     String {
+        ty: TypeRef,
         chars: Vec<u8>
     },
     Array {
         ty: TypeRef,
+        elem_ty: TypeRef,
         items: Vec<Constant>,
     },
     Struct {
+        ty: TypeRef,
         items: Vec<Constant>,
     },
-    Boolean(bool)
+    Boolean(TypeRef, bool)
+}
+
+impl Constant {
+    pub fn to_value(self) -> ValueRef {
+        Box::new(self)
+    }
+}
+
+impl Value for Constant {
+    fn emit_value(&self) -> String {
+        match self {
+            Constant::ZeroInitializer(_) => "zeroinitializer".into(),
+            Constant::Integer { value, .. } => {
+                format!("{}", value)
+            },
+            Constant::String { chars, .. } => {
+                format!("c\"{}\"", String::from_utf8(chars.clone()).unwrap())
+            },
+            Constant::Array { elem_ty, items, .. } => {
+                let items: Vec<String> = items.iter().map(|item| elem_ty.emit() + item.emit_value().as_str()).collect();
+                format!("[ {} ]", items.join(", "))
+            }
+            Constant::Struct { items, .. } => {
+                let items: Vec<String> = items.iter().map(|item| item.ty().emit() + item.emit_value().as_str()).collect();
+                format!("{{ {} }}", items.join(", "))
+            }
+            Constant::Boolean(_, value) => {
+                if *value { "true".into() } else { "false".into() }
+            }
+        }
+    }
+
+    fn ty(&self) -> TypeRef {
+        Rc::clone(match self {
+            Constant::ZeroInitializer(ty) => ty,
+            Constant::Integer { ty, .. } => ty,
+            Constant::String { ty, .. } => ty,
+            Constant::Array { ty, .. } => ty,
+            Constant::Struct {  ty, .. } => ty,
+            Constant::Boolean(ty, _) => ty
+        })
+    }
 }
 
 struct Global {
@@ -186,42 +237,82 @@ pub struct BasicBlock {
 }
 
 impl BasicBlock {
+    pub fn ret(&self, val: ValueRef) {
+        *self.terminator.borrow_mut() = Some(Terminator::Return(val))
+    }
+
     fn emit(&self) -> String {
         let mut s = format!("{}:\n", self.label);
         for instr in self.instructions.borrow().iter() {
             s += "  ";
             s += instr.emit().as_str();
         }
+        s += "  ";
+        s += self.terminator.borrow().as_ref().unwrap().emit().as_str();
         s
+    }
+
+    fn emit_ref(&self) -> String {
+        format!("label %{}", self.label)
     }
 }
 
 pub type InstrRef = Rc<Instruction>;
+pub type ValueRef = Box<dyn Value>;
 
 pub enum Instruction {
-    Add { name: String, ret: TypeRef, left: InstrRef, right: InstrRef }
+    Add { name: String, ret: TypeRef, left: ValueRef, right: ValueRef }
 }
 
 impl Instruction {
     fn emit(&self) -> String {
         match self {
             Instruction::Add { name, ret, left, right} => {
-                format!("%{} = add {} {}, {}\n", name, ret.emit(), left._emit_value(), right._emit_value())
+                format!("%{} = add {} {}, {}\n", name, ret.emit(), left.emit_value(), right.emit_value())
             }
         }
     }
 }
 
 impl Value for Instruction {
-    fn _emit_value(&self) -> String {
+    fn emit_value(&self) -> String {
         match self {
             Instruction::Add { name, .. } => format!("%{}", name)
+        }
+    }
+
+    fn ty(&self) -> TypeRef {
+        match self {
+            Instruction::Add { ret, .. } => Rc::clone(ret)
         }
     }
 }
 
 pub enum Terminator {
+    Return(ValueRef),
+    ReturnVoid,
+    Branch(BasicBlockRef),
+    CondBranch(ValueRef, BasicBlockRef, BasicBlockRef),
+}
 
+impl Terminator {
+    fn emit(&self) -> String {
+        match self {
+            Terminator::Return(value) => {
+                format!("ret {} {}\n", value.ty().emit(), value.emit_value())
+            }
+            Terminator::Branch(block) => {
+                format!("br {}", block.emit_ref())
+            }
+
+            Terminator::CondBranch(cond, if_true, if_false) => {
+                format!("br i1 {}, {}, {}", cond.emit_value(), if_true.emit_ref(), if_false.emit_ref())
+            }
+            Terminator::ReturnVoid => {
+                format!("ret void")
+            }
+        }
+    }
 }
 
 pub struct NamedStruct {
@@ -235,7 +326,7 @@ impl NamedStruct {
     }
 
     pub fn as_type_ref(self: &Rc<NamedStruct>) -> TypeRef {
-        Box::new(Type::NamedStruct(self.clone()))
+        Rc::new(Type::NamedStruct(self.clone()))
     }
 
     fn emit(&self) -> String {
@@ -253,7 +344,7 @@ impl NamedStruct {
 
 #[cfg(test)]
 mod test {
-    use crate::llvm::{Module, Parameter, Type, Types};
+    use crate::llvm::{Constant, Module, Parameter, Type, Types};
 
     #[test]
     fn test_create_module() {
@@ -274,7 +365,7 @@ mod test {
 
         let f = m.add_function("main", Types::int(32), vec![]);
         let b = f.add_block("entry".into());
-
+        b.ret(Types::int_constant(32, 0).to_value());
 
         print!("{}", m.emit());
     }
