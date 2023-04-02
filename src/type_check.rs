@@ -281,14 +281,6 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
         }
     }
 
-    fn with_ns<'c>(&'b mut self, namespace: NamespaceKey) -> ResolveContext<'a, 'c> where 'b: 'c {
-        ResolveContext {
-            checker: self.checker,
-            func: self.func,
-            namespace,
-        }
-    }
-
     fn push_error(&self, error: TypeCheckError<'a>) {
         self.checker.push_error(error)
     }
