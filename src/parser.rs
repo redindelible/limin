@@ -4,8 +4,8 @@ use crate::source::{Source, HasLoc, Location};
 use crate::lexer::{Lexer, Token, TokenType};
 
 
-pub fn parse(source: &Source) -> Result<AST, Vec<ParserError>> {
-    Parser::parse(source)
+pub fn parse_file(source: &Source) -> Result<File, Vec<ParserError>> {
+    Parser::parse_file(source)
 }
 
 #[derive(Debug)]
@@ -28,7 +28,7 @@ struct Parser<'a> {
 struct Point { idx: usize, err_len: usize }
 
 impl<'a> Parser<'a> {
-    fn parse(source: &'a Source) -> Result<AST<'a>, Vec<ParserError<'a>>> {
+    fn parse_file(source: &'a Source) -> Result<File<'a>, Vec<ParserError<'a>>> {
         let mut parser = Self::new(source);
 
         let mut top_levels = Vec::new();
@@ -40,9 +40,7 @@ impl<'a> Parser<'a> {
             top_levels.push(top_level);
         };
         let file = File { path: source.path.clone(),  top_levels };
-        let mut files = HashMap::new();
-        files.insert(file.path.clone(), file);
-        Ok(AST { files })
+        Ok(file)
     }
 
     fn new(source: &'a Source) -> Parser<'a> {
@@ -343,7 +341,7 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod test {
     use crate::ast::{BinOp, Expr, Function, TopLevel, Type};
-    use crate::parser::{parse, Parser};
+    use crate::parser::{parse_file, Parser};
     use crate::source::Source;
 
     #[test]
@@ -477,7 +475,7 @@ mod test {
     }
 
     #[test]
-    fn test_ast() {
+    fn test_file() {
         let s = Source::from_text("test", r"
             fn main() {
                 let a: int = 0;
@@ -489,6 +487,6 @@ mod test {
             }
         ");
 
-        parse(&s).unwrap();
+        parse_file(&s).unwrap();
     }
 }

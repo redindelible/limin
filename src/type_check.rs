@@ -416,14 +416,18 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashMap;
     use std::path::Path;
     use crate::ast;
     use crate::hir::{FunctionKey, HIR, StructKey, Type};
     use crate::source::Source;
     use crate::type_check::{collect_fields, collect_function_bodies, collect_functions, collect_structs, initialize, resolve_types};
 
-    fn parse(s: &Source) -> ast::AST {
-        crate::parser::parse(s).unwrap()
+    fn parse_one(s: &Source) -> ast::AST {
+        let file = crate::parser::parse_file(s).unwrap();
+        let mut map = HashMap::new();
+        map.insert(file.path.clone(), file);
+        ast::AST { files: map }
     }
 
     #[test]
@@ -433,7 +437,7 @@ mod test {
 
             struct Beta { }
         ");
-        let ast = parse(&s);
+        let ast = parse_one(&s);
 
         let initial = initialize(ast);
         let collected = collect_structs(initial);
@@ -459,7 +463,7 @@ mod test {
                 z: Beta;
             }
         ");
-        let ast = parse(&s);
+        let ast = parse_one(&s);
 
         let initial = initialize(ast);
         let collected = collect_fields(collect_structs(initial));
@@ -497,7 +501,7 @@ mod test {
 
             struct Gamma { }
         ");
-        let ast = parse(&s);
+        let ast = parse_one(&s);
 
         let initial = initialize(ast);
         let collected = collect_functions(collect_fields(collect_structs(initial)));
@@ -543,7 +547,7 @@ mod test {
                 return thing;
             }
         ");
-        let ast = parse(&s);
+        let ast = parse_one(&s);
 
         let initial = initialize(ast);
         let _ = collect_function_bodies(collect_functions(collect_fields(collect_structs(initial)))).unwrap();
@@ -561,7 +565,7 @@ mod test {
                 return thing;
             }
         ");
-        let ast = parse(&s);
+        let ast = parse_one(&s);
 
         resolve_types(ast).unwrap();
     }
@@ -579,7 +583,7 @@ mod test {
                 return 1;
             }
         ");
-        let ast = parse(&s);
+        let ast = parse_one(&s);
 
         resolve_types(ast).unwrap();
     }
@@ -597,7 +601,7 @@ mod test {
                 1
             }
         ");
-        let ast = parse(&s);
+        let ast = parse_one(&s);
 
         resolve_types(ast).unwrap();
     }
@@ -615,7 +619,7 @@ mod test {
                 return 1;
             }
         ");
-        let ast = parse(&s);
+        let ast = parse_one(&s);
 
         resolve_types(ast).unwrap();
     }
@@ -630,7 +634,7 @@ mod test {
 
             fn aleph(thing: Alpha) { }
         ");
-        let ast = parse(&s);
+        let ast = parse_one(&s);
 
         resolve_types(ast).unwrap();
     }

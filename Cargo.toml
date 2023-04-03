@@ -3,14 +3,10 @@ name = "limin"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 dunce = "1.0.2"
 unicode-ident = "1.0.5"
 phf = { version = "0.11.1", features = ["macros"] }
 slotmap = "1.0.6"
 indexmap = "1.9.3"
-#async-std = { version= "1.12.0", features = ["default", "unstable"]}
-#async-scoped = { version= "0.7.1", features = ["use-async-std"] }
-#async-recursion = "1.0.2"
+typed-arena = "2.0.2"

@@ -1,7 +1,10 @@
 use std::cmp::{min, max};
 use std::fmt::{Debug, Formatter};
+use std::fs::File;
+use std::io;
+use std::io::Read;
 use std::ops::Add;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct Source {
     pub path: PathBuf,
@@ -37,7 +40,15 @@ struct LineInfo<'a> {
 }
 
 impl Source {
-    pub fn from_text(name: &str, text: &str) -> Source {
+    pub fn from_file(path: &Path) -> io::Result<Source> {
+        let name = dunce::canonicalize(path)?;
+        let mut f = File::open(path)?;
+        let mut s = String::new();
+        f.read_to_string(&mut s)?;
+        Ok(Source::from_text_owned(&name.to_string_lossy(), s))
+    }
+
+    fn from_text_owned(name: &str, text: String) -> Source {
         let mut line_starts = vec![0];
         for (i, c) in text.char_indices() {
             if c == '\n' {
@@ -45,7 +56,11 @@ impl Source {
             }
         }
         line_starts.push(text.len()+1);
-        Source { path: PathBuf::from(name), text: text.to_owned(), line_starts: line_starts.into_boxed_slice() }
+        Source { path: PathBuf::from(name), text, line_starts: line_starts.into_boxed_slice() }
+    }
+
+    pub fn from_text(name: &str, text: &str) -> Source {
+        Source::from_text_owned(name, text.to_owned())
     }
 
     fn get_line_on(&self, idx: usize) -> LineInfo {
