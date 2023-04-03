@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::path::PathBuf;
 use crate::ast::*;
+use crate::error::Message;
 use crate::source::{Source, HasLoc, Location};
 use crate::lexer::{Lexer, Token, TokenType};
 
@@ -12,8 +13,33 @@ pub fn parse_file(source: &Source) -> Result<File, Vec<ParserError>> {
 pub enum ParserError<'a> {
     UnexpectedToken(Token<'a>, Vec<TokenType>),
     ExpectedSymbol(Token<'a>, &'static str),
-    CouldNotParseNumber(Token<'a>, &'static str),
-    UnusedTokens(Token<'a>)
+    CouldNotParseNumber(Token<'a>, &'static str)
+}
+
+impl<'a> Message for ParserError<'a> {
+    fn render(&self) {
+        match self {
+            ParserError::UnexpectedToken(token, expected) => {
+                if expected.len() == 1 {
+                    eprintln!("Error: Unexpected token. Got {}, but expected {}.", token.typ.name(), expected[0].name());
+                } else if expected.len() == 2 {
+                    eprintln!("Error: Unexpected token. Got {}, but expected {} or {}.", token.typ.name(), expected[0].name(), expected[1].name());
+                } else {
+                    let names: Vec<&'static str> = expected.iter().map(|t| t.name()).collect();
+                    eprintln!("Error: Unexpected token. Got {}, but expected any of {}.", token.typ.name(), names.join(", "));
+                }
+                Self::show_location(token.loc);
+            },
+            ParserError::ExpectedSymbol(token, expected) => {
+                eprintln!("Error: Unexpected token. Got {}, but expected the symbol {}.", token.typ.name(), expected);
+                Self::show_location(token.loc);
+            },
+            ParserError::CouldNotParseNumber(token, as_a) => {
+                eprintln!("Error: Could not parse integer literal into a {}.", as_a);
+                Self::show_location(token.loc);
+            }
+        }
+    }
 }
 
 type ParseResult<T> = Result<T, usize>;
@@ -39,7 +65,7 @@ impl<'a> Parser<'a> {
             };
             top_levels.push(top_level);
         };
-        let file = File { path: source.path.clone(),  top_levels };
+        let file = File { path: PathBuf::from(source.path.clone()),  top_levels };
         Ok(file)
     }
 

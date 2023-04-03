@@ -46,6 +46,31 @@ const KEYWORDS: phf::Map<&str, TokenType> = phf_map! {
     "struct" => TokenType::Struct
 };
 
+impl TokenType {
+    pub fn name(&self) -> &'static str {
+        match self {
+            TokenType::Identifier => "an identifier",
+            TokenType::Integer => "an integer",
+            TokenType::LessThan => "'<'",
+            TokenType::GreaterThan => "'>'",
+            TokenType::LeftParenthesis => "'('",
+            TokenType::RightParenthesis => "')'",
+            TokenType::LeftBrace => "'{'",
+            TokenType::RightBrace => "'}'",
+            TokenType::Equal => "'='",
+            TokenType::Comma => "','",
+            TokenType::Colon => "':'",
+            TokenType::Semicolon => "';'",
+            TokenType::Minus => "'-'",
+            TokenType::Fn => "'fn'",
+            TokenType::Let => "'let'",
+            TokenType::Return => "'return'",
+            TokenType::Struct => "'struct'",
+            TokenType::EOF => "the end of the file"
+        }
+    }
+}
+
 #[derive(Copy, Clone)]
 pub struct Token<'a> {
     pub typ: TokenType,

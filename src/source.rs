@@ -4,10 +4,10 @@ use std::fs::File;
 use std::io;
 use std::io::Read;
 use std::ops::Add;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub struct Source {
-    pub path: PathBuf,
+    pub path: String,
     pub text: String,
     line_starts: Box<[usize]>
 }
@@ -56,7 +56,7 @@ impl Source {
             }
         }
         line_starts.push(text.len()+1);
-        Source { path: PathBuf::from(name), text, line_starts: line_starts.into_boxed_slice() }
+        Source { path: name.to_owned(), text, line_starts: line_starts.into_boxed_slice() }
     }
 
     pub fn from_text(name: &str, text: &str) -> Source {
