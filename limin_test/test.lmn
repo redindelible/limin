@@ -1,4 +1,4 @@
 fn main() -> u32 {
-    let a = 32;
+    let a := 32;
     return a;
 }

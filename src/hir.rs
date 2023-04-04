@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Debug;
 use slotmap::{SlotMap, new_key_type, SecondaryMap};
 use crate::source::Location;
 
@@ -75,7 +76,8 @@ impl<'s> HIR<'s> {
 
 pub struct Struct<'ir> {
     pub name: String,
-    pub fields: HashMap<String, StructField<'ir>>
+    pub fields: HashMap<String, StructField<'ir>>,
+    pub loc: Location<'ir>
 }
 
 pub struct StructField<'ir> {

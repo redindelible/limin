@@ -5,6 +5,7 @@ use typed_arena::Arena;
 use crate::error::Message;
 use crate::parser::{parse_file, ParserError};
 use crate::source::Source;
+use crate::type_check::resolve_types;
 
 mod lexer;
 mod source;
@@ -56,6 +57,14 @@ impl Compiler {
         if !errors.is_empty() {
             return CompileResult::CouldNotParse(errors);
         }
+        let ast = ast::AST::from_files(files);
+
+        let resolved = match resolve_types(ast) {
+            Ok(ir) => ir,
+            Err(errs) => {
+
+            }
+        };
 
         CompileResult::Success
     }

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use crate::ast;
+use crate::error::Message;
 use crate::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, LogicOp, Stmt, MayBreak};
 use crate::source::Location;
 use crate::type_check::type_check_state::NamespaceKey;
@@ -10,12 +11,56 @@ pub fn resolve_types(ast: ast::AST) -> Result<HIR, Vec<TypeCheckError>> {
 }
 
 #[derive(Debug, Eq, PartialEq)]
+pub enum DisplayType<'a> {
+    Unit,
+    Never,
+    Boolean,
+    Errored,
+    Integer { bits: u8 },
+    Struct { name: String, loc: Location<'a> },
+    Function { params: Vec<DisplayType<'a>>, ret: Box<DisplayType<'a>> }
+}
+
+impl DisplayType<'_> {
+    fn render(&self) -> String {
+        match self {
+            DisplayType::Unit => "()".into(),
+            DisplayType::Never => "!".into(),
+            DisplayType::
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
 pub enum TypeCheckError<'a> {
     NameDuplicated(String, Location<'a>),
     CouldNotResolveName(String, Location<'a>),
     CouldNotResolveType(String, Location<'a>),
-    IncompatibleTypes { expected: Type, got: Type, loc: Location<'a> },
+    IncompatibleTypes { expected: DisplayType<'a>, got: DisplayType<'a>, loc: Location<'a> },
     NotEnoughInfoToInfer(Location<'a>)
+}
+
+impl<'a> Message for TypeCheckError<'a> {
+    fn render(&self) {
+        match self {
+            TypeCheckError::NameDuplicated(name, loc) => {
+                eprintln!("Error: The name '{}' is already used and cannot be redefined.", name);
+                Self::show_location(loc);
+            }
+            TypeCheckError::CouldNotResolveName(name, loc) => {
+                eprintln!("Error: Could not resolve the name '{}'.", name);
+                Self::show_location(loc);
+            }
+            TypeCheckError::CouldNotResolveType(name, loc) => {
+                eprintln!("Error: Could not resolve the type '{}'.", name);
+                Self::show_location(loc);
+            }
+            TypeCheckError::IncompatibleTypes { expected, got, loc } => {
+                eprintln!("Error: Incompatible types. Expected '{}' but got '{}'.", expected, got);
+                Self::show_location(loc);
+            }
+        }
+    }
 }
 
 mod type_check_state {
@@ -166,11 +211,11 @@ fn collect_structs(initial: Initial) -> CollectedStructs {
         let file_ns = checker.add_namespace(Some(root));
 
         file_namespaces.insert(file_path.clone(), file_ns);
-        for ast::Struct { name, .. } in file.iter_structs() {
+        for ast::Struct { name, loc, .. } in file.iter_structs() {
             // if common.get_type(file_ns, &name).is_some() {
             //     common.push_error(TypeCheckError::CouldNotResolveName(name.clone(), ))
             // }
-            let struct_key = checker.add_struct(Struct { name: name.clone(), fields: HashMap::new() });
+            let struct_key = checker.add_struct(Struct { name: name.clone(), fields: HashMap::new(), loc: *loc });
             checker.add_type(file_ns, name.clone(), Type::Struct { struct_: struct_key });
         }
     }
@@ -202,7 +247,7 @@ fn collect_fields(collected: CollectedStructs) -> CollectedFields {
 
     for (file_path, file) in &files {
         let file_ns = file_namespaces[file_path];
-        for ast::Struct { name, items} in file.iter_structs() {
+        for ast::Struct { name, items, .. } in file.iter_structs() {
             let key = checker.get_struct_key(file_ns, name);
             for item in items {
                 if let ast::StructItem::Field { name, typ, loc } = item {
@@ -312,6 +357,27 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
         self.checker.type_of_expr(expr)
     }
 
+    fn display_type(&self, ty: &Type) -> DisplayType<'a> {
+        match ty {
+            Type::Unit => DisplayType::Unit,
+            Type::Never => DisplayType::Never,
+            Type::Boolean => DisplayType::Boolean,
+            Type::Errored => DisplayType::Errored,
+            Type::Integer { bits } => DisplayType::Integer { bits: *bits },
+            Type::Struct { struct_ } => {
+                let s = &self.checker.hir.structs[*struct_];
+                DisplayType::Struct {
+                    name: s.name.clone(),
+                    loc: s.loc
+                }
+            },
+            Type::Function { params, ret } => DisplayType::Function {
+                params: params.iter().map(|t| self.display_type(t)).collect(),
+                ret: Box::new(self.display_type(ret))
+            },
+        }
+    }
+
     fn check(&self, got_type: Type, expected: ExpectedType, loc: &Location<'a>) -> bool {
         match expected {
             Some(Type::Errored) => false,
@@ -320,8 +386,8 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                 let is_compat = self.checker.hir.is_subtype(&got_type, &t);
                 if !is_compat {
                     self.push_error(TypeCheckError::IncompatibleTypes{
-                        expected: t,
-                        got: got_type,
+                        expected: self.display_type(&t),
+                        got: self.display_type(&got_type),
                         loc: *loc
                     })
                 }

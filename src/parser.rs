@@ -28,15 +28,15 @@ impl<'a> Message for ParserError<'a> {
                     let names: Vec<&'static str> = expected.iter().map(|t| t.name()).collect();
                     eprintln!("Error: Unexpected token. Got {}, but expected any of {}.", token.typ.name(), names.join(", "));
                 }
-                Self::show_location(token.loc);
+                Self::show_location(&token.loc);
             },
             ParserError::ExpectedSymbol(token, expected) => {
                 eprintln!("Error: Unexpected token. Got {}, but expected the symbol {}.", token.typ.name(), expected);
-                Self::show_location(token.loc);
+                Self::show_location(&token.loc);
             },
             ParserError::CouldNotParseNumber(token, as_a) => {
                 eprintln!("Error: Could not parse integer literal into a {}.", as_a);
-                Self::show_location(token.loc);
+                Self::show_location(&token.loc);
             }
         }
     }
@@ -155,8 +155,8 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_struct(&mut self) -> ParseResult<TopLevel<'a>> {
-        self.expect(TokenType::Struct)?;
-        let name = self.expect(TokenType::Identifier)?.text.to_owned();
+        let start = self.expect(TokenType::Struct)?;
+        let name = self.expect(TokenType::Identifier)?;
 
         let mut items = Vec::new();
         self.expect(TokenType::LeftBrace)?;
@@ -166,7 +166,9 @@ impl<'a> Parser<'a> {
         }
         self.expect(TokenType::RightBrace)?;
 
-        Ok(TopLevel::Struct(Struct { name, items }))
+        let loc = name.loc + start.loc;
+
+        Ok(TopLevel::Struct(Struct { name: name.text.to_owned(), items, loc }))
     }
 
     fn parse_struct_item(&mut self) -> ParseResult<StructItem<'a>> {

@@ -7,6 +7,16 @@ pub struct AST<'a> {
     pub files: HashMap<PathBuf, File<'a>>
 }
 
+impl AST<'_> {
+    pub fn from_files(files: Vec<File>) -> AST {
+        let mut map = HashMap::new();
+        for file in files {
+            map.insert(file.path.clone(), file);
+        }
+        AST { files: map }
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct File<'a> {
     pub path: PathBuf,
@@ -52,7 +62,8 @@ pub struct Function<'a>  {
 #[derive(Debug, Eq, PartialEq)]
 pub struct Struct<'a> {
     pub name: String,
-    pub items: Vec<StructItem<'a>>
+    pub items: Vec<StructItem<'a>>,
+    pub loc: Location<'a>
 }
 
 #[derive(Debug, Eq, PartialEq)]

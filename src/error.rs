@@ -3,7 +3,7 @@ use crate::source::Location;
 pub trait Message {
     fn render(&self);
 
-    fn show_location(loc: Location) {
+    fn show_location(loc: &Location) {
         let rendered_loc = loc.render();
 
         eprintln!("In '{}':", loc.source.path);
