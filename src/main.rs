@@ -5,7 +5,7 @@ use typed_arena::Arena;
 use crate::error::Message;
 use crate::parser::{parse_file, ParserError};
 use crate::source::Source;
-use crate::type_check::resolve_types;
+use crate::type_check::{resolve_types, TypeCheckError};
 
 mod lexer;
 mod source;
@@ -25,6 +25,7 @@ struct Args {
 
 enum CompileResult<'a> {
     CouldNotParse(Vec<ParserError<'a>>),
+    CouldNotTypeCheck(Vec<TypeCheckError<'a>>),
     Success
 }
 
@@ -62,7 +63,7 @@ impl Compiler {
         let resolved = match resolve_types(ast) {
             Ok(ir) => ir,
             Err(errs) => {
-
+                return CompileResult::CouldNotTypeCheck(errs)
             }
         };
 
@@ -82,7 +83,12 @@ fn main() {
             for err in &errs {
                 err.render();
             }
-        },
+        }
+        CompileResult::CouldNotTypeCheck(errs) => {
+            for err in &errs {
+                err.render();
+            }
+        }
         CompileResult::Success => ()
     };
 }

@@ -1,4 +1,4 @@
-fn main() -> u32 {
+fn main() -> i32 {
     let a := 32;
     return a;
 }

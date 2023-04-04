@@ -26,7 +26,14 @@ impl DisplayType<'_> {
         match self {
             DisplayType::Unit => "()".into(),
             DisplayType::Never => "!".into(),
-            DisplayType::
+            DisplayType::Boolean => "bool".into(),
+            DisplayType::Errored => "<could not resolve>".into(),
+            DisplayType::Integer { bits } => format!("i{bits}"),
+            DisplayType::Struct { name, .. } => format!("{name}"),
+            DisplayType::Function { params, ret } => {
+                let rendered: Vec<String> = params.iter().map(|t| t.render()).collect();
+                format!("({}) -> {}", rendered.join(", "), ret.render())
+            }
         }
     }
 }
@@ -56,7 +63,11 @@ impl<'a> Message for TypeCheckError<'a> {
                 Self::show_location(loc);
             }
             TypeCheckError::IncompatibleTypes { expected, got, loc } => {
-                eprintln!("Error: Incompatible types. Expected '{}' but got '{}'.", expected, got);
+                eprintln!("Error: Incompatible types. Expected '{}' but got '{}'.", expected.render(), got.render());
+                Self::show_location(loc);
+            }
+            TypeCheckError::NotEnoughInfoToInfer(loc) => {
+                eprintln!("Error: Could not infer type.");
                 Self::show_location(loc);
             }
         }
