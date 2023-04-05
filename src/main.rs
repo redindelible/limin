@@ -27,7 +27,9 @@ struct Args {
     #[arg(required=true)]
     file: Vec<PathBuf>,
     #[arg(short, long, required=true)]
-    out: PathBuf
+    out: PathBuf,
+    #[arg(long)]
+    clang: Option<PathBuf>,
 }
 
 enum CompileResult<'a> {
@@ -41,14 +43,16 @@ enum CompileResult<'a> {
 
 struct Compiler {
     sources: Arena<Source>,
-    output: PathBuf
+    output: PathBuf,
+    clang: PathBuf
 }
 
 impl Compiler {
-    fn new(output: PathBuf) -> Compiler {
+    fn new(output: PathBuf, clang: Option<PathBuf>) -> Compiler {
         Compiler {
             sources: Arena::new(),
-            output
+            output,
+            clang: clang.unwrap_or(PathBuf::from("clang"))
         }
     }
 
@@ -107,7 +111,7 @@ impl Compiler {
         };
         drop(ll_file_handle);
 
-        let output = String::from_utf8(match Command::new("clang").arg("--version").output() {
+        let output = String::from_utf8(match Command::new(&self.clang).arg("--version").output() {
             Ok(o) => o,
             Err(e) => {
                 return CompileResult::FileError(Some(e));
@@ -117,18 +121,23 @@ impl Compiler {
         let Some(first) = output.get(0) else {
             return CompileResult::ArgumentError("Could not parse clang version information.".into());
         };
-        let Some(version) = first.splitn(3, ' ').last() else {
+        let Some(version) = first.split(' ').skip(2).next() else {
             return CompileResult::ArgumentError("Could not parse clang version information.".into());
         };
         let req = VersionReq::parse(">=15.0.0").unwrap();
         let Ok(actual) = Version::parse(version) else {
-            return CompileResult::ArgumentError("Could not parse clang version information.".into());
+            return CompileResult::ArgumentError(format!("Could not parse clang version information (found {}).", version));
         };
         if !req.matches(&actual) {
             return CompileResult::ArgumentError(format!("Clang version does not meet requirements (found version {}, required {}).", actual, req));
         }
 
-        let output = match Command::new("clang").arg(&ll_file).arg("-o").arg(&self.output).status() {
+        let output = match
+            Command::new(&self.clang)
+                .arg(&ll_file)
+                .arg("-o")
+                .arg(&self.output)
+                .status() {
             Ok(output) => output,
             Err(e) => {
                 return CompileResult::FileError(Some(e));
@@ -144,7 +153,7 @@ impl Compiler {
 
 fn main() {
     let args = Args::parse();
-    let mut compiler = Compiler::new(args.out);
+    let mut compiler = Compiler::new(args.out, args.clang);
     for file in args.file {
         compiler.add_root(&file).unwrap();
     }
