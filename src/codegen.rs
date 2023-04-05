@@ -106,9 +106,11 @@ impl<'a> Codegen<'a> {
         }
 
         let main_key = self.hir.main_function.unwrap();
+        let main_info = &self.functions[main_key];
         let main = self.llvm.add_function("main", llvm::Types::int(32), vec![]);
         let block = main.add_block("entry".into());
-        block.ret(llvm::Types::int_constant(32, 0).to_value());
+        let exit_code = block.call("exit_code".into(), llvm::Types::int(32), Rc::clone(&main_info.llvm_ref).as_value(), vec![]);
+        block.ret(exit_code.as_value());
     }
 
     fn create_frame_type(&self, declared: &Vec<NameKey>) -> FrameInfo {

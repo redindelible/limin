@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use indexmap::IndexMap;
+use crate::llvm;
 
 pub type FunctionRef = Rc<Function>;
 
@@ -14,7 +15,8 @@ pub enum Type {
     Integer(u8),
     Array(TypeRef, usize),
     NamedStruct(StructRef),
-    Struct(Vec<TypeRef>)
+    Struct(Vec<TypeRef>),
+    Function(TypeRef, Vec<TypeRef>)
 }
 
 impl Type {
@@ -28,6 +30,10 @@ impl Type {
             Type::Struct(items) => {
                 let items: Vec<String> = items.iter().map(|t| t.emit()).collect();
                 format!("{{ {} }}", items.join(", "))
+            }
+            Type::Function(ret, params) => {
+                let items: Vec<String> = params.iter().map(|t| t.emit()).collect();
+                format!("{} ({})", ret.emit(), items.join(", "))
             }
         }
     }
@@ -52,6 +58,10 @@ impl Types {
 
     pub fn struct_(fields: Vec<TypeRef>) -> TypeRef {
         Rc::new(Type::Struct(fields))
+    }
+
+    pub fn function(ret: TypeRef, params: Vec<TypeRef>) -> TypeRef {
+        Rc::new(Type::Function(ret, params))
     }
 
     pub fn ptr() -> TypeRef {
@@ -94,7 +104,8 @@ impl Module {
     }
 
     pub fn add_function(&mut self, name: &str, ret: TypeRef, parameters: Vec<Parameter>) -> FunctionRef {
-        let item = Rc::new(Function { name: name.into(), ret, parameters, blocks: RefCell::new(vec![]) });
+        let param_types: Vec<TypeRef> = parameters.iter().map(|p| Rc::clone(&p.typ)).collect();
+        let item = Rc::new(Function { name: name.into(), ret: Rc::clone(&ret), parameters, blocks: RefCell::new(vec![]), ty: Types::function(ret, param_types)});
         self.functions.insert(name.into(), Rc::clone(&item));
         item
     }
@@ -192,6 +203,7 @@ pub struct Function {
     ret: TypeRef,
     parameters: Vec<Parameter>,
     blocks: RefCell<Vec<BasicBlockRef>>,
+    ty: TypeRef,
 }
 
 impl Function {
@@ -217,6 +229,20 @@ impl Function {
         } else {
             format!("declare {} @{}({})\n\n", self.ret.emit(), self.name, arguments.join(", "))
         }
+    }
+
+    pub fn as_value(self: Rc<Function>) -> ValueRef {
+        Box::new(self)
+    }
+}
+
+impl Value for Rc<Function> {
+    fn emit_value(&self) -> String {
+        format!("@{}", self.name)
+    }
+
+    fn ty(&self) -> TypeRef {
+        Rc::clone(&self.ty)
     }
 }
 
@@ -250,6 +276,12 @@ impl BasicBlock {
         instr_ref
     }
 
+    pub fn call(&self, name: String, ret: TypeRef, func: ValueRef, args: Vec<ValueRef>) -> InstrRef {
+        let instr_ref = Rc::new(Instruction::Call { name, ret, func, args});
+        self.instructions.borrow_mut().push(Rc::clone(&instr_ref));
+        instr_ref
+    }
+
     fn emit(&self) -> String {
         let mut s = format!("{}:\n", self.label);
         for instr in self.instructions.borrow().iter() {
@@ -271,7 +303,8 @@ pub type ValueRef = Box<dyn Value>;
 
 pub enum Instruction {
     Add { name: String, ret: TypeRef, left: ValueRef, right: ValueRef },
-    Alloca { name: String, ty: TypeRef }
+    Alloca { name: String, ty: TypeRef },
+    Call { name: String, ret: TypeRef, func: ValueRef, args: Vec<ValueRef> }
 }
 
 impl Instruction {
@@ -283,22 +316,32 @@ impl Instruction {
             Instruction::Alloca { name, ty } => {
                 format!("%{name} = alloca {}\n", ty.emit())
             }
+            Instruction::Call { name, ret, func, args } => {
+                let args: Vec<String> = args.iter().map(|a| a.ty().emit() + &a.emit_value()).collect();
+                format!("%{name} = call {} {}({})\n", ret.emit(), func.emit_value(), args.join(", "))
+            }
         }
+    }
+
+    pub fn as_value(self: Rc<Instruction>) -> ValueRef {
+        Box::new(self)
     }
 }
 
-impl Value for Instruction {
+impl Value for Rc<Instruction> {
     fn emit_value(&self) -> String {
-        match self {
+        match self.as_ref() {
             Instruction::Add { name, .. } => format!("%{}", name),
-            Instruction::Alloca { name, .. } => format!("%{name}")
+            Instruction::Alloca { name, .. } => format!("%{name}"),
+            Instruction::Call { name, .. } => format!("%{name}")
         }
     }
 
     fn ty(&self) -> TypeRef {
-        match self {
+        match self.as_ref() {
             Instruction::Add { ret, .. } => Rc::clone(ret),
-            Instruction::Alloca { .. } => Types::ptr()
+            Instruction::Alloca { .. } => Types::ptr(),
+            Instruction::Call { ret, .. } => Rc::clone(ret)
         }
     }
 }
