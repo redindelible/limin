@@ -45,7 +45,8 @@ pub enum TypeCheckError<'a> {
     CouldNotResolveName(String, Location<'a>),
     CouldNotResolveType(String, Location<'a>),
     IncompatibleTypes { expected: DisplayType<'a>, got: DisplayType<'a>, loc: Location<'a> },
-    NotEnoughInfoToInfer(Location<'a>)
+    NotEnoughInfoToInfer(Location<'a>),
+    NoMainFunction,
 }
 
 impl<'a> Message for TypeCheckError<'a> {
@@ -70,6 +71,9 @@ impl<'a> Message for TypeCheckError<'a> {
             TypeCheckError::NotEnoughInfoToInfer(loc) => {
                 eprintln!("Error: Could not infer type.");
                 Self::show_location(loc);
+            }
+            TypeCheckError::NoMainFunction => {
+                eprintln!("Error: No main function could be found.");
             }
         }
     }
@@ -287,8 +291,17 @@ fn collect_functions(collected: CollectedFields) -> CollectedFunctions {
             let ret = func.return_type.as_ref().map_or(Type::Unit, |t| resolve_type(&checker, file_ns, t));
             let sig = Type::Function { params: params.iter().map(|p| p.typ.clone()).collect(), ret: Box::new(ret.clone()) };
             let key = checker.add_function_proto(FunctionPrototype { name: func.name.clone(), params, ret, sig });
+
+            if func.name == "main" {
+                checker.hir.main_function = Some(key);
+            }
+
             checker.add_name(file_ns, func.name.clone(), NameInfo::Function { func: key });
         }
+    }
+
+    if checker.hir.main_function.is_none() {
+        checker.push_error(TypeCheckError::NoMainFunction);
     }
 
     CollectedFunctions { checker, files, file_namespaces, root }

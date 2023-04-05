@@ -108,7 +108,7 @@ impl Module {
     }
 }
 
-trait Value {
+pub trait Value {
     fn emit_value(&self) -> String;
 
     fn ty(&self) -> TypeRef;
@@ -218,8 +218,8 @@ impl Function {
 }
 
 pub struct Parameter {
-    name: String,
-    typ: TypeRef
+    pub name: String,
+    pub typ: TypeRef
 }
 
 impl Parameter {

@@ -28,6 +28,8 @@ pub enum Type {
 
 pub struct HIR<'s> {
     pub name: String,
+    pub main_function: Option<FunctionKey>,
+
     pub names: SlotMap<NameKey, NameInfo<'s>>,
     pub structs: SlotMap<StructKey, Struct<'s>>,
     pub function_prototypes: SlotMap<FunctionKey, FunctionPrototype<'s>>,
@@ -39,6 +41,7 @@ impl<'s> HIR<'s> {
         HIR {
             name,
             names: SlotMap::with_key(),
+            main_function: None,
             structs: SlotMap::with_key(),
             function_prototypes: SlotMap::with_key(),
             function_bodies: SecondaryMap::new()
