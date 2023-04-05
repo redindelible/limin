@@ -1,6 +1,5 @@
 use std::cell::RefCell;
-use std::ops::Deref;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 use indexmap::IndexMap;
 
 pub type FunctionRef = Rc<Function>;
@@ -11,6 +10,7 @@ pub type TypeRef = Rc<Type>;
 
 pub enum Type {
     Void,
+    Pointer,
     Integer(u8),
     Array(TypeRef, usize),
     NamedStruct(StructRef),
@@ -21,6 +21,7 @@ impl Type {
     pub fn emit(&self) -> String {
         match self {
             Type::Void => "void".into(),
+            Type::Pointer => "ptr".into(),
             Type::Integer(bits) => format!("i{}", bits),
             Type::Array(t, count) => format!("[{} x {}]", t.emit(), count),
             Type::NamedStruct(s) => format!("%{}", s.name),
@@ -33,27 +34,28 @@ impl Type {
 }
 
 pub struct Types {
-    unique: u32,
     named_structs: IndexMap<String, Rc<NamedStruct>>
 }
 
 impl Types {
     pub fn new() -> Types {
         Types {
-            unique: 0,
             named_structs: IndexMap::new()
         }
     }
 
-    pub fn add_struct(&mut self, name: Option<&str>) -> StructRef {
-        let name: String = name.map_or_else(|| {
-            let val = self.unique;
-            self.unique += 1;
-            format!("_struct_{:>08X}", val)
-        }, String::from);
+    pub fn add_struct(&mut self, name: String) -> StructRef {
         let item = Rc::new(NamedStruct { name: name.clone(), fields: RefCell::new(None) });
         self.named_structs.insert(name, Rc::clone(&item));
         item
+    }
+
+    pub fn struct_(fields: Vec<TypeRef>) -> TypeRef {
+        Rc::new(Type::Struct(fields))
+    }
+
+    pub fn ptr() -> TypeRef {
+        Rc::new(Type::Pointer)
     }
 
     pub fn int(bits: u8) -> TypeRef {
@@ -68,6 +70,7 @@ impl Types {
         let mut types = String::new();
         for s in self.named_structs.values() {
             types += s.emit().as_str();
+            types += "\n";
         }
         types
     }
@@ -210,9 +213,9 @@ impl Function {
             for block in self.blocks.borrow().iter() {
                 blocks += block.emit().as_str();
             }
-            format!("define {} @{}({}) {{\n{}}}\n", self.ret.emit(), self.name, arguments.join(", "), blocks)
+            format!("define {} @{}({}) {{\n{}}}\n\n", self.ret.emit(), self.name, arguments.join(", "), blocks)
         } else {
-            format!("declare {} @{}({})\n", self.ret.emit(), self.name, arguments.join(", "))
+            format!("declare {} @{}({})\n\n", self.ret.emit(), self.name, arguments.join(", "))
         }
     }
 }
@@ -241,6 +244,12 @@ impl BasicBlock {
         *self.terminator.borrow_mut() = Some(Terminator::Return(val))
     }
 
+    pub fn alloca(&self, name: String, ty: TypeRef) -> InstrRef {
+        let instr_ref = Rc::new(Instruction::Alloca { name, ty });
+        self.instructions.borrow_mut().push(Rc::clone(&instr_ref));
+        instr_ref
+    }
+
     fn emit(&self) -> String {
         let mut s = format!("{}:\n", self.label);
         for instr in self.instructions.borrow().iter() {
@@ -261,7 +270,8 @@ pub type InstrRef = Rc<Instruction>;
 pub type ValueRef = Box<dyn Value>;
 
 pub enum Instruction {
-    Add { name: String, ret: TypeRef, left: ValueRef, right: ValueRef }
+    Add { name: String, ret: TypeRef, left: ValueRef, right: ValueRef },
+    Alloca { name: String, ty: TypeRef }
 }
 
 impl Instruction {
@@ -269,6 +279,9 @@ impl Instruction {
         match self {
             Instruction::Add { name, ret, left, right} => {
                 format!("%{} = add {} {}, {}\n", name, ret.emit(), left.emit_value(), right.emit_value())
+            },
+            Instruction::Alloca { name, ty } => {
+                format!("%{name} = alloca {}\n", ty.emit())
             }
         }
     }
@@ -277,13 +290,15 @@ impl Instruction {
 impl Value for Instruction {
     fn emit_value(&self) -> String {
         match self {
-            Instruction::Add { name, .. } => format!("%{}", name)
+            Instruction::Add { name, .. } => format!("%{}", name),
+            Instruction::Alloca { name, .. } => format!("%{name}")
         }
     }
 
     fn ty(&self) -> TypeRef {
         match self {
-            Instruction::Add { ret, .. } => Rc::clone(ret)
+            Instruction::Add { ret, .. } => Rc::clone(ret),
+            Instruction::Alloca { .. } => Types::ptr()
         }
     }
 }
@@ -302,14 +317,14 @@ impl Terminator {
                 format!("ret {} {}\n", value.ty().emit(), value.emit_value())
             }
             Terminator::Branch(block) => {
-                format!("br {}", block.emit_ref())
+                format!("br {}\n", block.emit_ref())
             }
 
             Terminator::CondBranch(cond, if_true, if_false) => {
-                format!("br i1 {}, {}, {}", cond.emit_value(), if_true.emit_ref(), if_false.emit_ref())
+                format!("br i1 {}, {}, {}\n", cond.emit_value(), if_true.emit_ref(), if_false.emit_ref())
             }
             Terminator::ReturnVoid => {
-                format!("ret void")
+                format!("ret void\n")
             }
         }
     }
@@ -354,7 +369,7 @@ mod test {
     #[test]
     fn test_types() {
         let mut m = Module::new(String::from("test"));
-        m.types.add_struct(None).set_fields(vec![Types::int(32)]);
+        m.types.add_struct("<test>".into()).set_fields(vec![Types::int(32)]);
 
         m.emit();
     }

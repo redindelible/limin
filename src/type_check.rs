@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use indexmap::IndexMap;
+use slotmap::SecondaryMap;
 use crate::ast;
 use crate::error::Message;
 use crate::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, LogicOp, Stmt, MayBreak};
@@ -108,6 +109,10 @@ mod type_check_state {
                 _private: ()
             }
         }
+
+        pub fn get_names(&self) -> Vec<NameKey> {
+            self.names.values().copied().collect()
+        }
     }
 
     pub struct TypeCheck<'a> {
@@ -207,6 +212,7 @@ struct CollectedFunctions<'a> {
     root: NamespaceKey,
     files: HashMap<PathBuf, ast::File<'a>>,
     file_namespaces: HashMap<PathBuf, NamespaceKey>,
+    function_namespaces: SecondaryMap<FunctionKey, NamespaceKey>
 }
 
 fn initialize(ast: ast::AST) -> Initial {
@@ -280,13 +286,18 @@ fn collect_fields(collected: CollectedStructs) -> CollectedFields {
 fn collect_functions(collected: CollectedFields) -> CollectedFunctions {
     let CollectedFields { mut checker, files, file_namespaces, root } = collected;
 
+    let mut func_namespaces = SecondaryMap::new();
+
     for (file_path, file) in &files {
         let file_ns = file_namespaces[file_path];
         for func in file.iter_functions() {
+            let func_ns = checker.add_namespace(Some(file_ns));
+
             let mut params = Vec::new();
             for param in &func.parameters {
                 let typ = resolve_type(&checker,file_ns, &param.typ);
-                params.push(Parameter { name: param.name.clone(), typ, loc: param.loc})
+                let decl = checker.add_name(func_ns, param.name.clone(), NameInfo::Local { typ: typ.clone(), loc: param.loc });
+                params.push(Parameter { name: param.name.clone(), typ, loc: param.loc, decl });
             }
             let ret = func.return_type.as_ref().map_or(Type::Unit, |t| resolve_type(&checker, file_ns, t));
             let sig = Type::Function { params: params.iter().map(|p| p.typ.clone()).collect(), ret: Box::new(ret.clone()) };
@@ -297,6 +308,7 @@ fn collect_functions(collected: CollectedFields) -> CollectedFunctions {
             }
 
             checker.add_name(file_ns, func.name.clone(), NameInfo::Function { func: key });
+            func_namespaces.insert(key, func_ns);
         }
     }
 
@@ -304,31 +316,27 @@ fn collect_functions(collected: CollectedFields) -> CollectedFunctions {
         checker.push_error(TypeCheckError::NoMainFunction);
     }
 
-    CollectedFunctions { checker, files, file_namespaces, root }
+    CollectedFunctions { checker, files, file_namespaces, function_namespaces: func_namespaces, root }
 }
 
 fn collect_function_bodies(collected: CollectedFunctions) -> Result<HIR, Vec<TypeCheckError>> {
-    let CollectedFunctions { mut checker, files, file_namespaces, .. } = collected;
+    let CollectedFunctions { mut checker, files, file_namespaces, function_namespaces, .. } = collected;
 
     for (file_path, file) in &files {
         let file_ns = file_namespaces[file_path];
 
         for ast_func in file.iter_functions() {
             let func_key = checker.get_function_key(file_ns, &ast_func.name);
-            let func_ns = checker.add_namespace(Some(file_ns));
+            let func_ns = function_namespaces[func_key];
 
             let func = &checker.hir.function_prototypes[func_key];
-            let params = func.params.clone();
             let ret = func.ret.clone();
 
             let mut resolver = ResolveContext::create(&mut checker, func_key, func_ns);
 
-            for param in params {
-                resolver.add_name(param.name, NameInfo::Local { containing: func_key, typ: param.typ, loc: param.loc });
-            }
-
             let body = resolver.resolve_expr(&ast_func.body, Some(ret));
-            checker.hir.function_bodies.insert(func_key, FunctionBody { body });
+            let declared = checker.namespaces[func_ns].get_names();
+            checker.hir.function_bodies.insert(func_key, FunctionBody { body, declared });
         }
     }
 
@@ -468,7 +476,8 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                         }
                     }
                 };
-                Expr::Block { stmts, trailing_expr, loc: *loc }
+                let declared = self.checker.namespaces[block_ns].get_names();
+                Expr::Block { stmts, trailing_expr, declared, loc: *loc }
             }
             c => {
                 panic!("{:?}", c);
@@ -483,12 +492,12 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                     Some(t) => {
                         let typ = self.resolve_type(t);
                         let value = self.resolve_expr(value, Some(typ.clone()));
-                        let decl = self.add_name(name.clone(), NameInfo::Local { typ, containing: self.func, loc: *loc});
+                        let decl = self.add_name(name.clone(), NameInfo::Local { typ, loc: *loc});
                         Stmt::Decl { decl, value, loc: *loc }
                     },
                     None => {
                         let value = self.resolve_expr(value, None);
-                        let decl = self.add_name(name.clone(), NameInfo::Local { typ: self.type_of(&value), containing: self.func, loc: *loc});
+                        let decl = self.add_name(name.clone(), NameInfo::Local { typ: self.type_of(&value), loc: *loc});
                         Stmt::Decl { decl, value, loc: *loc }
                     }
                 }
@@ -591,6 +600,10 @@ mod test {
             fn bet(b: Beta, c: Gamma) -> bool { }
 
             struct Gamma { }
+
+            fn main() {
+
+            }
         ");
         let ast = parse_one(&s);
 
@@ -637,6 +650,10 @@ mod test {
             fn aleph(thing: Alpha) -> Alpha {
                 return thing;
             }
+
+            fn main() {
+
+            }
         ");
         let ast = parse_one(&s);
 
@@ -654,6 +671,10 @@ mod test {
 
             fn aleph(thing: Alpha) -> Alpha {
                 return thing;
+            }
+
+            fn main() {
+
             }
         ");
         let ast = parse_one(&s);
@@ -673,6 +694,10 @@ mod test {
             fn aleph(thing: Alpha) -> Alpha {
                 return 1;
             }
+
+            fn main() {
+
+            }
         ");
         let ast = parse_one(&s);
 
@@ -690,6 +715,10 @@ mod test {
 
             fn aleph(thing: Alpha) -> Alpha {
                 1
+            }
+
+            fn main() {
+
             }
         ");
         let ast = parse_one(&s);
@@ -709,6 +738,10 @@ mod test {
             fn aleph(thing: Alpha) {
                 return 1;
             }
+
+            fn main() {
+
+            }
         ");
         let ast = parse_one(&s);
 
@@ -724,6 +757,10 @@ mod test {
             }
 
             fn aleph(thing: Alpha) { }
+
+            fn main() {
+
+            }
         ");
         let ast = parse_one(&s);
 

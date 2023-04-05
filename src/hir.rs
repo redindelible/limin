@@ -12,7 +12,7 @@ new_key_type! {
 
 pub enum NameInfo<'ir> {
     Function { func: FunctionKey },
-    Local { containing: FunctionKey, typ: Type, loc: Location<'ir> }
+    Local { typ: Type, loc: Location<'ir> }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -107,14 +107,16 @@ pub struct FunctionPrototype<'ir> {
 }
 
 pub struct FunctionBody<'ir> {
-    pub body: Expr<'ir>
+    pub body: Expr<'ir>,
+    pub declared: Vec<NameKey>
 }
 
 #[derive(Clone)]
 pub struct Parameter<'ir> {
     pub name: String,
     pub typ: Type,
-    pub loc: Location<'ir>
+    pub loc: Location<'ir>,
+    pub decl: NameKey,
 }
 
 pub enum LogicOp {
@@ -131,7 +133,7 @@ pub enum Expr<'ir> {
     Integer { num: u64, loc: Location<'ir> },
     Unit { loc: Location<'ir> },
     LogicBinOp { left: Box<Expr<'ir>>, op: LogicOp, right: Box<Expr<'ir>>, loc: Location<'ir> },
-    Block { stmts: Vec<Stmt<'ir>>, trailing_expr: Option<Box<Expr<'ir>>>, loc: Location<'ir> },
+    Block { stmts: Vec<Stmt<'ir>>, trailing_expr: Option<Box<Expr<'ir>>>, declared: Vec<NameKey>, loc: Location<'ir> },
     Errored { loc: Location<'ir> }
 }
 
