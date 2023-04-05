@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
+use indexmap::IndexMap;
 use slotmap::{SlotMap, new_key_type, SecondaryMap};
 use crate::source::Location;
 
@@ -25,9 +26,8 @@ pub enum Type {
     Function { params: Vec<Type>, ret: Box<Type> }
 }
 
-
-#[derive(Default)]
 pub struct HIR<'s> {
+    pub name: String,
     pub names: SlotMap<NameKey, NameInfo<'s>>,
     pub structs: SlotMap<StructKey, Struct<'s>>,
     pub function_prototypes: SlotMap<FunctionKey, FunctionPrototype<'s>>,
@@ -35,6 +35,15 @@ pub struct HIR<'s> {
 }
 
 impl<'s> HIR<'s> {
+    pub fn new(name: String) -> HIR<'s> {
+        HIR {
+            name,
+            names: SlotMap::with_key(),
+            structs: SlotMap::with_key(),
+            function_prototypes: SlotMap::with_key(),
+            function_bodies: SecondaryMap::new()
+        }
+    }
     pub fn type_of_name(&self, name: NameKey) -> Type {
         match &self.names[name] {
             NameInfo::Function { func } => self.function_prototypes[*func].sig.clone(),
@@ -76,7 +85,7 @@ impl<'s> HIR<'s> {
 
 pub struct Struct<'ir> {
     pub name: String,
-    pub fields: HashMap<String, StructField<'ir>>,
+    pub fields: IndexMap<String, StructField<'ir>>,
     pub loc: Location<'ir>
 }
 
@@ -128,7 +137,17 @@ impl MayBreak for Expr<'_> {
         match self {
             Expr::Name { .. } | Expr::Integer { .. } | Expr::Unit { .. } | Expr::Errored { .. } => false,
             Expr::LogicBinOp { left, right, .. } => left.does_break() || right.does_break(),
-            Expr::Block { trailing_expr, .. } => trailing_expr.is_none()
+            Expr::Block { stmts, trailing_expr, .. } => {
+                for stmt in stmts {
+                    if stmt.does_break() {
+                        return true
+                    }
+                }
+                match trailing_expr {
+                    Some(expr) => expr.does_break(),
+                    None => false
+                }
+            }
         }
     }
 }

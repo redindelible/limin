@@ -4,16 +4,17 @@ use crate::source::{HasLoc, Location};
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct AST<'a> {
+    pub name: String,
     pub files: HashMap<PathBuf, File<'a>>
 }
 
 impl AST<'_> {
-    pub fn from_files(files: Vec<File>) -> AST {
+    pub fn from_files(name: String, files: Vec<File>) -> AST {
         let mut map = HashMap::new();
         for file in files {
             map.insert(file.path.clone(), file);
         }
-        AST { files: map }
+        AST { name, files: map }
     }
 }
 

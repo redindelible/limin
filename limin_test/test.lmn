@@ -1,3 +1,8 @@
+struct Foo {
+    bar: i32;
+    twice: bool;
+}
+
 fn main() -> i32 {
     let a := 32;
     return a;

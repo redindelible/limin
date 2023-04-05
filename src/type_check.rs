@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use indexmap::IndexMap;
 use crate::ast;
 use crate::error::Message;
 use crate::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, LogicOp, Stmt, MayBreak};
@@ -112,8 +113,8 @@ mod type_check_state {
     }
 
     impl<'a> TypeCheck<'a> {
-        pub fn new() -> TypeCheck<'a> {
-            TypeCheck { namespaces: SlotMap::with_key(), hir: Default::default(), errors: Default::default() }
+        pub fn new(name: String) -> TypeCheck<'a> {
+            TypeCheck { namespaces: SlotMap::with_key(), hir: HIR::new(name), errors: Default::default() }
         }
 
         pub fn add_type(&mut self, ns: NamespaceKey, name: String, typ: Type) {
@@ -205,7 +206,7 @@ struct CollectedFunctions<'a> {
 }
 
 fn initialize(ast: ast::AST) -> Initial {
-    let mut checker = TypeCheck::new();
+    let mut checker = TypeCheck::new(ast.name);
     let root = checker.add_namespace(None);
     checker.add_type(root, "i32".to_owned(), Type::Integer { bits: 32 });
     checker.add_type(root, "i64".to_owned(), Type::Integer { bits: 64 });
@@ -226,7 +227,7 @@ fn collect_structs(initial: Initial) -> CollectedStructs {
             // if common.get_type(file_ns, &name).is_some() {
             //     common.push_error(TypeCheckError::CouldNotResolveName(name.clone(), ))
             // }
-            let struct_key = checker.add_struct(Struct { name: name.clone(), fields: HashMap::new(), loc: *loc });
+            let struct_key = checker.add_struct(Struct { name: name.clone(), fields: IndexMap::new(), loc: *loc });
             checker.add_type(file_ns, name.clone(), Type::Struct { struct_: struct_key });
         }
     }
@@ -504,7 +505,7 @@ mod test {
         let file = crate::parser::parse_file(s).unwrap();
         let mut map = HashMap::new();
         map.insert(file.path.clone(), file);
-        ast::AST { files: map }
+        ast::AST { name: "".into(), files: map }
     }
 
     #[test]

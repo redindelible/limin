@@ -11,3 +11,4 @@ slotmap = "1.0.6"
 indexmap = "1.9.3"
 typed-arena = "2.0.2"
 clap = { version = "4.2.1", features = ["derive"] }
+semver = "1.0.17"
