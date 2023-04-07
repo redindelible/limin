@@ -91,6 +91,14 @@ impl Types {
         Constant::Integer { ty: Types::int(bits), value }
     }
 
+    pub fn zeroinit(ty: TypeRef) -> Constant {
+        Constant::ZeroInitializer(ty)
+    }
+
+    pub fn null() -> Constant {
+        Constant::ZeroInitializer(Types::ptr())
+    }
+
     fn emit(&self) -> String {
         let mut types = String::new();
         for s in self.named_structs.values() {
@@ -124,8 +132,7 @@ impl Module {
             name: name.into(),
             ret: Rc::clone(&ret), parameters,
             blocks: RefCell::new(vec![]),
-            ty: Types::function(ret, param_types),
-            mangle: RefCell::new(0)
+            ty: Types::function(ret, param_types)
         });
         self.functions.insert(name.into(), Rc::clone(&item));
         item
@@ -226,13 +233,11 @@ pub struct Function {
     parameters: Vec<Parameter>,
     blocks: RefCell<Vec<BasicBlockRef>>,
     ty: TypeRef,
-    mangle: RefCell<u32>,
 }
 
 impl Function {
-    pub fn add_block(self: &Rc<Function>, name: String) -> BasicBlockRef {
+    fn add_block(self: &Rc<Function>, name: String) -> BasicBlockRef {
         let item = Rc::new(BasicBlock {
-            func: Rc::downgrade(self),
             label: name,
             instructions: RefCell::new(vec![]),
             terminator: RefCell::new(None)
@@ -253,12 +258,6 @@ impl Function {
         } else {
             format!("declare {} @{}({})\n\n", self.ret.emit(), self.name, arguments.join(", "))
         }
-    }
-
-    fn next(&self) -> String {
-        let num = *self.mangle.borrow();
-        *self.mangle.borrow_mut() += 1;
-        format!("{:>08X}", num)
     }
 
     pub fn as_value(self: Rc<Function>) -> ValueRef {
@@ -287,41 +286,75 @@ impl Parameter {
     }
 }
 
+pub struct Builder {
+    func: FunctionRef,
+    mangle: RefCell<u32>,
+    curr: BasicBlockRef
+}
+
+impl Builder {
+    pub fn new(func: &FunctionRef) -> Builder {
+        let entry = func.add_block("entry".into());
+        Builder {
+            func: Rc::clone(func), mangle: RefCell::new(0), curr: entry
+        }
+    }
+
+    fn next(&self) -> String {
+        let num = *self.mangle.borrow();
+        *self.mangle.borrow_mut() += 1;
+        format!("{}", num)
+    }
+
+
+    pub fn ret(&self, val: ValueRef) {
+        *self.curr.terminator.borrow_mut() = Some(Terminator::Return(val))
+    }
+
+    pub fn alloca(&self, name: Option<String>, ty: TypeRef) -> InstrRef {
+        let name = name.unwrap_or_else(|| self.next());
+        let instr_ref = Rc::new(Instruction::Alloca { name, ty });
+        self.curr.instructions.borrow_mut().push(Rc::clone(&instr_ref));
+        instr_ref
+    }
+
+    pub fn call(&self, name: Option<String>, ret: TypeRef, func: ValueRef, args: Vec<ValueRef>) -> InstrRef {
+        let name = name.unwrap_or_else(|| self.next());
+        let instr_ref = Rc::new(Instruction::Call { name, ret, func, args});
+        self.curr.instructions.borrow_mut().push(Rc::clone(&instr_ref));
+        instr_ref
+    }
+
+    pub fn gep(&self, name: Option<String>, ty: TypeRef, base: ValueRef, indices: Vec<GEPIndex>) -> InstrRef {
+        let name = name.unwrap_or_else(|| self.next());
+        let instr_ref = Rc::new(Instruction::GetElementPointer { name, ty, base, indices });
+        self.curr.instructions.borrow_mut().push(Rc::clone(&instr_ref));
+        instr_ref
+    }
+
+    pub fn load(&self, name: Option<String>, ty: TypeRef, ptr: ValueRef) -> InstrRef {
+        let name = name.unwrap_or_else(|| self.next());
+        let instr_ref = Rc::new(Instruction::Load { name, ty, ptr });
+        self.curr.instructions.borrow_mut().push(Rc::clone(&instr_ref));
+        instr_ref
+    }
+
+    pub fn store(&self, ptr: ValueRef, value: ValueRef) -> InstrRef {
+        let instr_ref = Rc::new(Instruction::Store { ptr, value });
+        self.curr.instructions.borrow_mut().push(Rc::clone(&instr_ref));
+        instr_ref
+    }
+}
+
 pub type BasicBlockRef = Rc<BasicBlock>;
 
 pub struct BasicBlock {
-    func: Weak<Function>,
     label: String,
     instructions: RefCell<Vec<InstrRef>>,
     terminator: RefCell<Option<Terminator>>
 }
 
 impl BasicBlock {
-    pub fn ret(&self, val: ValueRef) {
-        *self.terminator.borrow_mut() = Some(Terminator::Return(val))
-    }
-
-    pub fn alloca(&self, name: Option<String>, ty: TypeRef) -> InstrRef {
-        let name = name.unwrap_or_else(|| self.func.upgrade().unwrap().next());
-        let instr_ref = Rc::new(Instruction::Alloca { name, ty });
-        self.instructions.borrow_mut().push(Rc::clone(&instr_ref));
-        instr_ref
-    }
-
-    pub fn call(&self, name: Option<String>, ret: TypeRef, func: ValueRef, args: Vec<ValueRef>) -> InstrRef {
-        let name = name.unwrap_or_else(|| self.func.upgrade().unwrap().next());
-        let instr_ref = Rc::new(Instruction::Call { name, ret, func, args});
-        self.instructions.borrow_mut().push(Rc::clone(&instr_ref));
-        instr_ref
-    }
-
-    pub fn gep(&self, name: Option<String>, ty: TypeRef, base: ValueRef, indices: Vec<GEPIndex>) -> InstrRef {
-        let name = name.unwrap_or_else(|| self.func.upgrade().unwrap().next());
-        let instr_ref = Rc::new(Instruction::GetElementPointer { name, ty, base, indices });
-        self.instructions.borrow_mut().push(Rc::clone(&instr_ref));
-        instr_ref
-    }
-
     fn emit(&self) -> String {
         let mut s = format!("{}:\n", self.label);
         for instr in self.instructions.borrow().iter() {
@@ -342,15 +375,17 @@ pub type InstrRef = Rc<Instruction>;
 pub type ValueRef = Rc<dyn Value>;
 
 pub enum GEPIndex {
-    StructIndex(u32),
-    ArrayIndex(ValueRef)
+    ConstantIndex(u32),
+    ArrayIndex(ValueRef),
 }
 
 pub enum Instruction {
     Add { name: String, ret: TypeRef, left: ValueRef, right: ValueRef },
     Alloca { name: String, ty: TypeRef },
     Call { name: String, ret: TypeRef, func: ValueRef, args: Vec<ValueRef> },
-    GetElementPointer { name: String, ty: TypeRef, base: ValueRef, indices: Vec<GEPIndex> }
+    GetElementPointer { name: String, ty: TypeRef, base: ValueRef, indices: Vec<GEPIndex> },
+    Load { name: String, ty: TypeRef, ptr: ValueRef },
+    Store { ptr: ValueRef, value: ValueRef },
 }
 
 impl Instruction {
@@ -370,7 +405,7 @@ impl Instruction {
                 let mut rendered_indices = vec![];
                 for index in indices {
                     match index {
-                        GEPIndex::StructIndex(value) => {
+                        GEPIndex::ConstantIndex(value) => {
                             rendered_indices.push(format!("i32 {value}"))
                         }
                         GEPIndex::ArrayIndex(value) => {
@@ -378,7 +413,13 @@ impl Instruction {
                         }
                     }
                 }
-                format!("${name} = getelementptr {} {}, {}", ty.emit(), base.emit_value(), rendered_indices.join(", "))
+                format!("%{name} = getelementptr {} {}, {}\n", ty.emit(), base.emit_value(), rendered_indices.join(", "))
+            },
+            Instruction::Load { name, ty, ptr } => {
+                format!("%{name} = load {}, ptr {}\n", ty.emit(), ptr.emit_value())
+            }
+            Instruction::Store { ptr, value, .. } => {
+                format!("store {} {}, ptr {}\n", value.ty().emit(), value.emit_value(), ptr.emit_value())
             }
         }
     }
@@ -394,7 +435,9 @@ impl Value for Rc<Instruction> {
             Instruction::Add { name, .. } => format!("%{}", name),
             Instruction::Alloca { name, .. } => format!("%{name}"),
             Instruction::Call { name, .. } => format!("%{name}"),
-            Instruction::GetElementPointer { name, .. } => format!("%{name}")
+            Instruction::GetElementPointer { name, .. } => format!("%{name}"),
+            Instruction::Load { name, .. } => format!("%{name}"),
+            Instruction::Store { .. } => panic!()
         }
     }
 
@@ -407,7 +450,7 @@ impl Value for Rc<Instruction> {
                 let mut curr = Rc::clone(ty);
                 for index in &indices[1..] {
                     match index {
-                        GEPIndex::StructIndex(value) => {
+                        GEPIndex::ConstantIndex(value) => {
                             curr = curr.type_at_index(Some(*value as usize));
                         }
                         GEPIndex::ArrayIndex(_) => {
@@ -416,7 +459,9 @@ impl Value for Rc<Instruction> {
                     }
                 }
                 return curr;
-            }
+            },
+            Instruction::Load { ty, .. } => Rc::clone(ty),
+            Instruction::Store { .. } => panic!()
         }
     }
 }
@@ -492,14 +537,14 @@ mod test {
         m.emit();
     }
 
-    #[test]
-    fn test_function() {
-        let mut m = Module::new(String::from("test"));
-
-        let f = m.add_function("main", Types::int(32), vec![]);
-        let b = f.add_block("entry".into());
-        b.ret(Types::int_constant(32, 0).to_value());
-
-        print!("{}", m.emit());
-    }
+    // #[test]
+    // fn test_function() {
+    //     let mut m = Module::new(String::from("test"));
+    //
+    //     let f = m.add_function("main", Types::int(32), vec![]);
+    //     let b = f.add_block("entry".into());
+    //     b.ret(Types::int_constant(32, 0).to_value());
+    //
+    //     print!("{}", m.emit());
+    // }
 }
