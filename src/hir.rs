@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fmt::Debug;
 use indexmap::IndexMap;
 use slotmap::{SlotMap, new_key_type, SecondaryMap};

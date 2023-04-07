@@ -79,11 +79,11 @@ pub struct Token<'a> {
     pub loc: Location<'a>
 }
 
-impl<'a> Token<'a> {
-    pub fn eof(source: &'a Source) -> Self {
-        Token { typ: TokenType::EOF, text: "", leading_ws: false, loc: source.eof() }
-    }
-}
+// impl<'a> Token<'a> {
+//     pub fn eof(source: &'a Source) -> Self {
+//         Token { typ: TokenType::EOF, text: "", leading_ws: false, loc: source.eof() }
+//     }
+// }
 
 impl PartialEq<Self> for Token<'_> {
     fn eq(&self, other: &Self) -> bool {
@@ -209,30 +209,34 @@ mod test {
         Token { typ: EOF, text: "", leading_ws: false, loc: source.eof() }
     }
 
+    fn source(name: &str, text: &str) -> Source {
+        Source::from_text(name,  text.to_owned())
+    }
+
     #[test]
     fn lex_empty() {
-        let s = Source::from_text("<test>", "");
+        let s = source("<test>", "");
         let toks = Lexer::lex(&s);
         assert_eq!(toks, vec![token_eof(&s)].into());
     }
 
     #[test]
     fn lex_one() {
-        let s = Source::from_text("<test>", "alpha");
+        let s = source("<test>", "alpha");
         let toks = Lexer::lex(&s);
         assert_eq!(toks, vec![token(&s, Identifier, "alpha", false), token_eof(&s)].into());
     }
 
     #[test]
     fn lex_one_ws() {
-        let s = Source::from_text("<test>", "  alpha ");
+        let s = source("<test>", "  alpha ");
         let toks = Lexer::lex(&s);
         assert_eq!(toks, vec![token(&s, Identifier, "alpha", true), token_eof(&s)].into());
     }
 
     #[test]
     fn lex_two_ws() {
-        let s = Source::from_text("<test>", "alpha   beta");
+        let s = source("<test>", "alpha   beta");
         let toks = Lexer::lex(&s);
         assert_eq!(toks, vec![token(&s, Identifier, "alpha", false), token(&s, Identifier, "beta", true), token_eof(&s)].into());
     }

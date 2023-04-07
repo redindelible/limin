@@ -1,7 +1,6 @@
 use std::cell::RefCell;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 use indexmap::IndexMap;
-use crate::llvm;
 
 pub type FunctionRef = Rc<Function>;
 
@@ -413,7 +412,7 @@ impl Instruction {
                         }
                     }
                 }
-                format!("%{name} = getelementptr {} {}, {}\n", ty.emit(), base.emit_value(), rendered_indices.join(", "))
+                format!("%{name} = getelementptr {}, ptr {}, {}\n", ty.emit(), base.emit_value(), rendered_indices.join(", "))
             },
             Instruction::Load { name, ty, ptr } => {
                 format!("%{name} = load {}, ptr {}\n", ty.emit(), ptr.emit_value())

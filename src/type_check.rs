@@ -378,10 +378,6 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
         self.checker.add_name(self.namespace, name, info)
     }
 
-    fn name_info(&self, name: NameKey) -> &NameInfo<'a> {
-        &self.checker.hir.names[name]
-    }
-
     fn resolve_type(&mut self, typ: &ast::Type<'a>) -> Type {
         resolve_type(self.checker, self.namespace, typ)
     }
@@ -523,6 +519,10 @@ mod test {
     use crate::source::Source;
     use crate::type_check::{collect_fields, collect_function_bodies, collect_functions, collect_structs, initialize, resolve_types};
 
+    fn source(name: &str, text: &str) -> Source {
+        Source::from_text(name, text.to_owned())
+    }
+
     fn parse_one(s: &Source) -> ast::AST {
         let file = crate::parser::parse_file(s).unwrap();
         let mut map = HashMap::new();
@@ -532,7 +532,7 @@ mod test {
 
     #[test]
     fn verify_collect_structs() {
-        let s = Source::from_text("<test>", r"
+        let s = source("<test>", r"
             struct Alpha { }
 
             struct Beta { }
@@ -551,7 +551,7 @@ mod test {
 
     #[test]
     fn verify_collect_fields() {
-        let s = Source::from_text("<test>", r"
+        let s = source("<test>", r"
             struct Alpha {
                 x: i32;
                 y: Alpha;
@@ -590,7 +590,7 @@ mod test {
 
     #[test]
     fn verify_collect_functions() {
-        let s = Source::from_text("<test>", r"
+        let s = source("<test>", r"
             struct Alpha { }
 
             struct Beta { }
@@ -641,7 +641,7 @@ mod test {
 
     #[test]
     fn verify_collect_function_bodies() {
-        let s = Source::from_text("<test>", r"
+        let s = source("<test>", r"
             struct Alpha {
                 a: i32;
                 b: Alpha;
@@ -663,7 +663,7 @@ mod test {
 
     #[test]
     fn test_resolve_types_1() {
-        let s = Source::from_text("<test>", r"
+        let s = source("<test>", r"
             struct Alpha {
                 a: i32;
                 b: Alpha;
@@ -685,7 +685,7 @@ mod test {
     #[test]
     #[should_panic]
     fn test_resolve_types_2() {
-        let s = Source::from_text("<test>", r"
+        let s = source("<test>", r"
             struct Alpha {
                 a: i32;
                 b: Alpha;
@@ -707,7 +707,7 @@ mod test {
     #[test]
     #[should_panic]
     fn test_resolve_types_3() {
-        let s = Source::from_text("<test>", r"
+        let s = source("<test>", r"
             struct Alpha {
                 a: i32;
                 b: Alpha;
@@ -729,7 +729,7 @@ mod test {
     #[test]
     #[should_panic]
     fn test_resolve_types_4() {
-        let s = Source::from_text("<test>", r"
+        let s = source("<test>", r"
             struct Alpha {
                 a: i32;
                 b: Alpha;
@@ -750,7 +750,7 @@ mod test {
 
     #[test]
     fn test_resolve_types_5() {
-        let s = Source::from_text("<test>", r"
+        let s = source("<test>", r"
             struct Alpha {
                 a: i32;
                 b: Alpha;

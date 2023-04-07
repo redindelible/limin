@@ -45,7 +45,7 @@ impl<'a> Message for ParserError<'a> {
 type ParseResult<T> = Result<T, usize>;
 
 struct Parser<'a> {
-    source: &'a Source,
+    // source: &'a Source,
     tokens: Box<[Token<'a>]>,
     idx: usize,
     errors: Vec<ParserError<'a>>
@@ -71,7 +71,7 @@ impl<'a> Parser<'a> {
 
     fn new(source: &'a Source) -> Parser<'a> {
         let tokens = Lexer::lex(source);
-        Parser { source, tokens, idx: 0, errors: Vec::new() }
+        Parser { tokens, idx: 0, errors: Vec::new() }
     }
 
     fn store(&self) -> Point {
@@ -372,9 +372,13 @@ mod test {
     use crate::parser::{parse_file, Parser};
     use crate::source::Source;
 
+    fn source(name: &str, text: &str) -> Source {
+        Source::from_text(name, text.to_owned())
+    }
+
     #[test]
     fn test_expr_single_ident() {
-        let s = Source::from_text("test", "hello");
+        let s = source("test", "hello");
         let mut p = Parser::new(&s);
         let e = p.parse_expr().unwrap();
 
@@ -383,7 +387,7 @@ mod test {
 
     #[test]
     fn test_expr_call() {
-        let s = Source::from_text("test", "hello(ad)");
+        let s = source("test", "hello(ad)");
         let mut p = Parser::new(&s);
         let e = p.parse_expr().unwrap_or_else(|_| panic!("{:?}", p.errors));
 
@@ -397,7 +401,7 @@ mod test {
 
     #[test]
     fn test_expr_less_than() {
-        let s = Source::from_text("test", "hello < ad");
+        let s = source("test", "hello < ad");
         let mut p = Parser::new(&s);
         let e = p.parse_expr().unwrap();
 
@@ -410,7 +414,7 @@ mod test {
 
     #[test]
     fn test_expr_generic() {
-        let s = Source::from_text("test", "hello < ad >(a, b)");
+        let s = source("test", "hello < ad >(a, b)");
         let mut p = Parser::new(&s);
         let e = p.parse_expr().unwrap();
 
@@ -430,7 +434,7 @@ mod test {
 
     #[test]
     fn test_expr_generic_false() {
-        let s = Source::from_text("test", "hello < ad > a");
+        let s = source("test", "hello < ad > a");
         let mut p = Parser::new(&s);
         let e = p.parse_expr().unwrap();
 
@@ -439,7 +443,7 @@ mod test {
 
     #[test]
     fn test_expr_generic_hard() {
-        let s = Source::from_text("test", "hello(a<b, c>(d))");
+        let s = source("test", "hello(a<b, c>(d))");
         let mut p = Parser::new(&s);
         let e = p.parse_expr().unwrap();
 
@@ -449,7 +453,7 @@ mod test {
 
     #[test]
     fn test_function() {
-        let s = Source::from_text("test", r"
+        let s = source("test", r"
             fn main() {
                 let a: int = 0;
                 return 0;
@@ -470,7 +474,7 @@ mod test {
 
     #[test]
     fn test_function_return() {
-        let s = Source::from_text("test", r"
+        let s = source("test", r"
             fn main() -> int {
                 let a: int = 0;
                 return 0;
@@ -491,7 +495,7 @@ mod test {
 
     #[test]
     fn test_struct() {
-        let s = Source::from_text("test", r"
+        let s = source("test", r"
             struct thing {
                 first: int;
             }
@@ -504,7 +508,7 @@ mod test {
 
     #[test]
     fn test_file() {
-        let s = Source::from_text("test", r"
+        let s = source("test", r"
             fn main() {
                 let a: int = 0;
                 return 0;

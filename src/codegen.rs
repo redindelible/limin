@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use slotmap::SecondaryMap;
 use crate::{hir, llvm};
-use crate::hir::{FunctionKey, HIR, MayBreak, NameKey, StructKey};
-use crate::llvm::{BasicBlockRef, Builder, GEPIndex, InstrRef, TypeRef, ValueRef};
+use crate::hir::{FunctionKey, MayBreak, NameKey, StructKey};
+use crate::llvm::{Builder, GEPIndex};
 
-pub fn generate_llvm(hir: HIR) -> llvm::Module {
+pub fn generate_llvm(hir: hir::HIR) -> llvm::Module {
     let mut gen = Codegen::new(&hir);
     gen.generate();
     gen.llvm
@@ -21,9 +21,9 @@ struct FunctionInfo {
     llvm_ref: llvm::FunctionRef,
 }
 
-struct NameInfo {
-    llvm_ref: llvm::ValueRef,
-}
+// struct NameInfo {
+//     llvm_ref: llvm::ValueRef,
+// }
 
 struct Codegen<'a> {
     llvm: llvm::Module,
@@ -31,21 +31,15 @@ struct Codegen<'a> {
 
     structs: SecondaryMap<StructKey, StructInfo>,
     functions: SecondaryMap<FunctionKey, FunctionInfo>,
-    names: SecondaryMap<NameKey, NameInfo>,
+    // names: SecondaryMap<NameKey, NameInfo>,
     mangle: RefCell<u32>,
-}
-
-fn inc(item: &mut u32) -> u32 {
-    let val = *item;
-    *item += 1;
-    val
 }
 
 struct FrameInfo<'a> {
     ty: llvm::TypeRef,
     indices: HashMap<NameKey, usize>,
     parent: Option<&'a FrameInfo<'a>>,
-    llvm_ref: ValueRef
+    llvm_ref: llvm::ValueRef
 }
 
 impl Codegen<'_> {
@@ -55,7 +49,7 @@ impl Codegen<'_> {
             hir,
             structs: SecondaryMap::new(),
             functions: SecondaryMap::new(),
-            names: SecondaryMap::new(),
+            // names: SecondaryMap::new(),
             mangle: RefCell::new(0)
         }
     }
@@ -102,7 +96,7 @@ impl Codegen<'_> {
         }
 
         for (key, body) in &hir.function_bodies {
-            let proto = &hir.function_prototypes[key];
+            // let proto = &hir.function_prototypes[key];
             let func_ref = &self.functions[key].llvm_ref;
             let builder = Builder::new(func_ref);
 
