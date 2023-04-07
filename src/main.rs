@@ -35,7 +35,7 @@ struct Args {
 enum CompileResult<'a> {
     CouldNotParse(Vec<ParserError<'a>>),
     CouldNotTypeCheck(Vec<TypeCheckError<'a>>),
-    FileError(Option<io::Error>),
+    FileError(io::Error),
     ArgumentError(String),
     ClangError,
     Success
@@ -93,20 +93,20 @@ impl Compiler {
         match std::fs::create_dir_all(&build_dir) {
             Ok(_) => (),
             Err(e) => {
-                return CompileResult::FileError(Some(e));
+                return CompileResult::FileError(e);
             }
         };
         let ll_file = build_dir.join(name).with_extension("ll");
         let mut ll_file_handle = match File::create(&ll_file) {
             Ok(f) => f,
             Err(e) => {
-                return CompileResult::FileError(Some(e));
+                return CompileResult::FileError(e);
             }
         };
         match ll_file_handle.write_all(llvm.emit().as_bytes()) {
             Ok(()) => (),
             Err(e) => {
-                return CompileResult::FileError(Some(e));
+                return CompileResult::FileError(e);
             }
         };
         drop(ll_file_handle);
@@ -114,7 +114,7 @@ impl Compiler {
         let output = String::from_utf8(match Command::new(&self.clang).arg("--version").output() {
             Ok(o) => o,
             Err(e) => {
-                return CompileResult::FileError(Some(e));
+                return CompileResult::FileError(e);
             }
         }.stdout).unwrap();
         let output: Vec<&str> = output.lines().collect();
@@ -140,7 +140,7 @@ impl Compiler {
                 .status() {
             Ok(output) => output,
             Err(e) => {
-                return CompileResult::FileError(Some(e));
+                return CompileResult::FileError(e);
             }
         };
         if !output.success() {
@@ -169,15 +169,9 @@ fn main() {
                 err.render();
             }
         }
-        CompileResult::FileError(e) => {
-            eprintln!("{:?}", e);
-        }
-        CompileResult::ArgumentError(err) => {
-            eprintln!("{}", err);
-        }
-        CompileResult::ClangError => {
-
-        }
+        CompileResult::FileError(e) => eprintln!("{}", e),
+        CompileResult::ArgumentError(err) => eprintln!("{}", err),
+        CompileResult::ClangError => { /* then clang will write the error to stdout/stderr */ }
         CompileResult::Success => ()
     };
 }

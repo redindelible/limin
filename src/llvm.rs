@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use indexmap::IndexMap;
 use crate::llvm;
 
@@ -35,6 +35,21 @@ impl Type {
                 let items: Vec<String> = params.iter().map(|t| t.emit()).collect();
                 format!("{} ({})", ret.emit(), items.join(", "))
             }
+        }
+    }
+
+    fn type_at_index(&self, index: Option<usize>) -> TypeRef {
+        match self {
+            Type::NamedStruct(struct_ref) => {
+                Rc::clone(&struct_ref.fields.borrow().clone().unwrap()[index.unwrap()])
+            }
+            Type::Struct(fields) => {
+                Rc::clone(&fields[index.unwrap()])
+            }
+            Type::Array(elem, ..) => {
+                Rc::clone(elem)
+            },
+            _ => panic!()
         }
     }
 }
@@ -105,7 +120,13 @@ impl Module {
 
     pub fn add_function(&mut self, name: &str, ret: TypeRef, parameters: Vec<Parameter>) -> FunctionRef {
         let param_types: Vec<TypeRef> = parameters.iter().map(|p| Rc::clone(&p.typ)).collect();
-        let item = Rc::new(Function { name: name.into(), ret: Rc::clone(&ret), parameters, blocks: RefCell::new(vec![]), ty: Types::function(ret, param_types)});
+        let item = Rc::new(Function {
+            name: name.into(),
+            ret: Rc::clone(&ret), parameters,
+            blocks: RefCell::new(vec![]),
+            ty: Types::function(ret, param_types),
+            mangle: RefCell::new(0)
+        });
         self.functions.insert(name.into(), Rc::clone(&item));
         item
     }
@@ -128,6 +149,7 @@ pub trait Value {
     fn ty(&self) -> TypeRef;
 }
 
+#[derive(Clone)]
 pub enum Constant {
     ZeroInitializer(TypeRef),
     Integer {
@@ -152,7 +174,7 @@ pub enum Constant {
 
 impl Constant {
     pub fn to_value(self) -> ValueRef {
-        Box::new(self)
+        Rc::new(self)
     }
 }
 
@@ -167,11 +189,11 @@ impl Value for Constant {
                 format!("c\"{}\"", String::from_utf8(chars.clone()).unwrap())
             },
             Constant::Array { elem_ty, items, .. } => {
-                let items: Vec<String> = items.iter().map(|item| elem_ty.emit() + item.emit_value().as_str()).collect();
+                let items: Vec<String> = items.iter().map(|item| elem_ty.emit() + &item.emit_value()).collect();
                 format!("[ {} ]", items.join(", "))
             }
             Constant::Struct { items, .. } => {
-                let items: Vec<String> = items.iter().map(|item| item.ty().emit() + item.emit_value().as_str()).collect();
+                let items: Vec<String> = items.iter().map(|item| item.ty().emit() + &item.emit_value()).collect();
                 format!("{{ {} }}", items.join(", "))
             }
             Constant::Boolean(_, value) => {
@@ -183,11 +205,11 @@ impl Value for Constant {
     fn ty(&self) -> TypeRef {
         Rc::clone(match self {
             Constant::ZeroInitializer(ty) => ty,
-            Constant::Integer { ty, .. } => ty,
-            Constant::String { ty, .. } => ty,
-            Constant::Array { ty, .. } => ty,
-            Constant::Struct {  ty, .. } => ty,
-            Constant::Boolean(ty, _) => ty
+            Constant::Integer  { ty, .. } => ty,
+            Constant::String   { ty, .. } => ty,
+            Constant::Array    { ty, .. } => ty,
+            Constant::Struct   { ty, .. } => ty,
+            Constant::Boolean  ( ty, _  ) => ty
         })
     }
 }
@@ -204,11 +226,13 @@ pub struct Function {
     parameters: Vec<Parameter>,
     blocks: RefCell<Vec<BasicBlockRef>>,
     ty: TypeRef,
+    mangle: RefCell<u32>,
 }
 
 impl Function {
-    pub fn add_block(&self, name: String) -> BasicBlockRef {
+    pub fn add_block(self: &Rc<Function>, name: String) -> BasicBlockRef {
         let item = Rc::new(BasicBlock {
+            func: Rc::downgrade(self),
             label: name,
             instructions: RefCell::new(vec![]),
             terminator: RefCell::new(None)
@@ -231,8 +255,14 @@ impl Function {
         }
     }
 
+    fn next(&self) -> String {
+        let num = *self.mangle.borrow();
+        *self.mangle.borrow_mut() += 1;
+        format!("{:>08X}", num)
+    }
+
     pub fn as_value(self: Rc<Function>) -> ValueRef {
-        Box::new(self)
+        Rc::new(self)
     }
 }
 
@@ -260,6 +290,7 @@ impl Parameter {
 pub type BasicBlockRef = Rc<BasicBlock>;
 
 pub struct BasicBlock {
+    func: Weak<Function>,
     label: String,
     instructions: RefCell<Vec<InstrRef>>,
     terminator: RefCell<Option<Terminator>>
@@ -270,14 +301,23 @@ impl BasicBlock {
         *self.terminator.borrow_mut() = Some(Terminator::Return(val))
     }
 
-    pub fn alloca(&self, name: String, ty: TypeRef) -> InstrRef {
+    pub fn alloca(&self, name: Option<String>, ty: TypeRef) -> InstrRef {
+        let name = name.unwrap_or_else(|| self.func.upgrade().unwrap().next());
         let instr_ref = Rc::new(Instruction::Alloca { name, ty });
         self.instructions.borrow_mut().push(Rc::clone(&instr_ref));
         instr_ref
     }
 
-    pub fn call(&self, name: String, ret: TypeRef, func: ValueRef, args: Vec<ValueRef>) -> InstrRef {
+    pub fn call(&self, name: Option<String>, ret: TypeRef, func: ValueRef, args: Vec<ValueRef>) -> InstrRef {
+        let name = name.unwrap_or_else(|| self.func.upgrade().unwrap().next());
         let instr_ref = Rc::new(Instruction::Call { name, ret, func, args});
+        self.instructions.borrow_mut().push(Rc::clone(&instr_ref));
+        instr_ref
+    }
+
+    pub fn gep(&self, name: Option<String>, ty: TypeRef, base: ValueRef, indices: Vec<GEPIndex>) -> InstrRef {
+        let name = name.unwrap_or_else(|| self.func.upgrade().unwrap().next());
+        let instr_ref = Rc::new(Instruction::GetElementPointer { name, ty, base, indices });
         self.instructions.borrow_mut().push(Rc::clone(&instr_ref));
         instr_ref
     }
@@ -299,12 +339,18 @@ impl BasicBlock {
 }
 
 pub type InstrRef = Rc<Instruction>;
-pub type ValueRef = Box<dyn Value>;
+pub type ValueRef = Rc<dyn Value>;
+
+pub enum GEPIndex {
+    StructIndex(u32),
+    ArrayIndex(ValueRef)
+}
 
 pub enum Instruction {
     Add { name: String, ret: TypeRef, left: ValueRef, right: ValueRef },
     Alloca { name: String, ty: TypeRef },
-    Call { name: String, ret: TypeRef, func: ValueRef, args: Vec<ValueRef> }
+    Call { name: String, ret: TypeRef, func: ValueRef, args: Vec<ValueRef> },
+    GetElementPointer { name: String, ty: TypeRef, base: ValueRef, indices: Vec<GEPIndex> }
 }
 
 impl Instruction {
@@ -320,11 +366,25 @@ impl Instruction {
                 let args: Vec<String> = args.iter().map(|a| a.ty().emit() + &a.emit_value()).collect();
                 format!("%{name} = call {} {}({})\n", ret.emit(), func.emit_value(), args.join(", "))
             }
+            Instruction::GetElementPointer { name, ty, base, indices } => {
+                let mut rendered_indices = vec![];
+                for index in indices {
+                    match index {
+                        GEPIndex::StructIndex(value) => {
+                            rendered_indices.push(format!("i32 {value}"))
+                        }
+                        GEPIndex::ArrayIndex(value) => {
+                            rendered_indices.push(format!("{} {}", value.ty().emit(), value.emit_value()))
+                        }
+                    }
+                }
+                format!("${name} = getelementptr {} {}, {}", ty.emit(), base.emit_value(), rendered_indices.join(", "))
+            }
         }
     }
 
     pub fn as_value(self: Rc<Instruction>) -> ValueRef {
-        Box::new(self)
+        Rc::new(self)
     }
 }
 
@@ -333,7 +393,8 @@ impl Value for Rc<Instruction> {
         match self.as_ref() {
             Instruction::Add { name, .. } => format!("%{}", name),
             Instruction::Alloca { name, .. } => format!("%{name}"),
-            Instruction::Call { name, .. } => format!("%{name}")
+            Instruction::Call { name, .. } => format!("%{name}"),
+            Instruction::GetElementPointer { name, .. } => format!("%{name}")
         }
     }
 
@@ -341,7 +402,21 @@ impl Value for Rc<Instruction> {
         match self.as_ref() {
             Instruction::Add { ret, .. } => Rc::clone(ret),
             Instruction::Alloca { .. } => Types::ptr(),
-            Instruction::Call { ret, .. } => Rc::clone(ret)
+            Instruction::Call { ret, .. } => Rc::clone(ret),
+            Instruction::GetElementPointer { ty, indices, .. } => {
+                let mut curr = Rc::clone(ty);
+                for index in &indices[1..] {
+                    match index {
+                        GEPIndex::StructIndex(value) => {
+                            curr = curr.type_at_index(Some(*value as usize));
+                        }
+                        GEPIndex::ArrayIndex(_) => {
+                            curr = curr.type_at_index(None);
+                        }
+                    }
+                }
+                return curr;
+            }
         }
     }
 }
