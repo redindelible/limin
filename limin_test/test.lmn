@@ -4,7 +4,7 @@ struct Foo {
 }
 
 fn identity(n: i32) -> i32 {
-    n
+    return n;
 }
 
 

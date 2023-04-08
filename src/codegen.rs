@@ -135,7 +135,7 @@ impl Codegen<'_> {
         let main_info = &self.functions[main_key];
         let main = self.llvm.add_function("main", llvm::Types::int(32), vec![], CallingConvention::CCC);
         let builder = Builder::new(&main);
-        let exit_code = builder.call(None, llvm::Types::int(32), Rc::clone(&main_info.llvm_ref).to_value(), vec![
+        let exit_code = builder.call(None, CallingConvention::FastCC, llvm::Types::int(32), Rc::clone(&main_info.llvm_ref).to_value(), vec![
             llvm::Types::null().to_value(),
             llvm::Types::null().to_value()
         ]);
@@ -224,7 +224,7 @@ impl Codegen<'_> {
                 ];
                 args.extend(arguments.iter().map(|arg| self.generate_expr(arg, builder, frame)));
 
-                builder.call(None, self.generate_type(&ret), func.to_value(), args).to_value()
+                builder.call(None, CallingConvention::FastCC, self.generate_type(&ret), func.to_value(), args).to_value()
             }
             _ => panic!("{:?}", expr)
         }

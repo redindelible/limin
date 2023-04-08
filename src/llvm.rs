@@ -275,6 +275,15 @@ pub enum CallingConvention {
     FastCC
 }
 
+impl CallingConvention {
+    fn emit(&self) -> String {
+        match self {
+            CallingConvention::CCC => "ccc".into(),
+            CallingConvention::FastCC => "fastcc".into()
+        }
+    }
+}
+
 pub struct Function {
     name: String,
     cc: CallingConvention,
@@ -298,10 +307,7 @@ impl Function {
     fn emit(&self) -> String {
         let arguments: Vec<String> = self.parameters.iter().map(|t| t.emit()).collect();
 
-        let cc = match self.cc {
-            CallingConvention::CCC => "ccc",
-            CallingConvention::FastCC => "fastcc"
-        };
+        let cc = self.cc.emit();
 
         if !self.blocks.borrow().is_empty() {
             let mut blocks = String::new();
@@ -380,9 +386,9 @@ impl Builder {
         instr_ref
     }
 
-    pub fn call(&self, name: Option<String>, ret: TypeRef, func: ValueRef, args: Vec<ValueRef>) -> InstrRef {
+    pub fn call(&self, name: Option<String>, cc: CallingConvention, ret: TypeRef, func: ValueRef, args: Vec<ValueRef>) -> InstrRef {
         let name = name.unwrap_or_else(|| self.next());
-        let instr_ref = Rc::new(Instruction::Call { name, ret, func, args});
+        let instr_ref = Rc::new(Instruction::Call { name, cc, ret, func, args});
         self.curr.instructions.borrow_mut().push(Rc::clone(&instr_ref));
         instr_ref
     }
@@ -451,7 +457,7 @@ pub enum GEPIndex {
 pub enum Instruction {
     Add { name: String, ret: TypeRef, left: ValueRef, right: ValueRef },
     Alloca { name: String, ty: TypeRef },
-    Call { name: String, ret: TypeRef, func: ValueRef, args: Vec<ValueRef> },
+    Call { name: String, cc: CallingConvention, ret: TypeRef, func: ValueRef, args: Vec<ValueRef> },
     GetElementPointer { name: String, ty: TypeRef, base: ValueRef, indices: Vec<GEPIndex> },
     Load { name: String, ty: TypeRef, ptr: ValueRef },
     Store { ptr: ValueRef, value: ValueRef },
@@ -467,9 +473,9 @@ impl Instruction {
             Instruction::Alloca { name, ty } => {
                 format!("%{name} = alloca {}\n", ty.emit())
             }
-            Instruction::Call { name, ret, func, args } => {
+            Instruction::Call { name, cc, ret, func, args } => {
                 let args: Vec<String> = args.iter().map(|a| a.ty().emit() + " " + &a.emit_value()).collect();
-                format!("%{name} = call {} {}({})\n", ret.emit(), func.emit_value(), args.join(", "))
+                format!("%{name} = call {} {} {}({})\n", cc.emit(), ret.emit(), func.emit_value(), args.join(", "))
             }
             Instruction::GetElementPointer { name, ty, base, indices } => {
                 let mut rendered_indices = vec![];
