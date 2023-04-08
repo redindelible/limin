@@ -125,6 +125,7 @@ pub struct Parameter<'ir> {
     pub decl: NameKey,
 }
 
+#[derive(Debug)]
 pub enum LogicOp {
     LessThan,
     GreaterThan
@@ -134,6 +135,7 @@ pub trait MayBreak {
     fn does_break(&self) -> bool;
 }
 
+#[derive(Debug)]
 pub enum Expr<'ir> {
     Name { decl: NameKey, loc: Location<'ir> },
     Integer { num: u64, loc: Location<'ir> },
@@ -159,6 +161,7 @@ impl MayBreak for Expr<'_> {
     }
 }
 
+#[derive(Debug)]
 pub enum Stmt<'ir> {
     Decl { decl: NameKey, value: Expr<'ir>, loc: Location<'ir> },
     Return { value: Expr<'ir>, loc: Location<'ir> },

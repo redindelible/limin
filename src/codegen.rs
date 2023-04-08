@@ -226,7 +226,7 @@ impl Codegen<'_> {
 
                 builder.call(None, self.generate_type(&ret), func.to_value(), args).to_value()
             }
-            _ => todo!()
+            _ => panic!("{:?}", expr)
         }
     }
 

@@ -483,7 +483,11 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                         if always_breaks {
                             None
                         } else {
-                            Some(Box::new(Expr::Unit { loc: *loc }))
+                            if !self.check(&Type::Unit, yield_type, loc) {
+                                Some(Box::new(Expr::Errored { loc: *loc }))
+                            } else {
+                                Some(Box::new(Expr::Unit { loc: *loc }))
+                            }
                         }
                     }
                 };
