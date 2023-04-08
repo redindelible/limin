@@ -74,8 +74,17 @@ impl Types {
         Rc::new(Type::Struct(fields))
     }
 
+    pub fn struct_constant(items: Vec<Constant>) -> Constant {
+        let ty = Types::struct_(items.iter().map(|item| item.ty()).collect());
+        Constant::Struct { items, ty }
+    }
+
     pub fn function(ret: TypeRef, params: Vec<TypeRef>) -> TypeRef {
         Rc::new(Type::Function(ret, params))
+    }
+
+    pub fn function_constant(func: &FunctionRef) -> Constant {
+        Constant::Function(Rc::clone(func))
     }
 
     pub fn ptr() -> TypeRef {
@@ -111,7 +120,7 @@ impl Types {
 pub struct Module {
     pub name: String,
     functions: IndexMap<String, Rc<Function>>,
-    globals: IndexMap<String, Global>,
+    globals: IndexMap<String, Rc<Global>>,
     pub types: Types
 }
 
@@ -125,10 +134,11 @@ impl Module {
         }
     }
 
-    pub fn add_function(&mut self, name: &str, ret: TypeRef, parameters: Vec<Parameter>) -> FunctionRef {
+    pub fn add_function(&mut self, name: &str, ret: TypeRef, parameters: Vec<ParameterRef>, cc: CallingConvention) -> FunctionRef {
         let param_types: Vec<TypeRef> = parameters.iter().map(|p| Rc::clone(&p.typ)).collect();
         let item = Rc::new(Function {
             name: name.into(),
+            cc,
             ret: Rc::clone(&ret), parameters,
             blocks: RefCell::new(vec![]),
             ty: Types::function(ret, param_types)
@@ -137,9 +147,19 @@ impl Module {
         item
     }
 
+    pub fn add_global_constant(&mut self, name: String, initializer: Constant) -> GlobalRef {
+        let global = Rc::new(Global { name: name.clone(), typ: initializer.ty(), is_const: true, initializer });
+        self.globals.insert(name, Rc::clone(&global));
+        global
+    }
+
     pub fn emit(&self) -> String {
         let mut module = String::new();
         module += self.types.emit().as_str();
+
+        for global in self.globals.values() {
+            module += global.emit().as_str();
+        }
 
         for func in self.functions.values() {
             module += func.emit().as_str();
@@ -153,6 +173,10 @@ pub trait Value {
     fn emit_value(&self) -> String;
 
     fn ty(&self) -> TypeRef;
+
+    fn to_value(self) -> ValueRef where Self: Sized + 'static {
+        Rc::new(self)
+    }
 }
 
 #[derive(Clone)]
@@ -175,13 +199,8 @@ pub enum Constant {
         ty: TypeRef,
         items: Vec<Constant>,
     },
-    Boolean(TypeRef, bool)
-}
-
-impl Constant {
-    pub fn to_value(self) -> ValueRef {
-        Rc::new(self)
-    }
+    Boolean(TypeRef, bool),
+    Function(FunctionRef)
 }
 
 impl Value for Constant {
@@ -195,41 +214,72 @@ impl Value for Constant {
                 format!("c\"{}\"", String::from_utf8(chars.clone()).unwrap())
             },
             Constant::Array { elem_ty, items, .. } => {
-                let items: Vec<String> = items.iter().map(|item| elem_ty.emit() + &item.emit_value()).collect();
+                let items: Vec<String> = items.iter().map(|item| elem_ty.emit() + " " + &item.emit_value()).collect();
                 format!("[ {} ]", items.join(", "))
             }
             Constant::Struct { items, .. } => {
-                let items: Vec<String> = items.iter().map(|item| item.ty().emit() + &item.emit_value()).collect();
+                let items: Vec<String> = items.iter().map(|item| item.ty().emit() + " " + &item.emit_value()).collect();
                 format!("{{ {} }}", items.join(", "))
             }
             Constant::Boolean(_, value) => {
                 if *value { "true".into() } else { "false".into() }
             }
+            Constant::Function(func) => {
+                format!("@{}", &func.name)
+            }
         }
     }
 
     fn ty(&self) -> TypeRef {
-        Rc::clone(match self {
-            Constant::ZeroInitializer(ty) => ty,
-            Constant::Integer  { ty, .. } => ty,
-            Constant::String   { ty, .. } => ty,
-            Constant::Array    { ty, .. } => ty,
-            Constant::Struct   { ty, .. } => ty,
-            Constant::Boolean  ( ty, _  ) => ty
-        })
+        match self {
+            Constant::ZeroInitializer(ty) => Rc::clone(ty),
+            Constant::Integer  { ty, .. } => Rc::clone(ty),
+            Constant::String   { ty, .. } => Rc::clone(ty),
+            Constant::Array    { ty, .. } => Rc::clone(ty),
+            Constant::Struct   { ty, .. } => Rc::clone(ty),
+            Constant::Boolean  ( ty, _  ) => Rc::clone(ty),
+            Constant::Function(_) => Types::ptr()
+        }
     }
 }
 
-struct Global {
+pub type GlobalRef = Rc<Global>;
+
+pub struct Global {
+    name: String,
     typ: TypeRef,
     is_const: bool,
-    initializer: Option<Constant>
+    initializer: Constant
+}
+
+impl Global {
+    fn emit(&self) -> String {
+        format!("@{} = {} {} {}\n", &self.name, if self.is_const { "constant" } else { "global" }, self.typ.emit(), self.initializer.emit_value())
+    }
+}
+
+impl Value for Rc<Global> {
+    fn emit_value(&self) -> String {
+        format!("@{}", &self.name)
+    }
+
+    fn ty(&self) -> TypeRef {
+        Rc::clone(&self.typ)
+    }
+}
+
+#[derive(Default)]
+pub enum CallingConvention {
+    #[default]
+    CCC,
+    FastCC
 }
 
 pub struct Function {
     name: String,
+    cc: CallingConvention,
     ret: TypeRef,
-    parameters: Vec<Parameter>,
+    parameters: Vec<ParameterRef>,
     blocks: RefCell<Vec<BasicBlockRef>>,
     ty: TypeRef,
 }
@@ -248,19 +298,20 @@ impl Function {
     fn emit(&self) -> String {
         let arguments: Vec<String> = self.parameters.iter().map(|t| t.emit()).collect();
 
+        let cc = match self.cc {
+            CallingConvention::CCC => "ccc",
+            CallingConvention::FastCC => "fastcc"
+        };
+
         if !self.blocks.borrow().is_empty() {
             let mut blocks = String::new();
             for block in self.blocks.borrow().iter() {
                 blocks += block.emit().as_str();
             }
-            format!("define {} @{}({}) {{\n{}}}\n\n", self.ret.emit(), self.name, arguments.join(", "), blocks)
+            format!("define {cc} {} @{}({}) {{\n{}}}\n\n", self.ret.emit(), self.name, arguments.join(", "), blocks)
         } else {
-            format!("declare {} @{}({})\n\n", self.ret.emit(), self.name, arguments.join(", "))
+            format!("declare {cc} {} @{}({})\n\n", self.ret.emit(), self.name, arguments.join(", "))
         }
-    }
-
-    pub fn as_value(self: Rc<Function>) -> ValueRef {
-        Rc::new(self)
     }
 }
 
@@ -274,6 +325,8 @@ impl Value for Rc<Function> {
     }
 }
 
+pub type ParameterRef = Rc<Parameter>;
+
 pub struct Parameter {
     pub name: String,
     pub typ: TypeRef
@@ -282,6 +335,16 @@ pub struct Parameter {
 impl Parameter {
     fn emit(&self) -> String {
         format!("{} %{}", self.typ.emit(), self.name)
+    }
+}
+
+impl Value for Rc<Parameter> {
+    fn emit_value(&self) -> String {
+        format!("%{}", &self.name)
+    }
+
+    fn ty(&self) -> TypeRef {
+        Rc::clone(&self.typ)
     }
 }
 
@@ -338,8 +401,15 @@ impl Builder {
         instr_ref
     }
 
-    pub fn store(&self, ptr: ValueRef, value: ValueRef) -> InstrRef {
-        let instr_ref = Rc::new(Instruction::Store { ptr, value });
+    pub fn store(&self, ptr: &ValueRef, value: &ValueRef) -> InstrRef {
+        let instr_ref = Rc::new(Instruction::Store { ptr: Rc::clone(ptr), value: Rc::clone(value) });
+        self.curr.instructions.borrow_mut().push(Rc::clone(&instr_ref));
+        instr_ref
+    }
+
+    pub fn extractvalue(&self, name: Option<String>, base: &ValueRef, indices: Vec<u32>) -> InstrRef {
+        let name = name.unwrap_or_else(|| self.next());
+        let instr_ref = Rc::new(Instruction::ExtractValue { name, base: Rc::clone(base), indices });
         self.curr.instructions.borrow_mut().push(Rc::clone(&instr_ref));
         instr_ref
     }
@@ -385,6 +455,7 @@ pub enum Instruction {
     GetElementPointer { name: String, ty: TypeRef, base: ValueRef, indices: Vec<GEPIndex> },
     Load { name: String, ty: TypeRef, ptr: ValueRef },
     Store { ptr: ValueRef, value: ValueRef },
+    ExtractValue { name: String, base: ValueRef, indices: Vec<u32> }
 }
 
 impl Instruction {
@@ -397,7 +468,7 @@ impl Instruction {
                 format!("%{name} = alloca {}\n", ty.emit())
             }
             Instruction::Call { name, ret, func, args } => {
-                let args: Vec<String> = args.iter().map(|a| a.ty().emit() + &a.emit_value()).collect();
+                let args: Vec<String> = args.iter().map(|a| a.ty().emit() + " " + &a.emit_value()).collect();
                 format!("%{name} = call {} {}({})\n", ret.emit(), func.emit_value(), args.join(", "))
             }
             Instruction::GetElementPointer { name, ty, base, indices } => {
@@ -420,11 +491,11 @@ impl Instruction {
             Instruction::Store { ptr, value, .. } => {
                 format!("store {} {}, ptr {}\n", value.ty().emit(), value.emit_value(), ptr.emit_value())
             }
+            Instruction::ExtractValue { name, base, indices } => {
+                let rendered: Vec<String> = indices.iter().map(|index| format!("{index}")).collect();
+                format!("%{} = extractvalue {} {}, {}\n", name, base.ty().emit(), base.emit_value(), rendered.join(", "))
+            }
         }
-    }
-
-    pub fn as_value(self: Rc<Instruction>) -> ValueRef {
-        Rc::new(self)
     }
 }
 
@@ -436,7 +507,8 @@ impl Value for Rc<Instruction> {
             Instruction::Call { name, .. } => format!("%{name}"),
             Instruction::GetElementPointer { name, .. } => format!("%{name}"),
             Instruction::Load { name, .. } => format!("%{name}"),
-            Instruction::Store { .. } => panic!()
+            Instruction::Store { .. } => panic!(),
+            Instruction::ExtractValue { name, .. } => format!("%{name}"),
         }
     }
 
@@ -460,7 +532,14 @@ impl Value for Rc<Instruction> {
                 return curr;
             },
             Instruction::Load { ty, .. } => Rc::clone(ty),
-            Instruction::Store { .. } => panic!()
+            Instruction::Store { .. } => panic!(),
+            Instruction::ExtractValue { base, indices, .. } => {
+                let mut curr = base.ty();
+                for index in indices {
+                    curr = curr.type_at_index(Some(*index as usize));
+                }
+                return curr;
+            }
         }
     }
 }

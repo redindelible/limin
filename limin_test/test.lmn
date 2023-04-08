@@ -3,7 +3,12 @@ struct Foo {
     twice: bool;
 }
 
+fn identity(n: i32) -> i32 {
+    n
+}
+
 fn main() -> i32 {
     let a := 32;
-    return a;
+
+    return identity(a);
 }

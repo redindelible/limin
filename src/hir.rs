@@ -16,10 +16,10 @@ pub enum NameInfo<'ir> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Type {
+    Errored,
     Unit,
     Never,
     Boolean,
-    Errored,
     Integer { bits: u8 },
     Struct { struct_: StructKey },
     Function { params: Vec<Type>, ret: Box<Type> }
@@ -65,6 +65,12 @@ impl<'s> HIR<'s> {
                     None => Type::Never
                 }
             },
+            Expr::Call { callee, .. } => {
+                let Type::Function { ret, .. } = self.type_of_expr(callee) else {
+                    panic!()
+                };
+                *ret
+            }
             Expr::Errored { .. } => Type::Errored
         }
     }
@@ -99,6 +105,7 @@ pub struct StructField<'ir> {
 
 pub struct FunctionPrototype<'ir> {
     pub name: String,
+    pub decl: NameKey,
     pub params: Vec<Parameter<'ir>>,
     pub ret: Type,
 
@@ -133,6 +140,7 @@ pub enum Expr<'ir> {
     Unit { loc: Location<'ir> },
     LogicBinOp { left: Box<Expr<'ir>>, op: LogicOp, right: Box<Expr<'ir>>, loc: Location<'ir> },
     Block { stmts: Vec<Stmt<'ir>>, trailing_expr: Option<Box<Expr<'ir>>>, declared: Vec<NameKey>, loc: Location<'ir> },
+    Call { callee: Box<Expr<'ir>>, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
     Errored { loc: Location<'ir> }
 }
 
@@ -142,15 +150,10 @@ impl MayBreak for Expr<'_> {
             Expr::Name { .. } | Expr::Integer { .. } | Expr::Unit { .. } | Expr::Errored { .. } => false,
             Expr::LogicBinOp { left, right, .. } => left.does_break() || right.does_break(),
             Expr::Block { stmts, trailing_expr, .. } => {
-                for stmt in stmts {
-                    if stmt.does_break() {
-                        return true
-                    }
-                }
-                match trailing_expr {
-                    Some(expr) => expr.does_break(),
-                    None => false
-                }
+                stmts.iter().any(|stmt| stmt.does_break()) || trailing_expr.as_ref().map_or(false, |e| e.does_break())
+            },
+            Expr::Call { callee, arguments, .. } => {
+                callee.does_break() || arguments.iter().any(|arg| arg.does_break())
             }
         }
     }

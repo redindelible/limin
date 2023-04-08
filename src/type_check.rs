@@ -5,7 +5,7 @@ use slotmap::SecondaryMap;
 use crate::ast;
 use crate::error::Message;
 use crate::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, LogicOp, Stmt, MayBreak};
-use crate::source::Location;
+use crate::source::{HasLoc, Location};
 use crate::type_check::type_check_state::NamespaceKey;
 
 pub fn resolve_types(ast: ast::AST) -> Result<HIR, Vec<TypeCheckError>> {
@@ -46,6 +46,8 @@ pub enum TypeCheckError<'a> {
     CouldNotResolveName(String, Location<'a>),
     CouldNotResolveType(String, Location<'a>),
     IncompatibleTypes { expected: DisplayType<'a>, got: DisplayType<'a>, loc: Location<'a> },
+    ExpectedFunction { got: DisplayType<'a>, loc: Location<'a> },
+    MismatchedArguments { expected: usize, got: usize, loc: Location<'a> },
     NotEnoughInfoToInfer(Location<'a>),
     NoMainFunction,
 }
@@ -67,6 +69,14 @@ impl<'a> Message for TypeCheckError<'a> {
             }
             TypeCheckError::IncompatibleTypes { expected, got, loc } => {
                 eprintln!("Error: Incompatible types. Expected '{}' but got '{}'.", expected.render(), got.render());
+                Self::show_location(loc);
+            }
+            TypeCheckError::ExpectedFunction { got, loc } => {
+                eprintln!("Error: Expected a function to call, but got '{}'.", got.render());
+                Self::show_location(loc);
+            }
+            TypeCheckError::MismatchedArguments { expected, got, loc } => {
+                eprintln!("Error: Expected {expected} arguments, got {got} arguments.");
                 Self::show_location(loc);
             }
             TypeCheckError::NotEnoughInfoToInfer(loc) => {
@@ -301,13 +311,18 @@ fn collect_functions(collected: CollectedFields) -> CollectedFunctions {
             }
             let ret = func.return_type.as_ref().map_or(Type::Unit, |t| resolve_type(&checker, file_ns, t));
             let sig = Type::Function { params: params.iter().map(|p| p.typ.clone()).collect(), ret: Box::new(ret.clone()) };
-            let key = checker.add_function_proto(FunctionPrototype { name: func.name.clone(), params, ret, sig });
+
+            let key = checker.hir.function_prototypes.insert_with_key(|key| {
+                let decl = checker.hir.names.insert(NameInfo::Function { func: key });
+                checker.namespaces[file_ns].names.insert(func.name.clone(), decl);
+                FunctionPrototype { name: func.name.clone(), params, ret, sig, decl }
+            });
 
             if func.name == "main" {
                 checker.hir.main_function = Some(key);
             }
 
-            checker.add_name(file_ns, func.name.clone(), NameInfo::Function { func: key });
+            // checker.add_name(file_ns, func.name.clone(), NameInfo::Function { func: key });
             func_namespaces.insert(key, func_ns);
         }
     }
@@ -407,16 +422,16 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
         }
     }
 
-    fn check(&self, got_type: Type, expected: ExpectedType, loc: &Location<'a>) -> bool {
+    fn check(&self, got_type: &Type, expected: ExpectedType, loc: &Location<'a>) -> bool {
         match expected {
             Some(Type::Errored) => false,
             None => true,
             Some(t) => {
-                let is_compat = self.checker.hir.is_subtype(&got_type, &t);
+                let is_compat = self.checker.hir.is_subtype(got_type, &t);
                 if !is_compat {
                     self.push_error(TypeCheckError::IncompatibleTypes{
                         expected: self.display_type(&t),
-                        got: self.display_type(&got_type),
+                        got: self.display_type(got_type),
                         loc: *loc
                     })
                 }
@@ -428,7 +443,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
     fn resolve_expr(&mut self, expr: &ast::Expr<'a>, yield_type: ExpectedType) -> Expr<'a> {
         match expr {
             ast::Expr::Integer { number, loc } => {
-                let compat = self.check(Type::Integer { bits: 32 }, yield_type, loc);
+                let compat = self.check(&Type::Integer { bits: 32 }, yield_type, loc);
                 if compat {
                     Expr::Integer { num: *number, loc: *loc }
                 } else {
@@ -445,7 +460,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                     }
                 };
                 let typ = self.checker.hir.type_of_name(decl);
-                let compat = self.check(typ, yield_type, loc);
+                let compat = self.check(&typ, yield_type, loc);
                 if compat {
                     Expr::Name { decl, loc: *loc }
                 } else {
@@ -474,6 +489,27 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                 };
                 let declared = self.checker.namespaces[block_ns].get_names();
                 Expr::Block { stmts, trailing_expr, declared, loc: *loc }
+            }
+            ast::Expr::Call { callee, arguments, loc } => {
+                let resolved_callee = self.resolve_expr(callee, None);
+                let callee_ty = self.checker.hir.type_of_expr(&resolved_callee);
+                let Type::Function { params, ret } = &callee_ty else {
+                    self.push_error(TypeCheckError::ExpectedFunction { got: self.display_type(&callee_ty), loc: callee.loc() });
+                    return Expr::Errored { loc: *loc };
+                };
+                if !self.check(ret, yield_type, loc) {
+                    return Expr::Errored { loc: *loc };
+                }
+                if params.len() != arguments.len() {
+                    self.push_error(TypeCheckError::MismatchedArguments { expected: params.len(), got: arguments.len(), loc: *loc });
+                    return Expr::Errored { loc: *loc };
+                }
+                let mut resolved_arguments = Vec::new();
+                for (param, arg) in params.iter().zip(arguments.iter()) {
+                    let resolved_arg = self.resolve_expr(arg, Some(param.clone()));
+                    resolved_arguments.push(resolved_arg);
+                }
+                Expr::Call { callee: Box::new(resolved_callee), arguments: resolved_arguments, loc: *loc }
             }
             c => {
                 panic!("{:?}", c);
