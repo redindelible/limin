@@ -111,6 +111,9 @@ impl Compiler {
         };
         drop(ll_file_handle);
 
+        let lib_path = std::env::current_exe().unwrap().with_file_name("lib");
+        let rt_path = lib_path.join("rt.c");
+
         let output = String::from_utf8(match Command::new(&self.clang).arg("--version").output() {
             Ok(o) => o,
             Err(e) => {
@@ -135,8 +138,10 @@ impl Compiler {
         let output = match
             Command::new(&self.clang)
                 .arg(&ll_file)
+                .arg(&rt_path)
                 .arg("-o")
                 .arg(&self.output)
+                .arg("-Wno-override-module")
                 .status() {
             Ok(output) => output,
             Err(e) => {

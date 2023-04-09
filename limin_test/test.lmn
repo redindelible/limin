@@ -1,12 +1,10 @@
 struct Foo {
     bar: i32;
-    twice: bool;
 }
 
 fn identity(n: i32) -> i32 {
     return n;
 }
-
 
 fn main() -> i32 {
     let a := 32;

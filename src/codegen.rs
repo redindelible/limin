@@ -4,7 +4,7 @@ use std::rc::Rc;
 use slotmap::SecondaryMap;
 use crate::{hir, llvm};
 use crate::hir::{FunctionKey, MayBreak, NameKey, StructKey};
-use crate::llvm::{Builder, CallingConvention, GEPIndex, Value};
+use crate::llvm::{Builder, CallingConvention, GEPIndex, ParameterRef, Value};
 
 pub fn generate_llvm(hir: hir::HIR) -> llvm::Module {
     let mut gen = Codegen::new(&hir);
@@ -19,7 +19,9 @@ struct StructInfo {
 
 struct FunctionInfo {
     llvm_ref: llvm::FunctionRef,
-    params: HashMap<String, llvm::ValueRef>
+    params: HashMap<String, llvm::ValueRef>,
+    frame_param: ParameterRef,
+    closure_param: ParameterRef
 }
 
 struct NameInfo {
@@ -41,6 +43,11 @@ struct FrameInfo<'a> {
     indices: HashMap<NameKey, usize>,
     parent: Option<&'a FrameInfo<'a>>,
     llvm_ref: llvm::ValueRef
+}
+
+enum ParentFrame<'a> {
+    Caller(llvm::ValueRef),
+    Block(&'a FrameInfo<'a>)
 }
 
 impl Codegen<'_> {
@@ -89,9 +96,11 @@ impl Codegen<'_> {
             let name = self.gen_mangled2("function", &proto.name);
 
             let ret = self.generate_type(&proto.ret);
+            let frame_param = Rc::new(llvm::Parameter { name: "frame".into(), typ: llvm::Types::ptr() });
+            let closure_param = Rc::new(llvm::Parameter { name: "closure".into(), typ: llvm::Types::ptr() });
             let mut params: Vec<llvm::ParameterRef> = vec![
-                Rc::new(llvm::Parameter { name: "frame".into(), typ: llvm::Types::ptr() }),
-                Rc::new(llvm::Parameter { name: "closure".into(), typ: llvm::Types::ptr() }),
+                Rc::clone(&frame_param),
+                Rc::clone(&closure_param)
             ];
             let mut llvm_params: HashMap<String, llvm::ValueRef> = HashMap::new();
             for param in &proto.params {
@@ -103,7 +112,7 @@ impl Codegen<'_> {
 
             let func_ref = self.llvm.add_function(&name, ret, params, CallingConvention::FastCC);
 
-            self.functions.insert(key, FunctionInfo { llvm_ref: Rc::clone(&func_ref), params: llvm_params });
+            self.functions.insert(key, FunctionInfo { llvm_ref: Rc::clone(&func_ref), params: llvm_params, frame_param, closure_param });
 
             let func_global = self.llvm.add_global_constant(self.gen_mangled2("funcglobal", &proto.name), llvm::Types::struct_constant(vec![
                 llvm::Types::function_constant(&func_ref),
@@ -118,7 +127,7 @@ impl Codegen<'_> {
             let proto = &hir.function_prototypes[key];
             let builder = Builder::new(&function_info.llvm_ref);
 
-            let frame_info = self.create_frame(&body.declared, &builder, None);
+            let frame_info = self.create_frame(&body.declared, &builder, ParentFrame::Caller(Rc::clone(&function_info.frame_param).to_value()));
 
             for param in &proto.params {
                 let param_ptr = Self::get_name_ptr(&param.decl, &builder, &frame_info);
@@ -142,7 +151,7 @@ impl Codegen<'_> {
         builder.ret(exit_code.to_value());
     }
 
-    fn create_frame<'a>(&self, declared: &Vec<NameKey>, builder: &Builder, parent: Option<&'a FrameInfo<'a>>) -> FrameInfo<'a> {
+    fn create_frame<'a>(&self, declared: &Vec<NameKey>, builder: &Builder, parent: ParentFrame<'a>) -> FrameInfo<'a> {
         let mut items = Vec::new();
         let mut map = HashMap::new();
         items.push(llvm::Types::ptr());   // the parent frame pointer
@@ -157,11 +166,16 @@ impl Codegen<'_> {
             GEPIndex::ConstantIndex(0),
             GEPIndex::ConstantIndex(0)
         ]).to_value();
-        if let Some(parent_frame) = parent {
-            builder.store(&parent_ptr, &Rc::clone(&parent_frame.llvm_ref));
-        } else {
-            builder.store(&parent_ptr, &llvm::Types::null().to_value());
-        }
+        let parent = match parent {
+            ParentFrame::Block(parent_frame) => {
+                builder.store(&parent_ptr, &Rc::clone(&parent_frame.llvm_ref));
+                Some(parent_frame)
+            }
+            ParentFrame::Caller(value) => {
+                builder.store(&parent_ptr, &value);
+                None
+            }
+        };
         FrameInfo { ty: frame_ty, indices: map, parent, llvm_ref }
     }
 
@@ -198,7 +212,7 @@ impl Codegen<'_> {
                 builder.load(None, ty, ptr).to_value()
             }
             hir::Expr::Block { stmts, trailing_expr, declared, .. } => {
-                let frame = self.create_frame(declared, builder, Some(frame));
+                let frame = self.create_frame(declared, builder, ParentFrame::Block(frame));
                 for stmt in stmts {
                     self.generate_stmt(stmt, builder, &frame);
                 }
