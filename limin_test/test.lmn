@@ -9,5 +9,7 @@ fn identity(n: i32) -> i32 {
 fn main() -> i32 {
     let a := 32;
 
+    let boo := new Foo { bar: a };
+
     return identity(a);
 }

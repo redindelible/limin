@@ -22,6 +22,7 @@ pub enum TokenType {
     Let,
     Return,
     Struct,
+    New,
     EOF
 }
 
@@ -43,7 +44,8 @@ const KEYWORDS: phf::Map<&str, TokenType> = phf_map! {
     "fn" => TokenType::Fn,
     "let" => TokenType::Let,
     "return" => TokenType::Return,
-    "struct" => TokenType::Struct
+    "struct" => TokenType::Struct,
+    "new" => TokenType::New
 };
 
 impl TokenType {
@@ -66,7 +68,8 @@ impl TokenType {
             TokenType::Let => "'let'",
             TokenType::Return => "'return'",
             TokenType::Struct => "'struct'",
-            TokenType::EOF => "the end of the file"
+            TokenType::EOF => "the end of the file",
+            TokenType::New => "'new'"
         }
     }
 }
@@ -78,12 +81,6 @@ pub struct Token<'a> {
     pub leading_ws: bool,
     pub loc: Location<'a>
 }
-
-// impl<'a> Token<'a> {
-//     pub fn eof(source: &'a Source) -> Self {
-//         Token { typ: TokenType::EOF, text: "", leading_ws: false, loc: source.eof() }
-//     }
-// }
 
 impl PartialEq<Self> for Token<'_> {
     fn eq(&self, other: &Self) -> bool {

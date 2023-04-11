@@ -35,7 +35,7 @@ impl DisplayType<'_> {
             DisplayType::Function { params, ret } => {
                 let rendered: Vec<String> = params.iter().map(|t| t.render()).collect();
                 format!("({}) -> {}", rendered.join(", "), ret.render())
-            }
+            },
         }
     }
 }
@@ -49,6 +49,7 @@ pub enum TypeCheckError<'a> {
     ExpectedFunction { got: DisplayType<'a>, loc: Location<'a> },
     MismatchedArguments { expected: usize, got: usize, loc: Location<'a> },
     NotEnoughInfoToInfer(Location<'a>),
+    ExpectedAStruct { got: DisplayType<'a>, loc: Location<'a> },
     NoMainFunction,
 }
 
@@ -85,6 +86,10 @@ impl<'a> Message for TypeCheckError<'a> {
             }
             TypeCheckError::NoMainFunction => {
                 eprintln!("Error: No main function could be found.");
+            }
+            TypeCheckError::ExpectedAStruct { got, loc } => {
+                eprintln!("Error: {} is not a struct type.", got.render());
+                Self::show_location(loc);
             }
         }
     }
@@ -515,9 +520,21 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                 }
                 Expr::Call { callee: Box::new(resolved_callee), arguments: resolved_arguments, loc: *loc }
             }
-            c => {
-                panic!("{:?}", c);
+            ast::Expr::New { typ, fields, loc } => {
+                let resolved_typ = self.resolve_type(typ);
+                let struct_key = match resolved_typ {
+                    Type::Struct { struct_} => struct_,
+                    Type::Errored => return Expr::Errored { loc: *loc },
+                    _ => {
+                        self.push_error(TypeCheckError::ExpectedAStruct { got: self.display_type(&resolved_typ), loc: *loc })
+                        return Expr::Errored { loc: *loc };
+                    }
+                };
+
             }
+            // c => {
+            //     panic!("{:?}", c);
+            // }
         }
     }
 

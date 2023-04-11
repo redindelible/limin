@@ -132,7 +132,7 @@ impl<'a> Parser<'a> {
         let mut items = Vec::new();
         while self.curr().typ != TokenType::RightParenthesis {
             let argument = each(self)?;
-            items.push(Box::new(argument));
+            items.push(Box::new(argument)); // todo why does this box
             if self.curr().typ == TokenType::Comma {
                 self.advance();
             } else {
@@ -319,6 +319,19 @@ impl<'a> Parser<'a> {
 
     fn parse_terminal(&mut self) -> ParseResult<Expr<'a>> {
         match self.curr().typ {
+            TokenType::New => {
+                let start = self.advance();
+                let typ = Box::new(self.parse_type()?);
+                let (fields, loc) = self.delimited_parse(TokenType::LeftBrace, TokenType::RightBrace, |this| {
+                    let name = this.expect(TokenType::Identifier)?;
+                    this.expect(TokenType::Colon)?;
+                    let argument = this.parse_expr()?;
+                    let loc = name.loc + argument.loc();
+                    Ok(NewArgument { field_name: name.text.to_owned(), argument: Box::new(argument), name_loc: loc })
+                })?;
+                let loc = loc + start.loc;
+                Ok(Expr::New { typ, fields, loc})
+            },
             TokenType::Identifier => {
                 let tok = self.advance();
                 Ok(Expr::Name { name: tok.text.to_owned(), loc: tok.loc })
