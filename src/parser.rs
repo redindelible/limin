@@ -130,7 +130,7 @@ impl<'a> Parser<'a> {
     fn delimited_parse<T>(&mut self, left: TokenType, right: TokenType, mut each: impl FnMut(&mut Self) -> ParseResult<T>) -> ParseResult<(Vec<Box<T>>, Location<'a>)> {
         let start = self.expect(left)?;
         let mut items = Vec::new();
-        while self.curr().typ != TokenType::RightParenthesis {
+        while self.curr().typ != right {
             let argument = each(self)?;
             items.push(Box::new(argument)); // todo why does this box
             if self.curr().typ == TokenType::Comma {

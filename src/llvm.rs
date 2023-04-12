@@ -70,6 +70,10 @@ impl Types {
         item
     }
 
+    pub fn sizeof(ty: &TypeRef) -> Constant {
+        Constant::Sizeof(Rc::clone(ty))
+    }
+
     pub fn struct_(fields: Vec<TypeRef>) -> TypeRef {
         Rc::new(Type::Struct(fields))
     }
@@ -85,6 +89,10 @@ impl Types {
 
     pub fn function_constant(func: &FunctionRef) -> Constant {
         Constant::Function(Rc::clone(func))
+    }
+
+    pub fn void() -> TypeRef {
+        Rc::new(Type::Void)
     }
 
     pub fn ptr() -> TypeRef {
@@ -200,7 +208,8 @@ pub enum Constant {
         items: Vec<Constant>,
     },
     Boolean(TypeRef, bool),
-    Function(FunctionRef)
+    Function(FunctionRef),
+    Sizeof(TypeRef)
 }
 
 impl Value for Constant {
@@ -227,6 +236,9 @@ impl Value for Constant {
             Constant::Function(func) => {
                 format!("@{}", &func.name)
             }
+            Constant::Sizeof(ty) => {
+                format!("ptrtoint (ptr getelementptr ({}, ptr null, i32 1) to i64)", ty.emit())
+            }
         }
     }
 
@@ -238,7 +250,8 @@ impl Value for Constant {
             Constant::Array    { ty, .. } => Rc::clone(ty),
             Constant::Struct   { ty, .. } => Rc::clone(ty),
             Constant::Boolean  ( ty, _  ) => Rc::clone(ty),
-            Constant::Function(_) => Types::ptr()
+            Constant::Function(_) => Types::ptr(),
+            Constant::Sizeof(..) => Types::int(64)
         }
     }
 }
@@ -264,7 +277,7 @@ impl Value for Rc<Global> {
     }
 
     fn ty(&self) -> TypeRef {
-        Rc::clone(&self.typ)
+        Types::ptr()
     }
 }
 
@@ -339,6 +352,10 @@ pub struct Parameter {
 }
 
 impl Parameter {
+    pub fn new(name: String, typ: TypeRef) -> ParameterRef {
+        Rc::new(Parameter { name, typ })
+    }
+
     fn emit(&self) -> String {
         format!("{} %{}", self.typ.emit(), self.name)
     }
@@ -379,6 +396,10 @@ impl Builder {
         *self.curr.terminator.borrow_mut() = Some(Terminator::Return(val))
     }
 
+    pub fn ret_void(&self) {
+        *self.curr.terminator.borrow_mut() = Some(Terminator::ReturnVoid)
+    }
+
     pub fn alloca(&self, name: Option<String>, ty: TypeRef) -> InstrRef {
         let name = name.unwrap_or_else(|| self.next());
         let instr_ref = Rc::new(Instruction::Alloca { name, ty });
@@ -386,11 +407,16 @@ impl Builder {
         instr_ref
     }
 
-    pub fn call(&self, name: Option<String>, cc: CallingConvention, ret: TypeRef, func: ValueRef, args: Vec<ValueRef>) -> InstrRef {
+    pub fn call(&self, name: Option<String>, cc: CallingConvention, ret: TypeRef, func: &ValueRef, args: Vec<ValueRef>) -> InstrRef {
         let name = name.unwrap_or_else(|| self.next());
-        let instr_ref = Rc::new(Instruction::Call { name, cc, ret, func, args});
+        let instr_ref = Rc::new(Instruction::Call { name, cc, ret, func: Rc::clone(func), args});
         self.curr.instructions.borrow_mut().push(Rc::clone(&instr_ref));
         instr_ref
+    }
+
+    pub fn call_void(&self, cc: CallingConvention, func: &ValueRef, args: Vec<ValueRef>) {
+        let instr_ref = Rc::new(Instruction::CallVoid { cc, func: Rc::clone(func), args});
+        self.curr.instructions.borrow_mut().push(Rc::clone(&instr_ref));
     }
 
     pub fn gep(&self, name: Option<String>, ty: TypeRef, base: ValueRef, indices: Vec<GEPIndex>) -> InstrRef {
@@ -458,6 +484,7 @@ pub enum Instruction {
     Add { name: String, ret: TypeRef, left: ValueRef, right: ValueRef },
     Alloca { name: String, ty: TypeRef },
     Call { name: String, cc: CallingConvention, ret: TypeRef, func: ValueRef, args: Vec<ValueRef> },
+    CallVoid { cc: CallingConvention, func: ValueRef, args: Vec<ValueRef> },
     GetElementPointer { name: String, ty: TypeRef, base: ValueRef, indices: Vec<GEPIndex> },
     Load { name: String, ty: TypeRef, ptr: ValueRef },
     Store { ptr: ValueRef, value: ValueRef },
@@ -476,6 +503,10 @@ impl Instruction {
             Instruction::Call { name, cc, ret, func, args } => {
                 let args: Vec<String> = args.iter().map(|a| a.ty().emit() + " " + &a.emit_value()).collect();
                 format!("%{name} = call {} {} {}({})\n", cc.emit(), ret.emit(), func.emit_value(), args.join(", "))
+            }
+            Instruction::CallVoid { cc, args, func } => {
+                let args: Vec<String> = args.iter().map(|a| a.ty().emit() + " " + &a.emit_value()).collect();
+                format!("call {} void {}({})\n", cc.emit(), func.emit_value(), args.join(", "))
             }
             Instruction::GetElementPointer { name, ty, base, indices } => {
                 let mut rendered_indices = vec![];
@@ -511,6 +542,7 @@ impl Value for Rc<Instruction> {
             Instruction::Add { name, .. } => format!("%{}", name),
             Instruction::Alloca { name, .. } => format!("%{name}"),
             Instruction::Call { name, .. } => format!("%{name}"),
+            Instruction::CallVoid { .. } => panic!(),
             Instruction::GetElementPointer { name, .. } => format!("%{name}"),
             Instruction::Load { name, .. } => format!("%{name}"),
             Instruction::Store { .. } => panic!(),
@@ -523,6 +555,7 @@ impl Value for Rc<Instruction> {
             Instruction::Add { ret, .. } => Rc::clone(ret),
             Instruction::Alloca { .. } => Types::ptr(),
             Instruction::Call { ret, .. } => Rc::clone(ret),
+            Instruction::CallVoid { .. } => panic!(),
             Instruction::GetElementPointer { ty, indices, .. } => {
                 let mut curr = Rc::clone(ty);
                 for index in &indices[1..] {

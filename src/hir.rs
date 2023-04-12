@@ -62,7 +62,7 @@ impl<'s> HIR<'s> {
             Expr::Block { trailing_expr, .. } => {
                 match trailing_expr {
                     Some(t) => self.type_of_expr(t),
-                    None => Type::Never
+                    None => Type::Never   // todo why is this never instead of unit
                 }
             },
             Expr::Call { callee, .. } => {
@@ -70,7 +70,10 @@ impl<'s> HIR<'s> {
                     panic!()
                 };
                 *ret
-            }
+            },
+            Expr::New { struct_, .. } => {
+                Type::Struct { struct_: *struct_ }
+            },
             Expr::Errored { .. } => Type::Errored
         }
     }
@@ -97,6 +100,7 @@ pub struct Struct<'ir> {
     pub loc: Location<'ir>
 }
 
+#[derive(Clone)]
 pub struct StructField<'ir> {
     pub name: String,
     pub typ: Type,
@@ -143,7 +147,8 @@ pub enum Expr<'ir> {
     LogicBinOp { left: Box<Expr<'ir>>, op: LogicOp, right: Box<Expr<'ir>>, loc: Location<'ir> },
     Block { stmts: Vec<Stmt<'ir>>, trailing_expr: Option<Box<Expr<'ir>>>, declared: Vec<NameKey>, loc: Location<'ir> },
     Call { callee: Box<Expr<'ir>>, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
-    Errored { loc: Location<'ir> }
+    Errored { loc: Location<'ir> },
+    New { struct_: StructKey, fields: IndexMap<String, Box<Expr<'ir>>>, loc: Location<'ir> }
 }
 
 impl MayBreak for Expr<'_> {
@@ -156,7 +161,10 @@ impl MayBreak for Expr<'_> {
             },
             Expr::Call { callee, arguments, .. } => {
                 callee.does_break() || arguments.iter().any(|arg| arg.does_break())
-            }
+            },
+            Expr::New { fields, .. } => {
+                fields.values().any(|val| val.does_break())
+            } 
         }
     }
 }

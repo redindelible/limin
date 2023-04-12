@@ -50,6 +50,8 @@ pub enum TypeCheckError<'a> {
     MismatchedArguments { expected: usize, got: usize, loc: Location<'a> },
     NotEnoughInfoToInfer(Location<'a>),
     ExpectedAStruct { got: DisplayType<'a>, loc: Location<'a> },
+    NoSuchField { field: String, typ: DisplayType<'a>, loc: Location<'a> },
+    MissingFields { fields: Vec<String>, typ: DisplayType<'a>, loc: Location<'a> },
     NoMainFunction,
 }
 
@@ -88,7 +90,16 @@ impl<'a> Message for TypeCheckError<'a> {
                 eprintln!("Error: No main function could be found.");
             }
             TypeCheckError::ExpectedAStruct { got, loc } => {
-                eprintln!("Error: {} is not a struct type.", got.render());
+                eprintln!("Error: '{}' is not a struct type.", got.render());
+                Self::show_location(loc);
+            }
+            TypeCheckError::NoSuchField { field, typ, loc } => {
+                eprintln!("Error: '{}' Does not contain a field named '{}'.", typ.render(), field);
+                Self::show_location(loc);
+            }
+            TypeCheckError::MissingFields { fields, typ, loc } => {
+                let rendered_fields: Vec<_> = fields.iter().map(|f| format!("'{f}'")).collect();
+                eprintln!("Error: Fields {} were not supplied to initialize '{}'.", rendered_fields.join(", "), typ.render());
                 Self::show_location(loc);
             }
         }
@@ -526,15 +537,31 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                     Type::Struct { struct_} => struct_,
                     Type::Errored => return Expr::Errored { loc: *loc },
                     _ => {
-                        self.push_error(TypeCheckError::ExpectedAStruct { got: self.display_type(&resolved_typ), loc: *loc })
+                        self.push_error(TypeCheckError::ExpectedAStruct { got: self.display_type(&resolved_typ), loc: *loc });
                         return Expr::Errored { loc: *loc };
                     }
                 };
-
+                let mut expected_fields = self.checker.hir.structs[struct_key].fields.clone();
+                let mut resolved_fields = IndexMap::new();
+                for field in fields {
+                    if !expected_fields.contains_key(&field.field_name) {
+                        self.push_error(TypeCheckError::NoSuchField { field: field.field_name.clone(), typ: self.display_type(&resolved_typ), loc: field.name_loc });
+                        return Expr::Errored { loc: *loc };
+                    }
+                    let expected_type = expected_fields[&field.field_name].typ.clone();
+                    let resolved = Box::new(self.resolve_expr(&field.argument, Some(expected_type)));
+                    resolved_fields.insert(field.field_name.clone(), resolved);
+                    expected_fields.remove(&field.field_name);
+                };
+                if !expected_fields.is_empty() {
+                    self.push_error(TypeCheckError::MissingFields { fields: expected_fields.drain(..).map(|p| p.0).collect(), typ: self.display_type(&resolved_typ), loc: *loc });
+                    return Expr::Errored { loc: *loc };
+                }
+                Expr::New { struct_: struct_key, fields: resolved_fields, loc: *loc }
             }
-            // c => {
-            //     panic!("{:?}", c);
-            // }
+            c => {
+                panic!("{:?}", c);
+            }
         }
     }
 

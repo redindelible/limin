@@ -3,17 +3,26 @@
 #include <stdio.h>
 
 // A trace function should move all objects inside to the gray set
-typedef void (*TraceFn)(void*);
+typedef void (*ObjTraceFn)(void*);
+
+typedef void (*FrameTraceFn)(void*);
 
 struct TypeInfo {
-    TraceFn trace;
-    size_t size;
+    ObjTraceFn trace;
+    uint64_t size;
 };
 
 struct ObjectHeader {
     struct TypeInfo* info;
     struct ObjectHeader* next;
     uint8_t mark;
+};
+
+struct Frame {
+    struct Frame* parent;
+    FrameTraceFn trace;
+    uint64_t stack_size;
+    uint8_t frame[];
 };
 
 struct GCState {
@@ -27,7 +36,7 @@ struct GCState gc_state;
 
 
 void limin_mark_object(struct ObjectHeader* obj) {
-    if (obj->mark == 2 || obj->mark == gc_state.current_black) {
+    if (obj == NULL || obj->mark == 2 || obj->mark == gc_state.current_black) {
         // already marked, continue
     } else {
         obj->mark = 2;
