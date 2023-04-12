@@ -6,10 +6,14 @@ fn identity(n: i32) -> i32 {
     return n;
 }
 
+fn identity_foo(a: Foo) -> Foo {
+    return a;
+}
+
 fn main() -> i32 {
     let a := 32;
 
-    let boo := new Foo { bar: a };
+    let boo := identity_foo(new Foo { bar: a });
 
     return identity(a);
 }

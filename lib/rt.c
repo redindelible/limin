@@ -45,13 +45,19 @@ void limin_mark_object(struct ObjectHeader* obj) {
     }
 }
 
-void* limin_create_object(struct TypeInfo* type) {
+void* limin_create_object(struct TypeInfo* type, struct Frame* frame) {
     struct ObjectHeader* obj = malloc(sizeof(struct ObjectHeader) + type->size);
     obj->info = type;
     obj->mark = 2;
     obj->next = gc_state.gray;
     gc_state.gray = obj;
     return obj;
+}
+
+void limin_trace_stack(struct ObjectHeader* stack, uint64_t count) {
+    for (uint64_t i = 0; i < count; i++) {
+        limin_mark_object(&stack[i]);
+    }
 }
 
 static void process_next() {

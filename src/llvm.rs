@@ -24,7 +24,7 @@ impl Type {
             Type::Void => "void".into(),
             Type::Pointer => "ptr".into(),
             Type::Integer(bits) => format!("i{}", bits),
-            Type::Array(t, count) => format!("[{} x {}]", t.emit(), count),
+            Type::Array(t, count) => format!("[{} x {}]", count, t.emit()),
             Type::NamedStruct(s) => format!("%{}", s.name),
             Type::Struct(items) => {
                 let items: Vec<String> = items.iter().map(|t| t.emit()).collect();
@@ -48,7 +48,9 @@ impl Type {
             Type::Array(elem, ..) => {
                 Rc::clone(elem)
             },
-            _ => panic!()
+            _ => {
+                panic!()
+            }
         }
     }
 }
@@ -81,6 +83,10 @@ impl Types {
     pub fn struct_constant(items: Vec<Constant>) -> Constant {
         let ty = Types::struct_(items.iter().map(|item| item.ty()).collect());
         Constant::Struct { items, ty }
+    }
+
+    pub fn array(elem: &TypeRef, count: usize) -> TypeRef {
+        Rc::new(Type::Array(Rc::clone(elem), count))
     }
 
     pub fn function(ret: TypeRef, params: Vec<TypeRef>) -> TypeRef {
@@ -301,7 +307,7 @@ pub struct Function {
     name: String,
     cc: CallingConvention,
     ret: TypeRef,
-    parameters: Vec<ParameterRef>,
+    pub parameters: Vec<ParameterRef>,
     blocks: RefCell<Vec<BasicBlockRef>>,
     ty: TypeRef,
 }
@@ -556,20 +562,21 @@ impl Value for Rc<Instruction> {
             Instruction::Alloca { .. } => Types::ptr(),
             Instruction::Call { ret, .. } => Rc::clone(ret),
             Instruction::CallVoid { .. } => panic!(),
-            Instruction::GetElementPointer { ty, indices, .. } => {
-                let mut curr = Rc::clone(ty);
-                for index in &indices[1..] {
-                    match index {
-                        GEPIndex::ConstantIndex(value) => {
-                            curr = curr.type_at_index(Some(*value as usize));
-                        }
-                        GEPIndex::ArrayIndex(_) => {
-                            curr = curr.type_at_index(None);
-                        }
-                    }
-                }
-                return curr;
-            },
+            // Instruction::GetElementPointer { ty, indices, .. } => {
+            //     let mut curr = Rc::clone(ty);
+            //     for index in &indices[1..] {
+            //         match index {
+            //             GEPIndex::ConstantIndex(value) => {
+            //                 curr = curr.type_at_index(Some(*value as usize));
+            //             }
+            //             GEPIndex::ArrayIndex(_) => {
+            //                 curr = curr.type_at_index(None);
+            //             }
+            //         }
+            //     }
+            //     return curr;
+            // },
+            Instruction::GetElementPointer { .. } => Types::ptr(),
             Instruction::Load { ty, .. } => Rc::clone(ty),
             Instruction::Store { .. } => panic!(),
             Instruction::ExtractValue { base, indices, .. } => {

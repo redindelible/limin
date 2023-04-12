@@ -533,6 +533,9 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
             }
             ast::Expr::New { typ, fields, loc } => {
                 let resolved_typ = self.resolve_type(typ);
+                if !self.check(&resolved_typ, yield_type, loc) {
+                    return Expr::Errored { loc: *loc };
+                }
                 let struct_key = match resolved_typ {
                     Type::Struct { struct_} => struct_,
                     Type::Errored => return Expr::Errored { loc: *loc },

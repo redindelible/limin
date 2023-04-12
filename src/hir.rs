@@ -62,7 +62,7 @@ impl<'s> HIR<'s> {
             Expr::Block { trailing_expr, .. } => {
                 match trailing_expr {
                     Some(t) => self.type_of_expr(t),
-                    None => Type::Never   // todo why is this never instead of unit
+                    None => Type::Unit
                 }
             },
             Expr::Call { callee, .. } => {
