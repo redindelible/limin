@@ -127,13 +127,15 @@ impl<'a> HasLoc<'a> for Expr<'a> {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Type<'a> {
-    Name { name: String, loc: Location<'a> }
+    Name { name: String, loc: Location<'a> },
+    Function { parameters: Vec<Box<Type<'a>>>, ret: Box<Type<'a>>, loc: Location<'a> }
 }
 
 impl<'s> HasLoc<'s> for Type<'s> {
     fn loc(&self) -> Location<'s> {
         match self {
-            Type::Name { loc, .. } => *loc
+            Type::Name { loc, .. } => *loc,
+            Type::Function { loc, .. } => *loc
         }
     }
 }

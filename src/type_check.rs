@@ -284,6 +284,11 @@ fn resolve_type<'a>(checker: &TypeCheck<'a>, ns: NamespaceKey, typ: &ast::Type<'
             checker.push_error(TypeCheckError::CouldNotResolveType(name.clone(), *loc));
             Type::Errored
         }
+        ast::Type::Function { parameters, ret, loc } => {
+            let parameters: Vec<Type> = parameters.iter().map(|p| resolve_type(checker, ns, p)).collect();
+            let ret = resolve_type(checker, ns, ret);
+            Type::Function { params: parameters, ret: Box::new(ret) }
+        }
     }
 }
 

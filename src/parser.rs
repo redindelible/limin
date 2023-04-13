@@ -370,6 +370,13 @@ impl<'a> Parser<'a> {
                 let name = self.advance();
                 Ok(Type::Name { name: name.text.to_owned(), loc: name.loc })
             },
+            TokenType::LeftParenthesis => {
+                let (parameters, start) = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, |this| this.parse_type())?;
+                self.expect_symbol(TokenType::Minus, TokenType::GreaterThan, "'->'")?;
+                let ret = Box::new(self.parse_type()?);
+                let loc = start + ret.loc();
+                Ok(Type::Function { parameters, ret, loc })
+            }
             _ => {
                 self.errors.push(ParserError::UnexpectedToken(self.curr(), vec![TokenType::Identifier]));
                 Err(0)
