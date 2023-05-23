@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ops::RangeFrom;
 use std::path::PathBuf;
 use indexmap::IndexMap;
-use slotmap::SecondaryMap;
+use slotmap::{SecondaryMap, SlotMap};
 use crate::ast;
 use crate::error::Message;
-use crate::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, LogicOp, Stmt, MayBreak};
+use crate::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, LogicOp, Stmt, MayBreak, TypeParameter, TypeParamKey, Block};
 use crate::source::{HasLoc, Location};
 use crate::type_check::type_check_state::NamespaceKey;
 
@@ -20,7 +21,10 @@ pub enum DisplayType<'a> {
     Errored,
     Integer { bits: u8 },
     Struct { name: String, loc: Location<'a> },
-    Function { params: Vec<DisplayType<'a>>, ret: Box<DisplayType<'a>> }
+    Function { params: Vec<DisplayType<'a>>, ret: Box<DisplayType<'a>> },
+    GenericFunction { type_params: Vec<DisplayType<'a>>, params: Vec<DisplayType<'a>>, ret: Box<DisplayType<'a>> },
+    TypeParameter { name: String, bound: Option<Box<DisplayType<'a>>> },
+    TypeParamInstance { name: String }
 }
 
 impl DisplayType<'_> {
@@ -36,6 +40,19 @@ impl DisplayType<'_> {
                 let rendered: Vec<String> = params.iter().map(|t| t.render()).collect();
                 format!("({}) -> {}", rendered.join(", "), ret.render())
             },
+            DisplayType::TypeParameter { name, bound } => {
+                if let Some(bound) = bound {
+                    format!("{name}: {}", bound.render())
+                } else {
+                    format!("{name}")
+                }
+            },
+            DisplayType::GenericFunction { type_params, params, ret } => {
+                let rendered_type_params: Vec<String> = type_params.iter().map(|t| t.render()).collect();
+                let rendered_params: Vec<String> = params.iter().map(|t| t.render()).collect();
+                format!("<{}>({}) -> {}", rendered_type_params.join(", "), rendered_params.join(", "), ret.render())
+            }
+            DisplayType::TypeParamInstance { name } => format!("{name}"),
         }
     }
 }
@@ -52,6 +69,7 @@ pub enum TypeCheckError<'a> {
     ExpectedAStruct { got: DisplayType<'a>, loc: Location<'a> },
     NoSuchField { field: String, typ: DisplayType<'a>, loc: Location<'a> },
     MissingFields { fields: Vec<String>, typ: DisplayType<'a>, loc: Location<'a> },
+    CouldNotInferParameter(String, Location<'a>),
     NoMainFunction,
 }
 
@@ -102,6 +120,10 @@ impl<'a> Message for TypeCheckError<'a> {
                 eprintln!("Error: Fields {} were not supplied to initialize '{}'.", rendered_fields.join(", "), typ.render());
                 Self::show_location(loc);
             }
+            TypeCheckError::CouldNotInferParameter(name, loc) => {
+                eprintln!("Error: Could not infer the type of '{}'.", name);
+                Self::show_location(loc);
+            }
         }
     }
 }
@@ -136,8 +158,8 @@ mod type_check_state {
             }
         }
 
-        pub fn get_names(&self) -> Vec<NameKey> {
-            self.names.values().copied().collect()
+        pub fn get_names(&self) -> HashMap<String, NameKey> {
+            self.names.clone()
         }
     }
 
@@ -317,6 +339,8 @@ fn collect_fields(collected: CollectedStructs) -> CollectedFields {
 fn collect_functions(collected: CollectedFields) -> CollectedFunctions {
     let CollectedFields { mut checker, files, file_namespaces, root } = collected;
 
+    let mut param_counter = (0..).into_iter();
+
     let mut func_namespaces = SecondaryMap::new();
 
     for (file_path, file) in &files {
@@ -324,19 +348,34 @@ fn collect_functions(collected: CollectedFields) -> CollectedFunctions {
         for func in file.iter_functions() {
             let func_ns = checker.add_namespace(Some(file_ns));
 
+            let mut type_params = vec![];
+            for type_param in &func.type_parameters {
+                let bound = if let Some(bound) = &type_param.bound {
+                    let typ = resolve_type(&checker, file_ns, bound);
+                    Some(typ)
+                } else {
+                    None
+                };
+                let id = param_counter.next().unwrap();
+                let typ = Type::TypeParameter { name: type_param.name.clone(), bound: bound.clone().map(|t| Box::new(t)), id };
+                type_params.push(TypeParameter { name: type_param.name.clone(), bound, typ: typ.clone(), id });
+                checker.add_type(func_ns, type_param.name.clone(), typ);
+            }
+
             let mut params = Vec::new();
             for param in &func.parameters {
-                let typ = resolve_type(&checker,file_ns, &param.typ);
+                let typ = resolve_type(&checker, func_ns, &param.typ);
                 let decl = checker.add_name(func_ns, param.name.clone(), NameInfo::Local { typ: typ.clone(), loc: param.loc });
                 params.push(Parameter { name: param.name.clone(), typ, loc: param.loc, decl });
             }
-            let ret = func.return_type.as_ref().map_or(Type::Unit, |t| resolve_type(&checker, file_ns, t));
-            let sig = Type::Function { params: params.iter().map(|p| p.typ.clone()).collect(), ret: Box::new(ret.clone()) };
+            let ret = func.return_type.as_ref().map_or(Type::Unit, |t| resolve_type(&checker, func_ns, t));
+            // let sig = Type::Function { params: params.iter().map(|p| p.typ.clone()).collect(), ret: Box::new(ret.clone()) };
 
             let key = checker.hir.function_prototypes.insert_with_key(|key| {
                 let decl = checker.hir.names.insert(NameInfo::Function { func: key });
                 checker.namespaces[file_ns].names.insert(func.name.clone(), decl);
-                FunctionPrototype { name: func.name.clone(), params, ret, sig, decl }
+                let sig = Type::GenericFunction { func: key, type_params: type_params.clone(), params: params.iter().map(|p| p.typ.clone()).collect(), ret: Box::new(ret.clone()) };
+                FunctionPrototype { name: func.name.clone(), type_params, params, ret, sig, decl }
             });
 
             if func.name == "main" {
@@ -368,11 +407,11 @@ fn collect_function_bodies(collected: CollectedFunctions) -> Result<HIR, Vec<Typ
             let func = &checker.hir.function_prototypes[func_key];
             let ret = func.ret.clone();
 
-            let mut resolver = ResolveContext::create(&mut checker, func_key, func_ns);
+            let mut core = ResolveContextCore::new();
+            let mut resolver = ResolveContext::create(&mut checker, func_key, func_ns, &mut core);
 
-            let body = resolver.resolve_expr(&ast_func.body, Some(ret));
-            let declared = checker.namespaces[func_ns].get_names();
-            checker.hir.function_bodies.insert(func_key, FunctionBody { body, declared });
+            let body = resolver.resolve_block(&ast_func.body, Some(ret), Some(func_ns));
+            checker.hir.function_bodies.insert(func_key, FunctionBody { body });
         }
     }
 
@@ -382,16 +421,31 @@ fn collect_function_bodies(collected: CollectedFunctions) -> Result<HIR, Vec<Typ
 
 type ExpectedType = Option<Type>;
 
+struct ResolveContextCore {
+    count: RangeFrom<u64>,
+    generic_stack: SlotMap<TypeParamKey, Option<Type>>
+}
+
+impl ResolveContextCore {
+    fn new() -> ResolveContextCore {
+        ResolveContextCore {
+            count: 0..,
+            generic_stack: SlotMap::with_key()
+        }
+    }
+}
+
 struct ResolveContext<'a, 'b> where 'a: 'b {
     checker: &'b mut TypeCheck<'a>,
     func: FunctionKey,
     namespace: NamespaceKey,
+    core: &'b mut ResolveContextCore
 }
 
 impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
-    fn create(checker: &'b mut TypeCheck<'a>, func: FunctionKey, namespace: NamespaceKey) -> ResolveContext<'a, 'b> {
+    fn create(checker: &'b mut TypeCheck<'a>, func: FunctionKey, namespace: NamespaceKey, core: &'b mut ResolveContextCore) -> ResolveContext<'a, 'b> {
         ResolveContext {
-            checker, func, namespace
+            checker, func, namespace, core
         }
     }
 
@@ -440,14 +494,41 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                 params: params.iter().map(|t| self.display_type(t)).collect(),
                 ret: Box::new(self.display_type(ret))
             },
+            Type::GenericFunction { type_params, params, ret, .. } => {
+                let type_params: Vec<_> = type_params.iter().map(|p| self.display_type(&p.typ)).collect();
+                let params: Vec<_> = params.iter().map(|p| self.display_type(p)).collect();
+                let ret = Box::new(self.display_type(ret));
+                DisplayType::GenericFunction { type_params, params, ret }
+            },
+            Type::TypeParameter { name, bound, .. } => {
+                DisplayType::TypeParameter { name: name.clone(), bound: bound.as_ref().map(|t| Box::new(self.display_type(t))) }
+            }
+            Type::TypeParameterInstance { name, .. } => DisplayType::TypeParamInstance { name: name.clone() }
         }
     }
 
-    fn check(&self, got_type: &Type, expected: ExpectedType, loc: &Location<'a>) -> bool {
+    fn check(&mut self, got_type: &Type, expected: ExpectedType, loc: &Location<'a>) -> bool {
         match expected {
             Some(Type::Errored) => false,
+            Some(Type::TypeParameterInstance { id, .. }) => {
+                let inferred_type = (&self.core.generic_stack[id]).as_ref();
+                if let Some(typ) = inferred_type {
+                    return self.check(got_type, Some(typ.clone()), loc);
+                } else {
+                    self.core.generic_stack[id] = Some(got_type.clone());
+                    return true
+                }
+            }
             None => true,
             Some(t) => {
+                if let Type::TypeParameterInstance { id, .. } = got_type {
+                    let inferred_type = self.core.generic_stack[*id].clone();
+                    if let Some(typ) = inferred_type {
+                        return self.check(&typ, Some(t), loc);
+                    } else {
+                        return false;
+                    }
+                }
                 let is_compat = self.checker.hir.is_subtype(got_type, &t);
                 if !is_compat {
                     self.push_error(TypeCheckError::IncompatibleTypes{
@@ -459,6 +540,50 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                 is_compat
             }
         }
+    }
+
+    fn resolve_block(&mut self, block: &ast::Block<'a>, yield_type: ExpectedType, with_ns: Option<NamespaceKey>) -> Block<'a> {
+        let ast::Block { stmts, trailing_expr, loc } = block;
+
+        let block_ns = with_ns.unwrap_or_else(||
+            self.checker.add_namespace(Some(self.namespace))
+        );
+        let stmts = {
+            let mut child = ResolveContext {
+                namespace: block_ns,
+                func: self.func,
+                checker: self.checker,
+                core: self.core
+            };
+            let stmts: Vec<_> = stmts.iter().map(|stmt| child.resolve_stmt(stmt)).collect();
+            stmts
+        };
+        let always_breaks = stmts.iter().any(|stmt| stmt.does_break());
+
+        let trailing_expr = match trailing_expr {
+            Some(e) => {
+                let mut child = ResolveContext {
+                    namespace: block_ns,
+                    func: self.func,
+                    checker: self.checker,
+                    core: self.core
+                };
+                Some(Box::new(child.resolve_expr(e, yield_type)))
+            },
+            None => {
+                if always_breaks {
+                    None
+                } else {
+                    if !self.check(&Type::Unit, yield_type, loc) {
+                        Some(Box::new(Expr::Errored { loc: *loc }))
+                    } else {
+                        Some(Box::new(Expr::Unit { loc: *loc }))
+                    }
+                }
+            }
+        };
+        let declared = self.checker.namespaces[block_ns].get_names();
+        Block { stmts, trailing_expr, declared, loc: *loc }
     }
 
     fn resolve_expr(&mut self, expr: &ast::Expr<'a>, yield_type: ExpectedType) -> Expr<'a> {
@@ -488,53 +613,76 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                     Expr::Errored { loc: *loc }
                 }
             },
-            ast::Expr::Block { stmts, trailing_expr, loc } => {
-                let block_ns = self.checker.add_namespace(Some(self.namespace));
-                let mut child = ResolveContext {
-                    namespace: block_ns,
-                    func: self.func,
-                    checker: self.checker
-                };
-                let stmts: Vec<_> = stmts.iter().map(|stmt| child.resolve_stmt(stmt)).collect();
-                let always_breaks = stmts.iter().any(|stmt| stmt.does_break());
-
-                let trailing_expr = match trailing_expr {
-                    Some(e) => Some(Box::new(child.resolve_expr(e, yield_type))),
-                    None => {
-                        if always_breaks {
-                            None
-                        } else {
-                            if !self.check(&Type::Unit, yield_type, loc) {
-                                Some(Box::new(Expr::Errored { loc: *loc }))
-                            } else {
-                                Some(Box::new(Expr::Unit { loc: *loc }))
-                            }
-                        }
-                    }
-                };
-                let declared = self.checker.namespaces[block_ns].get_names();
-                Expr::Block { stmts, trailing_expr, declared, loc: *loc }
+            ast::Expr::Block(block) => {
+                Expr::Block(self.resolve_block(block, yield_type, None))
             }
             ast::Expr::Call { callee, arguments, loc } => {
                 let resolved_callee = self.resolve_expr(callee, None);
                 let callee_ty = self.checker.hir.type_of_expr(&resolved_callee);
-                let Type::Function { params, ret } = &callee_ty else {
-                    self.push_error(TypeCheckError::ExpectedFunction { got: self.display_type(&callee_ty), loc: callee.loc() });
-                    return Expr::Errored { loc: *loc };
-                };
-                if !self.check(ret, yield_type, loc) {
-                    return Expr::Errored { loc: *loc };
+                match &callee_ty {
+                    Type::Function { params, ret } => {
+                        if !self.check(ret, yield_type, loc) {
+                            return Expr::Errored { loc: *loc };
+                        }
+                        if params.len() != arguments.len() {
+                            self.push_error(TypeCheckError::MismatchedArguments { expected: params.len(), got: arguments.len(), loc: *loc });
+                            return Expr::Errored { loc: *loc };
+                        }
+                        let mut resolved_arguments = Vec::new();
+                        for (param, arg) in params.iter().zip(arguments.iter()) {
+                            let resolved_arg = self.resolve_expr(arg, Some(param.clone()));
+                            resolved_arguments.push(resolved_arg);
+                        }
+                        Expr::Call { callee: Box::new(resolved_callee), arguments: resolved_arguments, loc: *loc }
+                    }
+                    Type::GenericFunction { func, type_params, params, ret } => {
+                        let mut map = HashMap::new();
+                        for type_param in type_params {
+                            let type_param_key = self.core.generic_stack.insert(None);
+                            map.insert(type_param.id, Type::TypeParameterInstance { name: type_param.name.clone(), id: type_param_key });
+                        }
+
+                        if params.len() != arguments.len() {
+                            self.push_error(TypeCheckError::MismatchedArguments { expected: params.len(), got: arguments.len(), loc: *loc });
+                            return Expr::Errored { loc: *loc };
+                        }
+
+                        let mut resolved_arguments = Vec::new();
+                        for (param, arg) in params.iter().zip(arguments.iter()) {
+                            let resolved_arg = self.resolve_expr(arg, Some(param.subs(&map)));
+                            resolved_arguments.push(resolved_arg);
+                        }
+
+                        if !self.check(&ret.subs(&map), yield_type, loc) {
+                            return Expr::Errored { loc: *loc };
+                        }
+
+                        // let mut generic = HashMap::new();
+                        let mut generic_tuple = vec![];
+                        for type_param in type_params {
+                            let Type::TypeParameterInstance { id, .. } = map[&type_param.id] else {
+                                panic!()
+                            };
+                            if let Some(typ) = &self.core.generic_stack[id] {
+                                // generic.insert(type_param.id, typ.clone());
+                                generic_tuple.push(typ.clone());
+                            } else {
+                                self.push_error(TypeCheckError::CouldNotInferParameter(type_param.name.clone(), *loc));
+                            }
+                        };
+                        if generic_tuple.len() != map.len() {
+                            return Expr::Errored { loc: *loc };
+                        }
+
+                        // self.checker.hir.function_prototypes[*func].variants.insert(generic_tuple.clone());
+
+                        Expr::GenericCall { generic: generic_tuple, callee: *func, arguments: resolved_arguments, loc: *loc }
+                    }
+                    _ => {
+                        self.push_error(TypeCheckError::ExpectedFunction { got: self.display_type(&callee_ty), loc: callee.loc() });
+                        Expr::Errored { loc: *loc }
+                    }
                 }
-                if params.len() != arguments.len() {
-                    self.push_error(TypeCheckError::MismatchedArguments { expected: params.len(), got: arguments.len(), loc: *loc });
-                    return Expr::Errored { loc: *loc };
-                }
-                let mut resolved_arguments = Vec::new();
-                for (param, arg) in params.iter().zip(arguments.iter()) {
-                    let resolved_arg = self.resolve_expr(arg, Some(param.clone()));
-                    resolved_arguments.push(resolved_arg);
-                }
-                Expr::Call { callee: Box::new(resolved_callee), arguments: resolved_arguments, loc: *loc }
             }
             ast::Expr::New { typ, fields, loc } => {
                 let resolved_typ = self.resolve_type(typ);

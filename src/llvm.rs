@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::fmt::{Debug, Formatter};
 use std::rc::Rc;
 use indexmap::IndexMap;
 
@@ -8,6 +9,7 @@ pub type StructRef = Rc<NamedStruct>;
 
 pub type TypeRef = Rc<Type>;
 
+#[derive(Debug)]
 pub enum Type {
     Void,
     Pointer,
@@ -49,7 +51,7 @@ impl Type {
                 Rc::clone(elem)
             },
             _ => {
-                panic!()
+                panic!("{:?}", self);
             }
         }
     }
@@ -446,6 +448,7 @@ impl Builder {
     }
 
     pub fn extractvalue(&self, name: Option<String>, base: &ValueRef, indices: Vec<u32>) -> InstrRef {
+        assert!(matches!(base.ty().as_ref(), Type::NamedStruct(_) | Type::Struct(_)), "Actual Type: {:?}", base.ty());
         let name = name.unwrap_or_else(|| self.next());
         let instr_ref = Rc::new(Instruction::ExtractValue { name, base: Rc::clone(base), indices });
         self.curr.instructions.borrow_mut().push(Rc::clone(&instr_ref));
@@ -620,6 +623,12 @@ impl Terminator {
 pub struct NamedStruct {
     name: String,
     fields: RefCell<Option<Vec<TypeRef>>>,
+}
+
+impl Debug for NamedStruct {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", &self.name)
+    }
 }
 
 impl NamedStruct {

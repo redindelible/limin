@@ -182,6 +182,12 @@ impl<'a> Parser<'a> {
     fn parse_function(&mut self) -> ParseResult<TopLevel<'a>> {
         self.expect(TokenType::Fn)?;
         let name = self.expect(TokenType::Identifier)?;
+        let type_parameters = if self.curr().typ == TokenType::LessThan {
+            let (type_parameters, _) = self.delimited_parse(TokenType::LessThan, TokenType::GreaterThan, Self::parse_type_parameter)?;
+            type_parameters
+        } else {
+            vec![]
+        };
         let (parameters, _) = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, Self::parse_parameter)?;
         let return_type = if self.matches_symbol(TokenType::Minus, TokenType::GreaterThan) {
             self.expect_symbol(TokenType::Minus, TokenType::GreaterThan, "->")?;
@@ -189,8 +195,19 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        let body = Box::new(self.parse_expr()?);
-        Ok(TopLevel::Function( Function { name: name.text.to_owned(), parameters, return_type, body }))
+        let body = self.parse_block()?;
+        Ok(TopLevel::Function( Function { name: name.text.to_owned(), type_parameters, parameters, return_type, body }))
+    }
+
+    fn parse_type_parameter(&mut self) -> ParseResult<TypeParameter<'a>> {
+        let name = self.expect(TokenType::Identifier)?;
+        let bound = if self.curr().typ == TokenType::Colon {
+            self.expect(TokenType::Colon)?;
+            Some(Box::new(self.parse_type()?))
+        } else {
+            None
+        };
+        Ok(TypeParameter { name: name.text.to_owned(), bound, loc: name.loc })
     }
 
     fn parse_parameter(&mut self) -> ParseResult<Parameter<'a>> {
@@ -295,7 +312,7 @@ impl<'a> Parser<'a> {
         Ok(left)
     }
 
-    fn parse_block(&mut self) -> ParseResult<Expr<'a>> {
+    fn parse_block(&mut self) -> ParseResult<Block<'a>> {
         let start = self.expect(TokenType::LeftBrace)?;
         let mut stmts = Vec::new();
         let mut trailing_expr = None;
@@ -314,7 +331,7 @@ impl<'a> Parser<'a> {
             }
         }
         let end = self.expect(TokenType::RightBrace)?;
-        Ok(Expr::Block { stmts, trailing_expr, loc: start.loc + end.loc })
+        Ok(Block { stmts, trailing_expr, loc: start.loc + end.loc })
     }
 
     fn parse_terminal(&mut self) -> ParseResult<Expr<'a>> {
@@ -351,7 +368,7 @@ impl<'a> Parser<'a> {
                 Ok(expr)
             },
             TokenType::LeftBrace => {
-                self.parse_block()
+                Ok(Expr::Block(self.parse_block()?))
             }
             _ => {
                 self.errors.push(ParserError::UnexpectedToken(self.curr(), vec![TokenType::Identifier, TokenType::LeftParenthesis]));

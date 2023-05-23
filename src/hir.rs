@@ -1,12 +1,15 @@
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use indexmap::IndexMap;
 use slotmap::{SlotMap, new_key_type, SecondaryMap};
+use crate::common::map_join;
 use crate::source::Location;
 
 new_key_type! {
     pub struct NameKey;
     pub struct StructKey;
     pub struct FunctionKey;
+    pub struct TypeParamKey;
 }
 
 pub enum NameInfo<'ir> {
@@ -14,7 +17,7 @@ pub enum NameInfo<'ir> {
     Local { typ: Type, loc: Location<'ir> }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Type {
     Errored,
     Unit,
@@ -22,7 +25,26 @@ pub enum Type {
     Boolean,
     Integer { bits: u8 },
     Struct { struct_: StructKey },
-    Function { params: Vec<Type>, ret: Box<Type> }
+    Function { params: Vec<Type>, ret: Box<Type> },
+    GenericFunction { func: FunctionKey, type_params: Vec<TypeParameter>, params: Vec<Type>, ret: Box<Type> },
+    TypeParameter { name: String, bound: Option<Box<Type>>, id: u64 },
+    TypeParameterInstance { name: String, id: TypeParamKey }
+}
+
+impl Type {
+    pub fn subs(&self, map: &HashMap<u64, Type>) -> Type {
+        match self {
+            Type::TypeParameter { id, .. } if map.contains_key(id) => {
+                map[id].clone()
+            },
+            Type::Function { params, ret } => {
+                Type::Function { params: params.iter().map(|t| t.subs(map)).collect(), ret: Box::new(ret.subs(map)) }
+            },
+            // I don't think this one is possible
+            Type::GenericFunction { .. } => panic!(),
+            _ => self.clone()
+        }
+    }
 }
 
 pub struct HIR<'s> {
@@ -46,6 +68,7 @@ impl<'s> HIR<'s> {
             function_bodies: SecondaryMap::new()
         }
     }
+
     pub fn type_of_name(&self, name: NameKey) -> Type {
         match &self.names[name] {
             NameInfo::Function { func } => self.function_prototypes[*func].sig.clone(),
@@ -59,7 +82,7 @@ impl<'s> HIR<'s> {
             Expr::Integer { .. } => Type::Integer { bits: 32 },
             Expr::Unit { .. } => Type::Unit,
             Expr::LogicBinOp { .. } => Type::Boolean,
-            Expr::Block { trailing_expr, .. } => {
+            Expr::Block(Block { trailing_expr, .. }) => {
                 match trailing_expr {
                     Some(t) => self.type_of_expr(t),
                     None => Type::Unit
@@ -67,9 +90,17 @@ impl<'s> HIR<'s> {
             },
             Expr::Call { callee, .. } => {
                 let Type::Function { ret, .. } = self.type_of_expr(callee) else {
-                    panic!()
+                    panic!("{:?}", self.type_of_expr(callee));
                 };
                 *ret
+            },
+            Expr::GenericCall { generic, callee, .. } => {
+                let proto = &self.function_prototypes[*callee];
+                let mut map = HashMap::new();
+                for (type_param, typ) in proto.type_params.iter().zip(generic.iter()) {
+                    map.insert(type_param.id, typ.clone());
+                };
+                proto.ret.subs(&map)
             },
             Expr::New { struct_, .. } => {
                 Type::Struct { struct_: *struct_ }
@@ -89,7 +120,32 @@ impl<'s> HIR<'s> {
             (Type::Function { params: a_params, ret: a_ret }, Type::Function { params: b_params, ret: b_ret }) => {
                 self.is_subtype(a_ret, b_ret) && b_params.iter().zip(a_params.iter()).all(|(b_typ, a_typ)| self.is_subtype(b_typ, a_typ))
             },
+            (Type::TypeParameter { id: a, ..}, Type::TypeParameter { id: b, .. }) => a == b,
             _ => false
+        }
+    }
+
+    pub fn shorthand_name(&self, typ: &Type) -> String {
+        match typ {
+            Type::Errored => panic!(),
+            Type::Never => "!".into(),
+            Type::Unit => "()".into(),
+            Type::Boolean => "bool".into(),
+            Type::Integer { bits } => format!("i{bits}"),
+            Type::Struct { struct_ } => self.structs[*struct_].name.clone(),
+            Type::Function { params, ret } => format!(
+                "({}) -> {}",
+                map_join(params, |p| self.shorthand_name(p)),
+                self.shorthand_name(ret)
+            ),
+            Type::GenericFunction { type_params, params, ret, .. } => format!(
+                "<{}>({}) -> {}",
+                map_join(type_params, |p| &p.name),
+                map_join(params, |p| self.shorthand_name(p)),
+                self.shorthand_name(ret)
+            ),
+            Type::TypeParameter { name, .. } => name.clone(),
+            Type::TypeParameterInstance { name, .. } => name.clone()
         }
     }
 }
@@ -110,15 +166,25 @@ pub struct StructField<'ir> {
 pub struct FunctionPrototype<'ir> {
     pub name: String,
     pub decl: NameKey,
+    pub type_params: Vec<TypeParameter>,
     pub params: Vec<Parameter<'ir>>,
     pub ret: Type,
 
+    // pub variants: HashSet<Vec<Type>>,
     pub sig: Type
 }
 
 pub struct FunctionBody<'ir> {
-    pub body: Expr<'ir>,
-    pub declared: Vec<NameKey>
+    pub body: Block<'ir>,
+    // pub declared: HashMap<String, NameKey>
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct TypeParameter {
+    pub name: String,
+    pub bound: Option<Type>,
+    pub typ: Type,
+    pub id: u64,
 }
 
 #[derive(Clone)]
@@ -140,13 +206,22 @@ pub trait MayBreak {
 }
 
 #[derive(Debug)]
+pub struct Block<'ir> {
+    pub stmts: Vec<Stmt<'ir>>,
+    pub trailing_expr: Option<Box<Expr<'ir>>>,
+    pub declared: HashMap<String, NameKey>,
+    pub loc: Location<'ir>
+}
+
+#[derive(Debug)]
 pub enum Expr<'ir> {
     Name { decl: NameKey, loc: Location<'ir> },
     Integer { num: u64, loc: Location<'ir> },
     Unit { loc: Location<'ir> },
     LogicBinOp { left: Box<Expr<'ir>>, op: LogicOp, right: Box<Expr<'ir>>, loc: Location<'ir> },
-    Block { stmts: Vec<Stmt<'ir>>, trailing_expr: Option<Box<Expr<'ir>>>, declared: Vec<NameKey>, loc: Location<'ir> },
+    Block(Block<'ir>),
     Call { callee: Box<Expr<'ir>>, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
+    GenericCall { generic: Vec<Type>, callee: FunctionKey, arguments: Vec<Expr<'ir>>, loc: Location<'ir>},
     Errored { loc: Location<'ir> },
     New { struct_: StructKey, fields: IndexMap<String, Box<Expr<'ir>>>, loc: Location<'ir> }
 }
@@ -156,11 +231,14 @@ impl MayBreak for Expr<'_> {
         match self {
             Expr::Name { .. } | Expr::Integer { .. } | Expr::Unit { .. } | Expr::Errored { .. } => false,
             Expr::LogicBinOp { left, right, .. } => left.does_break() || right.does_break(),
-            Expr::Block { stmts, trailing_expr, .. } => {
+            Expr::Block( Block { stmts, trailing_expr, .. } ) => {
                 stmts.iter().any(|stmt| stmt.does_break()) || trailing_expr.as_ref().map_or(false, |e| e.does_break())
             },
             Expr::Call { callee, arguments, .. } => {
                 callee.does_break() || arguments.iter().any(|arg| arg.does_break())
+            },
+            Expr::GenericCall { arguments, .. } => {
+                arguments.iter().any(|arg| arg.does_break())
             },
             Expr::New { fields, .. } => {
                 fields.values().any(|val| val.does_break())

@@ -1,13 +1,16 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use indexmap::IndexMap;
 use slotmap::SecondaryMap;
-use crate::{hir, llvm};
-use crate::hir::{FunctionKey, MayBreak, NameKey, StructKey};
+use crate::{lir, llvm};
+use crate::common::map_join;
+use crate::lir::{BlockKey, LocalKey};
+// use crate::hir::{FunctionKey, MayBreak, NameKey, StructKey};
 use crate::llvm::{Builder, CallingConvention, Constant, GEPIndex, GlobalRef, ParameterRef, Value};
 
-pub fn generate_llvm(hir: hir::HIR) -> llvm::Module {
-    let mut gen = Codegen::new(&hir);
+pub fn generate_llvm(lir: lir::LIR) -> llvm::Module {
+    let mut gen = Codegen::new(&lir);
     gen.generate();
     gen.llvm
 }
@@ -21,22 +24,19 @@ struct StructInfo {
 
 struct FunctionInfo {
     llvm_ref: llvm::FunctionRef,
-    params: HashMap<String, llvm::ValueRef>,
+    value_ref: llvm::ValueRef,
+    params: IndexMap<String, llvm::ValueRef>,
     frame_param: ParameterRef,
     closure_param: ParameterRef
 }
 
-struct NameInfo {
-    llvm_ref: llvm::ValueRef,
-}
-
 struct Codegen<'a> {
     llvm: llvm::Module,
-    hir: &'a hir::HIR<'a>,
+    lir: &'a lir::LIR,
 
-    structs: SecondaryMap<StructKey, StructInfo>,
-    functions: SecondaryMap<FunctionKey, FunctionInfo>,
-    names: SecondaryMap<NameKey, NameInfo>,
+    structs: SecondaryMap<lir::StructKey, StructInfo>,
+    functions: SecondaryMap<lir::FunctionKey, FunctionInfo>,
+
     mangle: RefCell<u32>,
 
     create_object_fn: llvm::ValueRef,
@@ -46,7 +46,7 @@ struct Codegen<'a> {
 
 struct FrameInfo<'a> {
     ty: llvm::TypeRef,
-    indices: HashMap<NameKey, usize>,
+    indices: HashMap<LocalKey, usize>,
     parent: Option<&'a FrameInfo<'a>>,
     llvm_ref: llvm::ValueRef,
     stack_index: u32,
@@ -98,80 +98,75 @@ enum ParentFrame<'a> {
     Block(&'a FrameInfo<'a>)
 }
 
-struct StackSim<'a> {
-    hir: &'a hir::HIR<'a>,
+struct StackSim {
     curr: usize,
     max: usize
 }
 
-impl StackSim<'_> {
-    fn sim(hir: &hir::HIR, expr: &hir::Expr) -> usize {
-        let mut sim = StackSim::new(hir);
-        sim._sim_expr(expr);
+impl StackSim {
+    fn sim(lir: &lir::LIR, expr: &lir::Expr) -> usize {
+        let mut sim = StackSim { curr: 0, max: 0 };
+        sim._sim_expr(expr, lir);
         sim.max
     }
 
-    fn sim_stmts(hir: &hir::HIR, stmts: &Vec<hir::Stmt>) -> usize {
-        let mut sim = StackSim::new(hir);
-        sim._sim_stmts(stmts);
+    fn sim_stmts(lir: &lir::LIR, stmts: &Vec<lir::Stmt>) -> usize {
+        let mut sim = StackSim { curr: 0, max: 0 };
+        sim._sim_stmts(stmts, lir);
         sim.max
     }
 
-    fn new<'a>(hir: &'a hir::HIR<'a>) -> StackSim<'a> {
-        StackSim {
-            hir, curr: 0, max: 0
-        }
-    }
-
-    fn _sim_stmts(&mut self, stmts: &Vec<hir::Stmt>) {
+    fn _sim_stmts(&mut self, stmts: &Vec<lir::Stmt>, lir: &lir::LIR) {
         for stmt in stmts {
             match stmt {
-                hir::Stmt::Expr { expr, .. } => {
-                    self._sim_expr(expr);
+                lir::Stmt::Expr(expr) => {
+                    self._sim_expr(expr, lir);
                     self.curr = 0;
                 }
-                hir::Stmt::Decl { value, .. } => {
-                    self._sim_expr(value);
+                lir::Stmt::Decl(_, value) => {
+                    self._sim_expr(value, lir);
                     self.curr = 0;
                 }
-                hir::Stmt::Return { value, .. } => {
-                    self._sim_expr(value);
+                lir::Stmt::Ret(value) => {
+                    self._sim_expr(value, lir);
                     self.curr = 0;
                 }
             }
         }
     }
 
-    fn _sim_expr(&mut self, expr: &hir::Expr) {
+    fn _sim_expr(&mut self, expr: &lir::Expr, lir: &lir::LIR) {
         match expr {
-            hir::Expr::Integer { .. } => {
+            lir::Expr::Integer(_) => {
                 self.push_n(0);
             }
-            hir::Expr::Name { decl, .. } => {
-                let slots = self.stack_slots(&self.hir.type_of_name(*decl));
+            lir::Expr::LoadLocal(local) => {
+                let slots = self.stack_slots(&lir.locals[*local].typ);
                 self.push_n(slots);
             }
-            hir::Expr::Block { .. } => {
-                let slots = self.stack_slots(&self.hir.type_of_expr(expr));
-                self.push_n(slots);
+            lir::Expr::StoreLocal(_, expr) => {
+                self._sim_expr(expr, lir);
             }
-            hir::Expr::Call { callee, arguments, .. } => {
-                let reset_to = self.curr;
-                self._sim_expr(callee);
-                for arg in arguments {
-                    self._sim_expr(arg);
-                }
-                self.curr = reset_to;
-                let slots = self.stack_slots(&self.hir.type_of_expr(expr));
-                self.push_n(slots);
-            }
-            hir::Expr::New { fields, .. } => {
-                let reset_to = self.curr;
-                for field in fields.values() {
-                    self._sim_expr(field);
-                }
-                self.curr = reset_to;
+            lir::Expr::LoadFunction(_) => {
                 self.push_n(1);
+            }
+            lir::Expr::Parameter(func, index) => {
+                let (_, param) = &lir.function_prototypes[*func].params[*index];
+                self.push_n(self.stack_slots(param));
+            }
+            lir::Expr::Block(block) => {
+                let slots = self.stack_slots(&lir.blocks[*block].ret_type);
+                self.push_n(slots);
+            }
+            lir::Expr::Call( callee, arguments) => {
+                let reset_to = self.curr;
+                self._sim_expr(callee, lir);
+                for arg in arguments {
+                    self._sim_expr(arg, lir);
+                }
+                self.curr = reset_to;
+                let slots = self.stack_slots(&lir.type_of(expr));
+                self.push_n(slots);
             }
             _ => {
                 panic!("{:?}", expr);
@@ -187,25 +182,26 @@ impl StackSim<'_> {
         }
     }
 
-    fn stack_slots(&self, ty: &hir::Type) -> usize {
+    fn stack_slots(&self, ty: &lir::Type) -> usize {
         match ty {
-            hir::Type::Integer { .. } => 0,
-            hir::Type::Function { .. } => 1,
-            hir::Type::Struct { .. } => 1,
-            hir::Type::Boolean => 0,
-            hir::Type::Unit => 0,
-            _ => {
-                panic!("{:?}", ty);
-                todo!()
-            }
+            lir::Type::Never => 0,
+            lir::Type::Unit => 0,
+            lir::Type::Integer(_) => 0,
+            lir::Type::Boolean => 0,
+            lir::Type::Function(_, _) => 1,
+            lir::Type::Struct { .. } => 1,
+            // _ => {
+            //     panic!("{:?}", ty);
+            //     todo!()
+            // }
         }
     }
 }
 
 
 impl Codegen<'_> {
-    fn new<'a>(hir: &'a hir::HIR<'a>) -> Codegen<'a> {
-        let mut llvm = llvm::Module::new(hir.name.clone());
+    fn new(lir: &lir::LIR) -> Codegen {
+        let mut llvm = llvm::Module::new("placeholder".to_string());  // todo
 
         let create_object_fn = llvm.add_function(
             "limin_create_object",
@@ -236,46 +232,49 @@ impl Codegen<'_> {
 
         Codegen {
             llvm,
-            hir,
+            lir,
             structs: SecondaryMap::new(),
             functions: SecondaryMap::new(),
-            names: SecondaryMap::new(),
             mangle: RefCell::new(0),
             create_object_fn,
             mark_object_fn,
-            trace_stack_fn
+            trace_stack_fn,
         }
     }
 
-    fn gen_mangled2(&self, prefix: &'static str, name: &str) -> String {
-        let num = *self.mangle.borrow();
-        *self.mangle.borrow_mut() += 1;
-        format!("{prefix}_{name}_{:>08X}", num)
-    }
+    // fn gen_mangled2(&self, prefix: &'static str, name: &str) -> String {
+    //     let num = *self.mangle.borrow();
+    //     *self.mangle.borrow_mut() += 1;
+    //     format!("{prefix}_{name}_{:>08X}", num)
+    // }
+    //
+    // fn gen_mangled(&self, prefix: &'static str) -> String {
+    //     let num = *self.mangle.borrow();
+    //     *self.mangle.borrow_mut() += 1;
+    //     format!("{prefix}_{:>08X}", num)
+    // }
 
-    fn gen_mangled(&self, prefix: &'static str) -> String {
+    fn mangled<const N: usize>(&self, things: [&str; N]) -> String {
         let num = *self.mangle.borrow();
         *self.mangle.borrow_mut() += 1;
-        format!("{prefix}_{:>08X}", num)
+        format!("\"{}_{:>08X}\"", things.join("_"), num)
     }
 
     fn generate(&mut self) {
-        let hir = self.hir;
-        for (key, _) in &hir.structs {
-            let name = self.gen_mangled2("struct", &hir.structs[key].name);
+        let lir = self.lir;
+        for (key, struct_proto) in &lir.struct_prototypes {
+            let name = self.mangled(["struct", &struct_proto.name]);
             let struct_ref = self.llvm.types.add_struct(name);
 
             let obj_ptr = llvm::Parameter::new("obj".into(), llvm::Types::ptr());
             let trace_fn = self.llvm.add_function(
-                &self.gen_mangled2("trace", &hir.structs[key].name),
+                &self.mangled(["trace", &struct_proto.name]),
                 llvm::Types::void(),
-                vec![
-                    Rc::clone(&obj_ptr)
-                ],
+                vec![obj_ptr.clone()],
                 CallingConvention::CCC
             );
 
-            let type_info = self.llvm.add_global_constant(self.gen_mangled2("typeinfo", &hir.structs[key].name), llvm::Types::struct_constant(vec![
+            let type_info = self.llvm.add_global_constant(self.mangled(["typeinfo", &struct_proto.name]), llvm::Types::struct_constant(vec![
                 llvm::Types::function_constant(&trace_fn),
                 llvm::Types::sizeof(&struct_ref.as_type_ref())
             ]));
@@ -284,7 +283,7 @@ impl Codegen<'_> {
             self.structs.insert(key, info);
         }
 
-        for (key, struct_) in &hir.structs {
+        for (key, struct_body) in &lir.struct_bodies {
             let struct_ty = self.structs[key].llvm_ref.as_type_ref();
             let mut fields = vec![
                 llvm::Types::ptr(),  // type info ptr
@@ -294,24 +293,24 @@ impl Codegen<'_> {
             let trace_builder = Builder::new(&self.structs[key].trace_fn);
             let obj_ptr = Rc::clone(&self.structs[key].trace_fn.parameters[0]);
 
-            for field in struct_.fields.values() {
+            for (field_name, field_type) in &struct_body.fields {
                 let index = fields.len();
-                self.structs[key].fields.insert(field.name.clone(), fields.len());
+                self.structs[key].fields.insert(field_name.clone(), fields.len());
 
                 let field_ptr = trace_builder.gep(None, Rc::clone(&struct_ty), Rc::clone(&obj_ptr).to_value(), vec![
                     GEPIndex::ConstantIndex(0),
                     GEPIndex::ConstantIndex(index as u32)
                 ]);
-                self.emit_tracing_code(&field.typ, field_ptr.to_value(), &trace_builder);
+                self.emit_tracing_code(&field_type, field_ptr.to_value(), &trace_builder);
 
-                fields.push(self.generate_type(&field.typ));
+                fields.push(self.generate_type(&field_type));
             }
             trace_builder.ret_void();
             self.structs[key].llvm_ref.set_fields(fields);
         }
 
-        for (key, proto ) in &hir.function_prototypes {
-            let name = self.gen_mangled2("function", &proto.name);
+        for (key, proto ) in &lir.function_prototypes {
+            let name = self.mangled(["function", &proto.name]);
 
             let ret = self.generate_type(&proto.ret);
             let frame_param = Rc::new(llvm::Parameter { name: "frame".into(), typ: llvm::Types::ptr() });
@@ -320,46 +319,44 @@ impl Codegen<'_> {
                 Rc::clone(&frame_param),
                 Rc::clone(&closure_param)
             ];
-            let mut llvm_params: HashMap<String, llvm::ValueRef> = HashMap::new();
-            for param in &proto.params {
-                let name = self.gen_mangled2("param", &param.name);
-                let llvm_param = Rc::new(llvm::Parameter { name: name.clone(), typ: self.generate_type(&param.typ) });
-                llvm_params.insert(param.name.clone(), Rc::clone(&llvm_param).to_value());
+            let mut llvm_params: IndexMap<String, llvm::ValueRef> = IndexMap::new();
+            for (param_name, param_type) in &proto.params {
+                let name = self.mangled(["param", param_name]);
+                let llvm_param = Rc::new(llvm::Parameter { name: name.clone(), typ: self.generate_type(param_type) });
+                llvm_params.insert(param_name.clone(), llvm_param.clone().to_value());
                 params.push(llvm_param);
             }
 
             let func_ref = self.llvm.add_function(&name, ret, params, CallingConvention::FastCC);
 
-            self.functions.insert(key, FunctionInfo { llvm_ref: Rc::clone(&func_ref), params: llvm_params, frame_param, closure_param });
-
-            let func_global = self.llvm.add_global_constant(self.gen_mangled2("funcglobal", &proto.name), llvm::Types::struct_constant(vec![
+            let func_global = self.llvm.add_global_constant(self.mangled(["funcglobal", &proto.name]), llvm::Types::struct_constant(vec![
                 llvm::Types::function_constant(&func_ref),
                 llvm::Types::null()
             ]));
 
-            self.names.insert(proto.decl, NameInfo { llvm_ref: func_global.to_value() });
+            let info = FunctionInfo {
+                llvm_ref: Rc::clone(&func_ref), params: llvm_params, frame_param, closure_param,
+                value_ref: func_global.to_value(),
+            };
+
+            self.functions.insert(key, info);
         }
 
-        for (key, body) in &hir.function_bodies {
-            let proto = &hir.function_prototypes[key];
+        for (key, body) in &lir.function_bodies {
+            let proto = &lir.function_prototypes[key];
+
             let builder = Builder::new(&self.functions[key].llvm_ref);
 
-            let max_stack = StackSim::sim(&self.hir, &body.body);
+            let parent_frame = self.functions[key].frame_param.clone().to_value();
+            let frame_info = self.create_frame(body.body, &builder, ParentFrame::Caller(parent_frame));
 
-            let frame_info = self.create_frame(&body.declared, max_stack, &builder, ParentFrame::Caller(Rc::clone(&self.functions[key].frame_param).to_value()));
-
-            for param in &proto.params {
-                let param_ptr = Self::get_name_ptr(&param.decl, &builder, &frame_info);
-                builder.store(&param_ptr, &self.functions[key].params[&param.name]);
-            }
-
-            let res = self.generate_expr(&body.body, &builder, &frame_info);
-            if !body.body.does_break() {
-                builder.ret(res);
+            let res = self.generate_block(&body.body, &builder, &frame_info);
+            if let Some(result) = res {
+                builder.ret(result);
             }
         }
 
-        let main_key = hir.main_function.unwrap();
+        let main_key = lir.main_fn;
         let main_info = &self.functions[main_key];
         let main = self.llvm.add_function("main", llvm::Types::int(32), vec![], CallingConvention::CCC);
         let builder = Builder::new(&main);
@@ -370,7 +367,7 @@ impl Codegen<'_> {
         builder.ret(exit_code.to_value());
     }
 
-    fn create_frame<'a>(&mut self, declared: &Vec<NameKey>, max_stack: usize, builder: &Builder, parent: ParentFrame<'a>) -> FrameInfo<'a> {
+    fn create_frame<'a>(&mut self, block: BlockKey, builder: &Builder, parent: ParentFrame<'a>) -> FrameInfo<'a> {
         let mut items = Vec::new();
         let mut map = HashMap::new();
         items.push(llvm::Types::ptr());   // the parent frame pointer
@@ -378,28 +375,32 @@ impl Codegen<'_> {
         items.push(llvm::Types::int(64));   // the stack size
 
         let frame_ptr = llvm::Parameter::new("frame".into(), llvm::Types::ptr());
-        let trace_fn = self.llvm.add_function(&self.gen_mangled("frametrace"), llvm::Types::void(), vec![
-            Rc::clone(&frame_ptr)
-        ], CallingConvention::CCC);
+        let trace_fn = self.llvm.add_function(
+            &self.mangled(["frametrace"]),
+            llvm::Types::void(),
+            vec![frame_ptr.clone()],
+            CallingConvention::CCC
+        );
 
-        for decl in declared {
+        for local in &self.lir.blocks[block].locals {
             let index = items.len();
-            map.insert(*decl, index);
-            let ty = self.generate_type(&self.hir.type_of_name(*decl));
+            map.insert(*local, index);
+            let ty = self.generate_type(&self.lir.locals[*local].typ);
             items.push(ty);
         }
         let stack_index = items.len() as u32;
+        let max_stack = StackSim::sim_stmts(&self.lir, &self.lir.blocks[block].stmts);
         items.push(llvm::Types::array(&llvm::Types::ptr(), max_stack));
 
         let frame_ty = llvm::Types::struct_(items);
 
         let trace_builder = Builder::new(&trace_fn);
-        for decl in declared {
+        for local in &self.lir.blocks[block].locals {
             let item_ptr = trace_builder.gep(None, Rc::clone(&frame_ty), Rc::clone(&frame_ptr).to_value(), vec![
                 GEPIndex::ConstantIndex(0),
-                GEPIndex::ConstantIndex(map[decl] as u32)
+                GEPIndex::ConstantIndex(map[&local] as u32)
             ]).to_value();
-            self.emit_tracing_code(&self.hir.type_of_name(*decl), item_ptr, &trace_builder);
+            self.emit_tracing_code(&self.lir.locals[*local].typ, item_ptr, &trace_builder);
         }
 
         let stack_ptr = trace_builder.gep(None, Rc::clone(&frame_ty), Rc::clone(&frame_ptr).to_value(), vec![
@@ -417,7 +418,7 @@ impl Codegen<'_> {
 
         trace_builder.ret_void();
 
-        let llvm_ref = builder.alloca(Some(self.gen_mangled("frame")), Rc::clone(&frame_ty)).to_value();
+        let llvm_ref = builder.alloca(Some(self.mangled(["frame"])), Rc::clone(&frame_ty)).to_value();
         let parent_ptr = builder.gep(None, Rc::clone(&frame_ty), Rc::clone(&llvm_ref), vec![
             GEPIndex::ConstantIndex(0),
             GEPIndex::ConstantIndex(0)
@@ -446,10 +447,10 @@ impl Codegen<'_> {
         FrameInfo { ty: frame_ty, indices: map, parent, llvm_ref, stack_index, stack: RefCell::new(0) }
     }
 
-    fn get_name_ptr(name: &NameKey, builder: &Builder, frame: &FrameInfo) -> llvm::ValueRef {
+    fn get_name_ptr(local: LocalKey, builder: &Builder, frame: &FrameInfo) -> llvm::ValueRef {
         let mut curr = frame;
         loop {
-            match curr.indices.get(name) {
+            match curr.indices.get(&local) {
                 Some(index) => {
                     return builder.gep(None, Rc::clone(&curr.ty), Rc::clone(&curr.llvm_ref), vec![
                         GEPIndex::ArrayIndex(llvm::Types::int_constant(64, 0).to_value()),
@@ -463,42 +464,49 @@ impl Codegen<'_> {
         }
     }
 
-    fn generate_expr(&mut self, expr: &hir::Expr, builder: &Builder, frame: &FrameInfo) -> llvm::ValueRef {
+    fn generate_block(&mut self, block: &BlockKey, builder: &Builder, frame: &FrameInfo) -> Option<llvm::ValueRef> {
+        let lir::Block { stmts, ret, locals, ret_type } = &self.lir.blocks[*block];
+        let block_frame = self.create_frame(*block, builder, ParentFrame::Block(frame));
+        for stmt in stmts {
+            self.generate_stmt(stmt, builder, &block_frame);
+        }
+        if matches!(ret.as_ref(), lir::Expr::Never) {
+            None
+        } else {
+            let value = self.generate_expr(&ret, builder, &block_frame);
+            self.push_to_stack(&ret_type, value.clone(), builder, frame);
+            Some(value)
+        }
+    }
+
+    fn generate_expr(&mut self, expr: &lir::Expr, builder: &Builder, frame: &FrameInfo) -> llvm::ValueRef {
         match expr {
-            hir::Expr::Integer { num, .. } => {
+            lir::Expr::Never => {
+                panic!()
+            }
+            lir::Expr::Unit => {
+                llvm::Types::int_constant(1, 0).to_value()
+            }
+            lir::Expr::Integer(num) => {
                 llvm::Types::int_constant(32, *num).to_value()
             }
-            hir::Expr::Name { decl, .. } => {
-                let ptr;
-                if self.names.contains_key(*decl) {
-                    ptr = Rc::clone(&self.names[*decl].llvm_ref)
-                } else {
-                    ptr = Self::get_name_ptr(decl, builder, frame);
-                }
-                let ty = self.generate_type(&self.hir.type_of_name(*decl));
-                let value = builder.load(None, ty, ptr).to_value();
-                self.push_to_stack(&self.hir.type_of_name(*decl), Rc::clone(&value), builder, frame);
+            lir::Expr::LoadLocal(local) => {
+                let ptr = Self::get_name_ptr(*local, builder, frame);
+                let ty = &self.lir.locals[*local].typ;
+                let value = builder.load(None, self.generate_type(ty), ptr).to_value();
+                self.push_to_stack(ty, Rc::clone(&value), builder, frame);
                 value
             }
-            hir::Expr::Block { stmts, trailing_expr, declared, .. } => {
-                let max_stack = StackSim::sim_stmts(self.hir, stmts);
-                let block_frame = self.create_frame(declared, max_stack, builder, ParentFrame::Block(frame));
-                for stmt in stmts {
-                    self.generate_stmt(stmt, builder, &block_frame);
-                }
-                let value = match trailing_expr.as_ref() {
-                    Some(expr) => {
-                        self.generate_expr(expr, builder, &block_frame)
-                    },
-                    None => {
-                        llvm::Types::int_constant(32, 0).to_value()
-                    }
-                };
-                self.push_to_stack(&self.hir.type_of_expr(expr), Rc::clone(&value), builder, frame);
-                value
+            lir::Expr::LoadFunction(func) => {
+                builder.load(None, Self::function_type(), self.functions[*func].value_ref.clone()).to_value()
             }
-            hir::Expr::Call { callee, arguments, .. } => {
-                let hir::Type::Function { ret, .. } = self.hir.type_of_expr(callee) else { panic!() };
+            lir::Expr::Parameter(func, index) => {
+                let (_, param) = self.functions[*func].params.get_index(*index).unwrap();
+                param.clone()
+            }
+            lir::Expr::Block(block) => self.generate_block(block, builder, frame).unwrap(),
+            lir::Expr::Call(callee, arguments) => {
+                let lir::Type::Function(_, ret) = self.lir.type_of(callee) else { panic!() };
 
                 let stack_state = frame.pop_state();
 
@@ -516,49 +524,49 @@ impl Codegen<'_> {
                 let value = builder.call(None, CallingConvention::FastCC, self.generate_type(&ret), &func.to_value(), args).to_value();
 
                 frame.pop(stack_state, builder);
-                self.push_to_stack(&self.hir.type_of_expr(expr), Rc::clone(&value), builder, frame);
+                self.push_to_stack(&ret, Rc::clone(&value), builder, frame);
                 value
             }
-            hir::Expr::New { struct_, fields, .. } => {
-                let stack_state = frame.pop_state();
-
-                let type_info = &self.structs[*struct_].type_info;
-                let value = builder.call(None, CallingConvention::CCC, llvm::Types::ptr(), &self.create_object_fn, vec![
-                    Rc::clone(type_info).to_value(),
-                    Rc::clone(&frame.llvm_ref)
-                ]).to_value();
-
-                for (field_name, field_init) in fields {
-                    let index = self.structs[*struct_].fields[field_name];
-                    let init = self.generate_expr(field_init, builder, frame);
-                    let field_ptr = builder.gep(None, self.structs[*struct_].llvm_ref.as_type_ref(), Rc::clone(&value), vec![
-                        GEPIndex::ConstantIndex(0),
-                        GEPIndex::ConstantIndex(index as u32)
-                    ]).to_value();
-                    builder.store(&field_ptr, &init);
-                    self.push_to_stack(&self.hir.type_of_expr(field_init), init, builder, frame);
-                }
-
-                frame.pop(stack_state, builder);
-                self.push_to_stack(&self.hir.type_of_expr(expr), Rc::clone(&value), builder, frame);
-                value
-            }
+            // hir::Expr::New { struct_, fields, .. } => {
+            //     let stack_state = frame.pop_state();
+            //
+            //     let type_info = &self.structs[*struct_].type_info;
+            //     let value = builder.call(None, CallingConvention::CCC, llvm::Types::ptr(), &self.create_object_fn, vec![
+            //         Rc::clone(type_info).to_value(),
+            //         Rc::clone(&frame.llvm_ref)
+            //     ]).to_value();
+            //
+            //     for (field_name, field_init) in fields {
+            //         let index = self.structs[*struct_].fields[field_name];
+            //         let init = self.generate_expr(field_init, builder, frame);
+            //         let field_ptr = builder.gep(None, self.structs[*struct_].llvm_ref.as_type_ref(), Rc::clone(&value), vec![
+            //             GEPIndex::ConstantIndex(0),
+            //             GEPIndex::ConstantIndex(index as u32)
+            //         ]).to_value();
+            //         builder.store(&field_ptr, &init);
+            //         self.push_to_stack(&self.hir.type_of_expr(field_init), init, builder, frame);
+            //     }
+            //
+            //     frame.pop(stack_state, builder);
+            //     self.push_to_stack(&self.hir.type_of_expr(expr), Rc::clone(&value), builder, frame);
+            //     value
+            // }
             _ => panic!("{:?}", expr)
         }
     }
 
-    fn push_to_stack(&self, ty: &hir::Type, value: llvm::ValueRef, builder: &Builder, frame: &FrameInfo) {
+    fn push_to_stack(&self, ty: &lir::Type, value: llvm::ValueRef, builder: &Builder, frame: &FrameInfo) {
         match ty {
-            hir::Type::Integer { .. } => { }
-            hir::Type::Boolean => { }
-            hir::Type::Unit => { }
-            hir::Type::Function { .. } => {
+            lir::Type::Unit => { }
+            lir::Type::Boolean => { }
+            lir::Type::Integer(_) => { }
+            lir::Type::Function(_, _) => {
                 let obj = builder.extractvalue(None, &value, vec![1]);
                 frame.push(&obj.to_value(), builder);
             }
-            hir::Type::Struct { .. } => {
+            lir::Type::Struct(_) => {
                 frame.push(&value, builder)
-            },
+            }
             _ => {
                 panic!("{:?}", ty);
                 todo!()
@@ -566,40 +574,44 @@ impl Codegen<'_> {
         }
     }
 
-    fn generate_stmt(&mut self, stmt: &hir::Stmt, builder: &Builder, frame: &FrameInfo) {
+    fn generate_stmt(&mut self, stmt: &lir::Stmt, builder: &Builder, frame: &FrameInfo) {
         match stmt {
-            hir::Stmt::Return { value, .. } => {
+            lir::Stmt::Ret(value) => {
                 let value = self.generate_expr(value, builder, frame);
                 builder.ret(value);
             }
-            hir::Stmt::Expr { expr, .. } => {
+            lir::Stmt::Expr(expr) => {
                 self.generate_expr(expr, builder, frame);
                 frame.clear(builder);
             }
-            hir::Stmt::Decl { decl, value, .. } => {
+            lir::Stmt::Decl(decl, value) => {
                 let expr = self.generate_expr(value, builder, frame);
-                let ptr = Self::get_name_ptr(decl, builder, frame);
+                let ptr = Self::get_name_ptr(*decl, builder, frame);
                 builder.store(&ptr, &expr);
                 frame.clear(builder);
             }
         }
     }
 
-    fn generate_type(&self, ty: &hir::Type) -> llvm::TypeRef {
+    fn generate_type(&self, ty: &lir::Type) -> llvm::TypeRef {
         match ty {
-            hir::Type::Integer { bits } => llvm::Types::int(*bits),
-            hir::Type::Boolean => llvm::Types::int(1),
-            hir::Type::Function { .. } => llvm::Types::struct_(vec![llvm::Types::ptr(), llvm::Types::ptr()]),
-            hir::Type::Struct { .. } => llvm::Types::ptr(),
+            lir::Type::Boolean => llvm::Types::int(1),
+            lir::Type::Integer(bits) => llvm::Types::int(*bits),
+            lir::Type::Function(_, _) => Self::function_type(),
+            lir::Type::Struct(_) => llvm::Types::ptr(),
             _ => panic!("{:?}", ty)
         }
     }
 
-    fn emit_tracing_code(&self, ty: &hir::Type, value: llvm::ValueRef, builder: &Builder) {
+    fn function_type() -> llvm::TypeRef {
+        llvm::Types::struct_(vec![llvm::Types::ptr(), llvm::Types::ptr()])
+    }
+
+    fn emit_tracing_code(&self, ty: &lir::Type, value: llvm::ValueRef, builder: &Builder) {
         match ty {
-            hir::Type::Integer { .. } => { },
-            hir::Type::Boolean { .. } => { },
-            hir::Type::Function { .. } => {
+            lir::Type::Integer(_) => { },
+            lir::Type::Boolean => { },
+            lir::Type::Function(_, _) => {
                 let closure_ty = self.generate_type(ty);
                 let closure_ptr = builder.gep(None, closure_ty, value, vec![
                     GEPIndex::ConstantIndex(0), GEPIndex::ConstantIndex(1)
@@ -608,7 +620,7 @@ impl Codegen<'_> {
                     closure_ptr
                 ]);
             },
-            hir::Type::Struct { .. } => {
+            lir::Type::Struct(_) => {
                 builder.call_void(CallingConvention::CCC, &self.mark_object_fn, vec![
                     value
                 ]);

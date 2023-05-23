@@ -8,6 +8,7 @@ use semver::{Version, VersionReq};
 use typed_arena::Arena;
 use crate::codegen::generate_llvm;
 use crate::error::Message;
+use crate::lower::lower;
 use crate::parser::{parse_file, ParserError};
 use crate::source::Source;
 use crate::type_check::{resolve_types, TypeCheckError};
@@ -21,6 +22,9 @@ mod type_check;
 mod llvm;
 mod codegen;
 mod error;
+mod lir;
+mod lower;
+mod common;
 
 #[derive(Parser)]
 struct Args {
@@ -83,7 +87,9 @@ impl Compiler {
             }
         };
 
-        let llvm = generate_llvm(resolved);
+        let lowered = lower(resolved);
+
+        let llvm = generate_llvm(lowered);
 
         let Some(name) = self.output.file_name() else {
             return CompileResult::ArgumentError("Output file path is not valid".into());

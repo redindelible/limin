@@ -55,9 +55,17 @@ pub enum TopLevel<'a> {
 #[derive(Debug, Eq, PartialEq)]
 pub struct Function<'a>  {
     pub name: String,
+    pub type_parameters: Vec<Box<TypeParameter<'a>>>,
     pub parameters: Vec<Box<Parameter<'a>>>,
     pub return_type: Option<Box<Type<'a>>>,
-    pub body: Box<Expr<'a>>
+    pub body: Block<'a>
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct TypeParameter<'a> {
+    pub name: String,
+    pub bound: Option<Box<Type<'a>>>,
+    pub loc: Location<'a>
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -94,13 +102,20 @@ pub enum BinOp {
 }
 
 #[derive(Debug, Eq, PartialEq)]
+pub struct Block<'a> {
+    pub stmts: Vec<Box<Stmt<'a>>>,
+    pub trailing_expr: Option<Box<Expr<'a>>>,
+    pub loc: Location<'a>
+}
+
+#[derive(Debug, Eq, PartialEq)]
 pub enum Expr<'a> {
     Name { name: String, loc: Location<'a> },
     BinOp { left: Box<Expr<'a>>, op: BinOp, right: Box<Expr<'a>>, loc: Location<'a> },
     Call { callee: Box<Expr<'a>>, arguments: Vec<Box<Expr<'a>>>, loc: Location<'a> },
     GenericCall { callee: Box<Expr<'a>>, generic_arguments: Vec<Box<Type<'a>>>, arguments: Vec<Box<Expr<'a>>>, loc: Location<'a> },
     Integer { number: u64, loc: Location<'a> },
-    Block { stmts: Vec<Box<Stmt<'a>>>, trailing_expr: Option<Box<Expr<'a>>>, loc: Location<'a> },
+    Block(Block<'a>),
     New { typ: Box<Type<'a>>, fields: Vec<Box<NewArgument<'a>>>, loc: Location<'a> }
 }
 
@@ -119,7 +134,7 @@ impl<'a> HasLoc<'a> for Expr<'a> {
             Expr::Call { loc, .. } => *loc,
             Expr::GenericCall { loc, .. } => *loc,
             Expr::Integer { loc, .. } => *loc,
-            Expr::Block { loc, .. } => *loc,
+            Expr::Block(Block{ loc, .. }) => *loc,
             Expr::New { loc, .. } => *loc
         }
     }

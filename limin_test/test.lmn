@@ -1,17 +1,17 @@
-fn identity(n: i32) -> i32 {
-    return n;
+
+fn identity<T>(thing: T) -> T {
+    return thing;
 }
 
-fn identity_identity(a: (i32) -> i32) -> (i32) -> i32 {
-    return a;
+fn identity2<T>(thing: T) -> T {
+    return identity(thing);
 }
 
-fn identity_identity_identity(a: ((i32) -> i32) -> (i32) -> i32) -> ((i32) -> i32) -> (i32) -> i32 {
-    return a;
-}
 
 fn main() -> i32 {
     let a := 32;
 
-    return identity_identity_identity(identity_identity)(identity)(a);
+    let b := identity2(a);
+
+    return b;
 }
