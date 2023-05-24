@@ -159,7 +159,7 @@ impl<'a> Parser<'a> {
         let name = self.expect(TokenType::Identifier)?;
 
         let type_params = if self.curr().typ == TokenType::LeftAngle {
-            let (type_parameters, _) = self.delimited_parse(TokenType::LeftAngle, TokenType::GreaterThan, Self::parse_type_parameter)?;
+            let (type_parameters, _) = self.delimited_parse(TokenType::LeftAngle, TokenType::RightAngle, Self::parse_type_parameter)?;
             type_parameters
         } else {
             vec![]
@@ -190,14 +190,14 @@ impl<'a> Parser<'a> {
         self.expect(TokenType::Fn)?;
         let name = self.expect(TokenType::Identifier)?;
         let type_parameters = if self.curr().typ == TokenType::LeftAngle {
-            let (type_parameters, _) = self.delimited_parse(TokenType::LeftAngle, TokenType::GreaterThan, Self::parse_type_parameter)?;
+            let (type_parameters, _) = self.delimited_parse(TokenType::LeftAngle, TokenType::RightAngle, Self::parse_type_parameter)?;
             type_parameters
         } else {
             vec![]
         };
         let (parameters, _) = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, Self::parse_parameter)?;
-        let return_type = if self.matches_symbol(TokenType::Minus, TokenType::GreaterThan) {
-            self.expect_symbol(TokenType::Minus, TokenType::GreaterThan, "->")?;
+        let return_type = if self.matches_symbol(TokenType::Minus, TokenType::RightAngle) {
+            self.expect_symbol(TokenType::Minus, TokenType::RightAngle, "->")?;
             Some(Box::new(self.parse_type()?))
         } else {
             None
@@ -274,7 +274,7 @@ impl<'a> Parser<'a> {
                     let loc = left.loc() + right.loc();
                     left = Expr::BinOp { left: Box::new(left), op: BinOp::LessThan, right: Box::new(right), loc };
                 },
-                TokenType::GreaterThan => {
+                TokenType::RightAngle => {
                     self.advance();
                     let right = self.parse_call()?;
                     let loc = left.loc() + right.loc();
@@ -290,6 +290,12 @@ impl<'a> Parser<'a> {
         let mut left = self.parse_terminal()?;
         loop {
             match self.curr().typ {
+                TokenType::Period => {
+                    self.expect(TokenType::Period)?;
+                    let attr = self.expect(TokenType::Identifier)?;
+                    let loc = attr.loc + left.loc();
+                    left = Expr::GetAttr { obj: Box::new(left), attr: attr.text.into(), loc };
+                }
                 TokenType::LeftParenthesis => {
                     let (arguments, args_loc) = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, Self::parse_expr)?;
                     let loc = left.loc() + args_loc;
@@ -298,7 +304,7 @@ impl<'a> Parser<'a> {
                 TokenType::LeftAngle => {
                     let state = self.store();
                     let result: Result<_, usize> = (|| {
-                        let type_arguments = self.delimited_parse(TokenType::LeftAngle, TokenType::GreaterThan, Self::parse_type)?;
+                        let type_arguments = self.delimited_parse(TokenType::LeftAngle, TokenType::RightAngle, Self::parse_type)?;
                         let arguments = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, Self::parse_expr)?;
                         Ok((type_arguments, arguments))
                     })();
@@ -347,7 +353,7 @@ impl<'a> Parser<'a> {
                 let start = self.advance();
                 let struct_ = self.expect(TokenType::Identifier)?.text.into();
                 let type_args = if self.curr().typ == TokenType::LeftAngle {
-                    let (type_args, _) = self.delimited_parse(TokenType::LeftAngle, TokenType::GreaterThan, Self::parse_type)?;
+                    let (type_args, _) = self.delimited_parse(TokenType::LeftAngle, TokenType::RightAngle, Self::parse_type)?;
                     Some(type_args)
                 } else {
                     None
@@ -400,7 +406,7 @@ impl<'a> Parser<'a> {
             TokenType::Identifier => {
                 let name = self.advance();
                 if self.curr().typ == TokenType::LeftAngle {
-                    let (type_args, loc) = self.delimited_parse(TokenType::LeftAngle, TokenType::GreaterThan, Self::parse_type)?;
+                    let (type_args, loc) = self.delimited_parse(TokenType::LeftAngle, TokenType::RightAngle, Self::parse_type)?;
                     let loc = loc + name.loc;
                     Ok(Type::Generic { name: name.text.to_owned(), type_args, loc })
                 } else {
@@ -409,7 +415,7 @@ impl<'a> Parser<'a> {
             },
             TokenType::LeftParenthesis => {
                 let (parameters, start) = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, |this| this.parse_type())?;
-                self.expect_symbol(TokenType::Minus, TokenType::GreaterThan, "'->'")?;
+                self.expect_symbol(TokenType::Minus, TokenType::RightAngle, "'->'")?;
                 let ret = Box::new(self.parse_type()?);
                 let loc = start + ret.loc();
                 Ok(Type::Function { parameters, ret, loc })

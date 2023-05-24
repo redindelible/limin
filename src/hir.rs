@@ -111,7 +111,15 @@ impl<'s> HIR<'s> {
             Expr::New { struct_, variant, .. } => {
                 Type::Struct { struct_: *struct_, variant: variant.clone() }
             },
-            Expr::Errored { .. } => Type::Errored
+            Expr::Errored { .. } => Type::Errored,
+            Expr::GetAttr { obj, attr, .. } => {
+                let Type::Struct { struct_, variant } = self.type_of_expr(obj) else { panic!() };
+                let mut map = HashMap::new();
+                for (type_param, typ) in self.structs[struct_].type_params.iter().zip(variant.iter()) {
+                    map.insert(type_param.id, typ.clone());
+                };
+                self.structs[struct_].fields[attr].typ.subs(&map)
+            }
         }
     }
 
@@ -208,6 +216,7 @@ pub enum Expr<'ir> {
     Unit { loc: Location<'ir> },
     LogicBinOp { left: Box<Expr<'ir>>, op: LogicOp, right: Box<Expr<'ir>>, loc: Location<'ir> },
     Block(Block<'ir>),
+    GetAttr { obj: Box<Expr<'ir>>, attr: String, loc: Location<'ir> },
     Call { callee: Box<Expr<'ir>>, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
     GenericCall { generic: Vec<Type>, callee: FunctionKey, arguments: Vec<Expr<'ir>>, loc: Location<'ir>},
     Errored { loc: Location<'ir> },
@@ -230,7 +239,10 @@ impl MayBreak for Expr<'_> {
             },
             Expr::New { fields, .. } => {
                 fields.values().any(|val| val.does_break())
-            } 
+            }
+            Expr::GetAttr { obj, .. } => {
+                obj.does_break()
+            }
         }
     }
 }

@@ -112,6 +112,7 @@ pub struct Block<'a> {
 #[derive(Debug, Eq, PartialEq)]
 pub enum Expr<'a> {
     Name { name: String, loc: Location<'a> },
+    GetAttr { obj: Box<Expr<'a>>, attr: String, loc: Location<'a> },
     BinOp { left: Box<Expr<'a>>, op: BinOp, right: Box<Expr<'a>>, loc: Location<'a> },
     Call { callee: Box<Expr<'a>>, arguments: Vec<Box<Expr<'a>>>, loc: Location<'a> },
     GenericCall { callee: Box<Expr<'a>>, generic_arguments: Vec<Box<Type<'a>>>, arguments: Vec<Box<Expr<'a>>>, loc: Location<'a> },
@@ -131,6 +132,7 @@ impl<'a> HasLoc<'a> for Expr<'a> {
     fn loc(&self) -> Location<'a> {
         match self {
             Expr::Name { loc, .. } => *loc,
+            Expr::GetAttr { loc, .. } => *loc,
             Expr::BinOp { loc, .. } => *loc,
             Expr::Call { loc, .. } => *loc,
             Expr::GenericCall { loc, .. } => *loc,

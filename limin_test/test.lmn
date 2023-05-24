@@ -17,11 +17,11 @@ fn identity2<T>(thing: T) -> T {
 
 
 fn main() -> i32 {
-    let a := 32;
+    let a := 33;
 
     let thing := create_Thing(a);
 
     let b := identity2(a);
 
-    return b;
+    return identity2(thing).a;
 }

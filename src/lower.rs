@@ -137,11 +137,11 @@ impl Lower {
         }
 
         let stmts: Vec<_> = stmts.iter().map(|stmt|
-            self.resolve_stmt(stmt, map, hir)
+            self.lower_stmt(stmt, map, hir)
         ).collect();
 
         let (ret, ret_type) = if let Some(expr) = trailing_expr {
-            (Box::new(self.resolve_expr(expr, map, hir)), self.lower_type(&hir.type_of_expr(expr), map, hir))
+            (Box::new(self.lower_expr(expr, map, hir)), self.lower_type(&hir.type_of_expr(expr), map, hir))
         } else {
             (Box::new(lir::Expr::Never), lir::Type::Never)
         };
@@ -152,7 +152,7 @@ impl Lower {
         block_key
     }
 
-    fn resolve_expr(&mut self, expr: &hir::Expr, map: &HashMap<u64, lir::Type>, hir: &hir::HIR) -> lir::Expr {
+    fn lower_expr(&mut self, expr: &hir::Expr, map: &HashMap<u64, lir::Type>, hir: &hir::HIR) -> lir::Expr {
         match expr {
             hir::Expr::Integer { num, .. } => lir::Expr::Integer(*num),
             hir::Expr::Unit { .. } => lir::Expr::Unit,
@@ -168,10 +168,15 @@ impl Lower {
                     }
                 }
             },
+            hir::Expr::GetAttr { obj, attr, .. } => {
+                let struct_ty = self.lower_type(&hir.type_of_expr(obj), map, hir);
+                let lir::Type::Struct(struct_) = struct_ty else { panic!() };
+                lir::Expr::GetAttr(struct_, Box::new(self.lower_expr(obj, map, hir)), attr.clone())
+            },
             hir::Expr::Call { callee, arguments, .. } => {
                 lir::Expr::Call(
-                    Box::new(self.resolve_expr(callee, map, hir)),
-                    arguments.iter().map(|arg| self.resolve_expr(arg, map, hir)).collect()
+                    Box::new(self.lower_expr(callee, map, hir)),
+                    arguments.iter().map(|arg| self.lower_expr(arg, map, hir)).collect()
                 )
             },
             hir::Expr::New { struct_, variant, fields: hir_fields, .. } => {
@@ -180,7 +185,7 @@ impl Lower {
 
                 let mut fields = IndexMap::new();
                 for (field_name, expr) in hir_fields {
-                    fields.insert(field_name.clone(), self.resolve_expr(expr, map, hir));
+                    fields.insert(field_name.clone(), self.lower_expr(expr, map, hir));
                 }
 
                 lir::Expr::New(key, fields)
@@ -188,22 +193,23 @@ impl Lower {
             hir::Expr::GenericCall { callee, generic, arguments, .. } => {
                 let generic: Vec<_> = generic.iter().map(|t| self.lower_type(t, map, hir)).collect();
                 let callee = lir::Expr::LoadFunction(self.queue_function(*callee, &generic, hir));
-                lir::Expr::Call(Box::new(callee), arguments.iter().map(|arg| self.resolve_expr(arg, map, hir)).collect())
+                lir::Expr::Call(Box::new(callee), arguments.iter().map(|arg| self.lower_expr(arg, map, hir)).collect())
             },
-            _ => panic!("{:?}", expr)
+            hir::Expr::LogicBinOp { .. } => todo!(),
+            hir::Expr::Errored { .. } => panic!("Should not be able to reach here if there is an error"),
         }
     }
 
-    fn resolve_stmt(&mut self, stmt: &hir::Stmt, map: &HashMap<u64, lir::Type>, hir: &hir::HIR) -> lir::Stmt {
+    fn lower_stmt(&mut self, stmt: &hir::Stmt, map: &HashMap<u64, lir::Type>, hir: &hir::HIR) -> lir::Stmt {
         match stmt {
             hir::Stmt::Expr { expr, .. } => {
-                lir::Stmt::Expr(Box::new(self.resolve_expr(expr, map, hir)))
+                lir::Stmt::Expr(Box::new(self.lower_expr(expr, map, hir)))
             }
             hir::Stmt::Return { value, .. } => {
-                lir::Stmt::Ret(Box::new(self.resolve_expr(value, map, hir)))
+                lir::Stmt::Ret(Box::new(self.lower_expr(value, map, hir)))
             }
             hir::Stmt::Decl { decl, value, .. } => {
-                lir::Stmt::Decl(self.locals_map[decl], Box::new(self.resolve_expr(value, map, hir)))
+                lir::Stmt::Decl(self.locals_map[decl], Box::new(self.lower_expr(value, map, hir)))
             }
         }
     }
@@ -289,6 +295,7 @@ impl Lower {
 
     fn lower_type(&mut self, typ: &hir::Type, map: &HashMap<u64, lir::Type>, hir: &hir::HIR) -> lir::Type {
         match typ {
+            hir::Type::Never => lir::Type::Never,
             hir::Type::Unit => lir::Type::Unit,
             hir::Type::Boolean => lir::Type::Boolean,
             hir::Type::Integer { bits } => lir::Type::Integer(*bits),
@@ -298,8 +305,14 @@ impl Lower {
             hir::Type::Struct { struct_, variant } => {
                 let variant = variant.iter().map(|t| self.lower_type(t, map, hir)).collect::<Vec<_>>();
                 lir::Type::Struct(self.queue_struct(*struct_, &variant, hir))
-            }
-            _ => panic!("{:?}", typ)
+            },
+            hir::Type::Function { params, ret } => {
+                let params: Vec<_> = params.iter().map(|t| self.lower_type(t, map, hir)).collect();
+                lir::Type::Function(params, Box::new(self.lower_type(ret, map, hir)))
+            },
+            hir::Type::GenericFunction { .. } => unreachable!(),
+            hir::Type::TypeParameterInstance { .. } => unreachable!(),
+            hir::Type::Errored => panic!("Should not be able to reach here if there is an error"),
         }
     }
 

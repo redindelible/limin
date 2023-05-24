@@ -137,15 +137,23 @@ impl StackSim {
 
     fn _sim_expr(&mut self, expr: &lir::Expr, lir: &lir::LIR) {
         match expr {
-            lir::Expr::Integer(_) => {
+            lir::Expr::Integer(_) | lir::Expr::Unit => {
                 self.push_n(0);
-            }
+            },
+            lir::Expr::Never => panic!("I don't think this is possible"),
             lir::Expr::LoadLocal(local) => {
                 let slots = self.stack_slots(&lir.locals[*local].typ);
                 self.push_n(slots);
             }
             lir::Expr::StoreLocal(_, expr) => {
                 self._sim_expr(expr, lir);
+            }
+            lir::Expr::GetAttr(_, expr, _) => {
+                let reset_to = self.curr;
+                self._sim_expr(expr, lir);
+                self.curr = reset_to;
+                let slots = self.stack_slots(&lir.type_of(expr));
+                self.push_n(slots);
             }
             lir::Expr::LoadFunction(_) => {
                 self.push_n(1);
@@ -176,10 +184,9 @@ impl StackSim {
                 self.curr = reset_to;
                 self.push_n(1);
             }
-            _ => {
-                panic!("{:?}", expr);
-                todo!()
-            }
+            // _ => {
+            //     panic!("{:?}", expr);
+            // }
         }
     }
 
@@ -477,15 +484,9 @@ impl Codegen<'_> {
 
     fn generate_expr(&mut self, expr: &lir::Expr, builder: &Builder, frame: &FrameInfo) -> llvm::ValueRef {
         match expr {
-            lir::Expr::Never => {
-                panic!()
-            }
-            lir::Expr::Unit => {
-                llvm::Types::int_constant(1, 0).to_value()
-            }
-            lir::Expr::Integer(num) => {
-                llvm::Types::int_constant(32, *num).to_value()
-            }
+            lir::Expr::Never => panic!(),
+            lir::Expr::Unit => llvm::Types::int_constant(1, 0).to_value(),
+            lir::Expr::Integer(num) => llvm::Types::int_constant(32, *num).to_value(),
             lir::Expr::LoadLocal(local) => {
                 let ptr = Self::get_name_ptr(*local, builder, frame);
                 let ty = &self.lir.locals[*local].typ;
@@ -493,13 +494,29 @@ impl Codegen<'_> {
                 self.push_to_stack(ty, Rc::clone(&value), builder, frame);
                 value
             }
+            lir::Expr::StoreLocal(_, _) => todo!(),
+            lir::Expr::GetAttr(struct_, expr, attr) => {
+                let obj = self.generate_expr(expr, builder, frame);
+                let struct_info = &self.structs[*struct_];
+                let index = struct_info.fields[attr];
+
+                let field_ty = self.generate_type(&self.lir.struct_bodies[*struct_].fields[attr]);
+
+                let field_ptr = builder.gep(None, struct_info.llvm_ref.as_type_ref(), obj, vec![
+                    GEPIndex::ConstantIndex(0),
+                    GEPIndex::ConstantIndex(index as u32),
+                ]).to_value();
+                let field = builder.load(None, field_ty.clone(), field_ptr).to_value();
+                self.push_to_stack(&self.lir.struct_bodies[*struct_].fields[attr], field.clone(), builder, frame);
+                field
+            },
             lir::Expr::LoadFunction(func) => {
                 builder.load(None, Self::function_type(), self.functions[*func].value_ref.clone()).to_value()
-            }
+            },
             lir::Expr::Parameter(func, index) => {
                 let (_, param) = self.functions[*func].params.get_index(*index).unwrap();
                 param.clone()
-            }
+            },
             lir::Expr::Block(block) => self.generate_block(block, builder, frame).unwrap(),
             lir::Expr::Call(callee, arguments) => {
                 let lir::Type::Function(_, ret) = self.lir.type_of(callee) else { panic!() };
@@ -522,7 +539,7 @@ impl Codegen<'_> {
                 frame.pop(stack_state, builder);
                 self.push_to_stack(&ret, Rc::clone(&value), builder, frame);
                 value
-            }
+            },
             lir::Expr::New(struct_, fields) => {
                 let stack_state = frame.pop_state();
 
@@ -547,12 +564,13 @@ impl Codegen<'_> {
                 self.push_to_stack(&self.lir.type_of(expr), Rc::clone(&value), builder, frame);
                 value
             }
-            _ => panic!("{:?}", expr)
+            // _ => panic!("{:?}", expr)
         }
     }
 
     fn push_to_stack(&self, ty: &lir::Type, value: llvm::ValueRef, builder: &Builder, frame: &FrameInfo) {
         match ty {
+            lir::Type::Never => panic!(),
             lir::Type::Unit => { }
             lir::Type::Boolean => { }
             lir::Type::Integer(_) => { }
@@ -562,10 +580,6 @@ impl Codegen<'_> {
             }
             lir::Type::Struct(_) => {
                 frame.push(&value, builder)
-            }
-            _ => {
-                panic!("{:?}", ty);
-                todo!()
             }
         }
     }
@@ -591,11 +605,12 @@ impl Codegen<'_> {
 
     fn generate_type(&self, ty: &lir::Type) -> llvm::TypeRef {
         match ty {
+            lir::Type::Never => panic!(),
+            lir::Type::Unit => todo!(),
             lir::Type::Boolean => llvm::Types::int(1),
             lir::Type::Integer(bits) => llvm::Types::int(*bits),
             lir::Type::Function(_, _) => Self::function_type(),
             lir::Type::Struct(_) => llvm::Types::ptr(),
-            _ => panic!("{:?}", ty)
         }
     }
 
@@ -605,6 +620,8 @@ impl Codegen<'_> {
 
     fn emit_tracing_code(&self, ty: &lir::Type, value: llvm::ValueRef, builder: &Builder) {
         match ty {
+            lir::Type::Unit => { },
+            lir::Type::Never => panic!(),
             lir::Type::Integer(_) => { },
             lir::Type::Boolean => { },
             lir::Type::Function(_, _) => {
@@ -621,7 +638,6 @@ impl Codegen<'_> {
                     value
                 ]);
             },
-            _ => panic!("{:?}", ty)
         }
     }
 }

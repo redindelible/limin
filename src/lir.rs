@@ -35,10 +35,11 @@ impl LIR {
             Expr::StoreLocal(_, value) => self.type_of(value),
             Expr::LoadFunction(func) => self.function_prototypes[*func].sig(),
             Expr::Block(block) => self.blocks[*block].ret_type.clone(),
+            Expr::GetAttr(struct_, _, attr) => {
+                self.struct_bodies[*struct_].fields[attr].clone()
+            }
             Expr::Call(callee, _) => {
-                let Type::Function(_, ret) = self.type_of(callee) else {
-                    panic!();
-                };
+                let Type::Function(_, ret) = self.type_of(callee) else { panic!(); };
                 ret.as_ref().clone()
             },
             Expr::New(struct_key, _) => Type::Struct(*struct_key),
@@ -106,6 +107,7 @@ pub enum Expr {
     LoadLocal(LocalKey),
     LoadFunction(FunctionKey),
     StoreLocal(LocalKey, Box<Expr>),
+    GetAttr(StructKey, Box<Expr>, String),
     Call(Box<Expr>, Vec<Expr>),
     New(StructKey, IndexMap<String, Expr>),
     Block(BlockKey)

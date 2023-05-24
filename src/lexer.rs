@@ -8,13 +8,14 @@ pub enum TokenType {
     Identifier,
     Integer,
     LeftAngle,
-    GreaterThan,
+    RightAngle,
     LeftParenthesis,
     RightParenthesis,
     LeftBrace,
     RightBrace,
     Equal,
     Comma,
+    Period,
     Colon,
     Semicolon,
     Minus,
@@ -23,12 +24,13 @@ pub enum TokenType {
     Return,
     Struct,
     New,
+    Unrecognized,
     EOF
 }
 
 const BASIC_TOKENS: phf::Map<char, TokenType> = phf_map! {
     '<' => TokenType::LeftAngle,
-    '>' => TokenType::GreaterThan,
+    '>' => TokenType::RightAngle,
     '(' => TokenType::LeftParenthesis,
     ')' => TokenType::RightParenthesis,
     '{' => TokenType::LeftBrace,
@@ -37,7 +39,8 @@ const BASIC_TOKENS: phf::Map<char, TokenType> = phf_map! {
     ':' => TokenType::Colon,
     ';' => TokenType::Semicolon,
     '-' => TokenType::Minus,
-    ',' => TokenType::Comma
+    ',' => TokenType::Comma,
+    '.' => TokenType::Period,
 };
 
 const KEYWORDS: phf::Map<&str, TokenType> = phf_map! {
@@ -54,13 +57,14 @@ impl TokenType {
             TokenType::Identifier => "an identifier",
             TokenType::Integer => "an integer",
             TokenType::LeftAngle => "'<'",
-            TokenType::GreaterThan => "'>'",
+            TokenType::RightAngle => "'>'",
             TokenType::LeftParenthesis => "'('",
             TokenType::RightParenthesis => "')'",
             TokenType::LeftBrace => "'{'",
             TokenType::RightBrace => "'}'",
             TokenType::Equal => "'='",
             TokenType::Comma => "','",
+            TokenType::Period => "'.'",
             TokenType::Colon => "':'",
             TokenType::Semicolon => "';'",
             TokenType::Minus => "'-'",
@@ -69,7 +73,8 @@ impl TokenType {
             TokenType::Return => "'return'",
             TokenType::Struct => "'struct'",
             TokenType::EOF => "the end of the file",
-            TokenType::New => "'new'"
+            TokenType::New => "'new'",
+            TokenType::Unrecognized => "unrecognized characters"
         }
     }
 }
@@ -145,6 +150,15 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    fn is_unrecognized(c: char) -> bool {
+        match c {
+            c if BASIC_TOKENS.contains_key(&c) => false,
+            c if c.is_ascii_whitespace() => false,
+            c if c.is_ascii_digit() => false,
+            _ => true
+        }
+    }
+
     fn lex_token(&mut self) -> Option<Token<'a>> {
         let mut leading_ws = false;
         while !self.is_done() {
@@ -184,7 +198,13 @@ impl<'a> Lexer<'a> {
                     }
                 },
                 _ => {
-                    todo!()
+                    let start = self.idx();
+                    while Lexer::is_unrecognized(self.curr()) {
+                        self.advance();
+                    }
+                    let end = self.idx();
+
+                    return Some(self.create_token(TokenType::Unrecognized, start, end, leading_ws));
                 }
             }
         };

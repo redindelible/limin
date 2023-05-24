@@ -74,8 +74,9 @@ pub enum TypeCheckError<'a> {
     MismatchedArguments { expected: usize, got: usize, loc: Location<'a> },
     MismatchedTypeArguments { expected: usize, got: usize, loc: Location<'a> },
     NotEnoughInfoToInfer(Location<'a>),
-    ExpectedAStruct { got: String, loc: Location<'a> },
-    NoSuchField { field: String, typ: String, loc: Location<'a> },
+    ExpectedStructName { got: String, loc: Location<'a> },
+    ExpectedStruct { got: DisplayType<'a>, loc: Location<'a> },
+    NoSuchFieldName { field: String, typ: String, loc: Location<'a> },
     MissingFields { fields: Vec<String>, typ: String, loc: Location<'a> },
     CouldNotInferParameter(String, Location<'a>),
     NoMainFunction,
@@ -119,11 +120,15 @@ impl<'a> Message for TypeCheckError<'a> {
             TypeCheckError::NoMainFunction => {
                 eprintln!("Error: No main function could be found.");
             }
-            TypeCheckError::ExpectedAStruct { got, loc } => {
+            TypeCheckError::ExpectedStructName { got, loc } => {
                 eprintln!("Error: Could not find a struct named '{}'.", got);
                 Self::show_location(loc);
             }
-            TypeCheckError::NoSuchField { field, typ, loc } => {
+            TypeCheckError::ExpectedStruct { got, loc } => {
+                eprintln!("Error: Expected a struct, but got '{}'.", got.render());
+                Self::show_location(loc);
+            }
+            TypeCheckError::NoSuchFieldName { field, typ, loc } => {
                 eprintln!("Error: '{}' Does not contain a field named '{}'.", typ, field);
                 Self::show_location(loc);
             }
@@ -746,7 +751,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
             }
             ast::Expr::New { struct_, type_args, fields, loc } => {
                 let Some(struct_key) = resolve_struct(self.checker, self.namespace, struct_) else {
-                    self.push_error(TypeCheckError::ExpectedAStruct { got: struct_.clone(), loc: *loc });
+                    self.push_error(TypeCheckError::ExpectedStructName { got: struct_.clone(), loc: *loc });
                     return Expr::Errored { loc: *loc };
                 };
 
@@ -760,7 +765,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                 let mut resolved_fields = IndexMap::new();
                 for field in fields {
                     if !expected_fields.contains_key(&field.field_name) {
-                        self.push_error(TypeCheckError::NoSuchField { field: field.field_name.clone(), typ: struct_.clone(), loc: field.name_loc });
+                        self.push_error(TypeCheckError::NoSuchFieldName { field: field.field_name.clone(), typ: struct_.clone(), loc: field.name_loc });
                         return Expr::Errored { loc: *loc };
                     }
                     let expected_type = expected_fields[&field.field_name].typ.subs(&map);
@@ -787,9 +792,26 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
 
                 Expr::New { struct_: struct_key, variant, fields: resolved_fields, loc: *loc }
             }
-            c => {
-                panic!("{:?}", c);
-            }
+            ast::Expr::GetAttr { obj, attr, loc } => {
+                let obj = self.resolve_expr(obj, None);
+
+                let ty = self.checker.hir.type_of_expr(&obj);
+
+                let Type::Struct { struct_, variant } = ty else {
+                    self.push_error(TypeCheckError::ExpectedStruct { got: self.display_type(&ty), loc: *loc });
+                    return Expr::Errored { loc: *loc };
+                };
+
+                let Some(field) = self.checker.hir.structs[struct_].fields.get(attr) else {
+                    self.push_error(TypeCheckError::NoSuchFieldName { typ: self.checker.hir.structs[struct_].name.clone(), field: attr.clone(), loc: *loc });
+                    return Expr::Errored { loc: *loc };
+                };
+
+                Expr::GetAttr { obj: Box::new(obj), attr: attr.clone(), loc: *loc }
+
+            },
+            ast::Expr::GenericCall { .. } => todo!(),
+            ast::Expr::BinOp { .. } => todo!()
         }
     }
 
