@@ -1,12 +1,11 @@
-use std::collections::{HashMap, HashSet};
-use std::ops::RangeFrom;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use indexmap::IndexMap;
 use slotmap::{SecondaryMap, SlotMap};
 use crate::ast;
 use crate::common::map_join;
 use crate::error::Message;
-use crate::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, LogicOp, Stmt, MayBreak, TypeParameter, TypeParamKey, Block};
+use crate::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, Stmt, MayBreak, TypeParameter, TypeParamKey, Block};
 use crate::source::{HasLoc, Location};
 use crate::type_check::type_check_state::NamespaceKey;
 
@@ -66,7 +65,8 @@ impl DisplayType<'_> {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum TypeCheckError<'a> {
-    NameDuplicated(String, Location<'a>),
+    StructDuplicated(String, Location<'a>, Location<'a>),
+    FieldDuplicated(String, String, Location<'a>, Location<'a>),
     CouldNotResolveName(String, Location<'a>),
     CouldNotResolveType(String, Location<'a>),
     IncompatibleTypes { expected: DisplayType<'a>, got: DisplayType<'a>, loc: Location<'a> },
@@ -74,7 +74,6 @@ pub enum TypeCheckError<'a> {
     MismatchedArguments { expected: usize, got: usize, loc: Location<'a> },
     MismatchedTypeArguments { expected: usize, got: usize, loc: Location<'a> },
     RequiredTypeArguments { got: String, loc: Location<'a>, note_loc: Location<'a> },
-    NotEnoughInfoToInfer(Location<'a>),
     ExpectedStructName { got: String, loc: Location<'a> },
     ExpectedStruct { got: DisplayType<'a>, loc: Location<'a> },
     NoSuchFieldName { field: String, typ: String, loc: Location<'a> },
@@ -89,9 +88,17 @@ pub enum TypeCheckError<'a> {
 impl<'a> Message for TypeCheckError<'a> {
     fn render(&self) {
         match self {
-            TypeCheckError::NameDuplicated(name, loc) => {
-                eprintln!("Error: The name '{}' is already used and cannot be redefined.", name);
+            TypeCheckError::StructDuplicated(name, loc, prev_loc) => {
+                eprintln!("Error: A struct called '{name}' was already defined in this scope.");
                 Self::show_location(loc);
+                eprintln!(" | Note: A struct called '{name}' was previously defined here.");
+                Self::show_note_location(prev_loc);
+            }
+            TypeCheckError::FieldDuplicated(name, struct_name, loc, prev_loc) => {
+                eprintln!("Error: The struct '{struct_name}' already has a field called '{name}'.");
+                Self::show_location(loc);
+                eprintln!(" | Note: A field called '{name}' was previously defined here.");
+                Self::show_note_location(prev_loc);
             }
             TypeCheckError::CouldNotResolveName(name, loc) => {
                 eprintln!("Error: Could not resolve the name '{}'.", name);
@@ -122,10 +129,6 @@ impl<'a> Message for TypeCheckError<'a> {
                 Self::show_location(loc);
                 eprintln!(" | Note: '{got}' defined here.");
                 Self::show_note_location(note_loc);
-            }
-            TypeCheckError::NotEnoughInfoToInfer(loc) => {
-                eprintln!("Error: Could not infer type.");
-                Self::show_location(loc);
             }
             TypeCheckError::NoMainFunction => {
                 eprintln!("Error: No main function could be found.");
@@ -174,8 +177,7 @@ mod type_check_state {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use slotmap::{new_key_type, SlotMap};
-    use crate::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, FunctionKey, FunctionPrototype, Expr};
-    use crate::type_check::DisplayType;
+    use crate::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, FunctionKey, Expr};
     pub use crate::type_check::TypeCheckError;
 
     new_key_type! {
@@ -245,10 +247,6 @@ mod type_check_state {
             let key = self.hir.structs.insert(struct_);
             self.namespaces[ns].structs.insert(name, key);
             key
-        }
-
-        pub fn add_function_proto(&mut self, proto: FunctionPrototype<'a>) -> FunctionKey {
-            self.hir.function_prototypes.insert(proto)
         }
 
         pub fn get_struct_key(&self, file: NamespaceKey, name: &str) -> StructKey {
@@ -336,7 +334,11 @@ fn collect_structs(initial: Initial) -> CollectedStructs {
 
         file_namespaces.insert(file_path.clone(), file_ns);
         for ast::Struct { name, loc, .. } in file.iter_structs() {
-            // todo ensure names unique
+            if checker.namespaces[file_ns].structs.contains_key(name) {
+                let prev_key = checker.namespaces[file_ns].structs[name];
+                checker.push_error(TypeCheckError::StructDuplicated(name.clone(), *loc, checker.hir.structs[prev_key].loc));
+            }
+
             checker.add_struct(file_ns, Struct { name: name.clone(), type_params: Vec::new(), fields: IndexMap::new(), loc: *loc });
         }
     }
@@ -364,7 +366,7 @@ fn resolve_type<'a>(checker: &TypeCheck<'a>, ns: NamespaceKey, typ: &ast::Type<'
             checker.push_error(TypeCheckError::CouldNotResolveType(name.clone(), *loc));
             Type::Errored
         }
-        ast::Type::Function { parameters, ret, loc } => {
+        ast::Type::Function { parameters, ret, .. } => {
             let parameters: Vec<Type> = parameters.iter().map(|p| resolve_type(checker, ns, p)).collect();
             let ret = resolve_type(checker, ns, ret);
             Type::Function { params: parameters, ret: Box::new(ret) }
@@ -414,18 +416,18 @@ fn collect_fields(collected: CollectedStructs) -> CollectedFields {
                 let id = checker.add_type_param();
                 let typ = Type::TypeParameter { name: type_param.name.clone(), id, bound: None };
                 checker.add_type(struct_ns, type_param.name.clone(), typ);
-                checker.hir.structs[key].type_params.push(TypeParameter {
-                    name: type_param.name.clone(),
-                    id: id,
-                    bound: None
-                });
+                checker.hir.structs[key].type_params.push(TypeParameter { name: type_param.name.clone(), id, bound: None });
             }
             struct_namespaces.insert(key, struct_ns);
 
             for item in items {
-                if let ast::StructItem::Field { name, typ, loc } = item {
+                if let ast::StructItem::Field { name: field_name, typ, loc } = item {
                     let resolved = resolve_type(&checker, struct_ns, typ);
-                    checker.hir.structs[key].fields.insert(name.clone(), StructField { name: name.clone(), typ: resolved, loc: *loc });
+                    if let Some(prev) = checker.hir.structs[key].fields.get(field_name) {
+                        checker.push_error(TypeCheckError::FieldDuplicated(field_name.clone(), name.clone(), *loc, prev.loc));
+                    } else {
+                        checker.hir.structs[key].fields.insert(field_name.clone(), StructField { name: field_name.clone(), typ: resolved, loc: *loc });
+                    }
                 }
             }
         }
@@ -530,14 +532,12 @@ fn collect_function_bodies(collected: CollectedFunctions) -> Result<HIR, Vec<Typ
 type ExpectedType = Option<Type>;
 
 struct ResolveContextCore {
-    count: RangeFrom<u64>,
     generic_stack: SlotMap<TypeParamKey, Option<Type>>
 }
 
 impl ResolveContextCore {
     fn new() -> ResolveContextCore {
         ResolveContextCore {
-            count: 0..,
             generic_stack: SlotMap::with_key()
         }
     }
@@ -804,7 +804,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                     }
                 }
             }
-            ast::Expr::New { struct_, type_args, fields, loc } => {
+            ast::Expr::New { struct_, fields, loc, .. } => {
                 let Some(struct_key) = resolve_struct(self.checker, self.namespace, struct_) else {
                     self.push_error(TypeCheckError::ExpectedStructName { got: struct_.clone(), loc: *loc });
                     return Expr::Errored { loc: *loc };

@@ -1,8 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::Debug;
 use indexmap::IndexMap;
 use slotmap::{SlotMap, new_key_type, SecondaryMap};
-use crate::common::map_join;
 use crate::source::Location;
 
 new_key_type! {
@@ -88,7 +87,6 @@ impl<'s> HIR<'s> {
             Expr::Integer { .. } => Type::Integer { bits: 32 },
             Expr::Bool { .. } => Type::Boolean,
             Expr::Unit { .. } => Type::Unit,
-            Expr::LogicBinOp { .. } => Type::Boolean,
             Expr::Block(Block { trailing_expr, .. }) => {
                 match trailing_expr {
                     Some(t) => self.type_of_expr(t),
@@ -192,12 +190,6 @@ pub struct Parameter<'ir> {
     pub decl: NameKey,
 }
 
-#[derive(Debug)]
-pub enum LogicOp {
-    LessThan,
-    GreaterThan
-}
-
 pub trait MayBreak {
     fn does_break(&self) -> bool;
 }
@@ -216,7 +208,6 @@ pub enum Expr<'ir> {
     Integer { num: u64, loc: Location<'ir> },
     Bool { value: bool, loc: Location<'ir> },
     Unit { loc: Location<'ir> },
-    LogicBinOp { left: Box<Expr<'ir>>, op: LogicOp, right: Box<Expr<'ir>>, loc: Location<'ir> },
     Block(Block<'ir>),
     GetAttr { obj: Box<Expr<'ir>>, attr: String, loc: Location<'ir> },
     Call { callee: Box<Expr<'ir>>, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
@@ -229,7 +220,6 @@ impl MayBreak for Expr<'_> {
     fn does_break(&self) -> bool {
         match self {
             Expr::Name { .. } | Expr::Integer { .. } | Expr::Unit { .. } | Expr::Errored { .. } | Expr::Bool { .. } => false,
-            Expr::LogicBinOp { left, right, .. } => left.does_break() || right.does_break(),
             Expr::Block( Block { stmts, trailing_expr, .. } ) => {
                 stmts.iter().any(|stmt| stmt.does_break()) || trailing_expr.as_ref().map_or(false, |e| e.does_break())
             },

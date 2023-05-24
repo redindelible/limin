@@ -65,15 +65,6 @@ impl Compiler {
         }
     }
 
-    fn debug(output: PathBuf, rt_path: PathBuf) -> Compiler {
-        Compiler {
-            sources: Arena::new(),
-            output,
-            clang: PathBuf::from("clang"),
-            rt_path
-        }
-    }
-
     fn add_root(&self, path: &Path) -> io::Result<&Source> {
         let source = Source::from_file(path)?;
         Ok(self.sources.alloc(source))
@@ -222,6 +213,12 @@ mod test {
     fn test_simple() {
         let output = run_file(Path::new("test/test_files/test_simple.lmn"));
         assert_eq!(output.status.code(), Some(0));
+    }
+
+    #[test]
+    fn test_struct() {
+        let output = run_file(Path::new("test/test_files/test_struct.lmn"));
+        assert_eq!(output.status.code(), Some(32));
     }
 
 }

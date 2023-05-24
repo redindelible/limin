@@ -45,7 +45,6 @@ struct FunctionInfo {
 }
 
 struct StructInfo {
-    is_generic: bool,
     variants: HashMap<Vec<lir::Type>, lir::StructKey>
 }
 
@@ -196,7 +195,7 @@ impl Lower {
                 let callee = lir::Expr::LoadFunction(self.queue_function(*callee, &generic, hir));
                 lir::Expr::Call(Box::new(callee), arguments.iter().map(|arg| self.lower_expr(arg, map, hir)).collect())
             },
-            hir::Expr::LogicBinOp { .. } => todo!(),
+            // hir::Expr::LogicBinOp { .. } => todo!(),
             hir::Expr::Errored { .. } => panic!("Should not be able to reach here if there is an error"),
         }
     }
@@ -219,10 +218,7 @@ impl Lower {
         let hir_struct = &hir.structs[struct_];
 
         if !self.structs.contains_key(struct_) {
-            self.structs.insert(struct_, StructInfo {
-                is_generic: !hir_struct.type_params.is_empty(),
-                variants: HashMap::new()
-            });
+            self.structs.insert(struct_, StructInfo { variants: HashMap::new() });
         }
 
         if let Some(key) = self.structs[struct_].variants.get(variant) {

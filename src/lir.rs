@@ -1,7 +1,5 @@
-use std::collections::HashMap;
 use slotmap::{new_key_type, SecondaryMap, SlotMap};
 use indexmap::IndexMap;
-use crate::common::map_join;
 
 new_key_type! {
     pub struct FunctionKey;
@@ -33,7 +31,7 @@ impl LIR {
             Expr::Boolean(_) => Type::Boolean,
             Expr::Parameter(func, index) => self.function_prototypes[*func].params[*index].1.clone(),
             Expr::LoadLocal(local) => self.locals[*local].typ.clone(),
-            Expr::StoreLocal(_, value) => self.type_of(value),
+            // Expr::StoreLocal(_, value) => self.type_of(value),
             Expr::LoadFunction(func) => self.function_prototypes[*func].sig(),
             Expr::Block(block) => self.blocks[*block].ret_type.clone(),
             Expr::GetAttr(struct_, _, attr) => {
@@ -108,7 +106,7 @@ pub enum Expr {
     Parameter(FunctionKey, usize),
     LoadLocal(LocalKey),
     LoadFunction(FunctionKey),
-    StoreLocal(LocalKey, Box<Expr>),
+    // StoreLocal(LocalKey, Box<Expr>),
     GetAttr(StructKey, Box<Expr>, String),
     Call(Box<Expr>, Vec<Expr>),
     New(StructKey, IndexMap<String, Expr>),

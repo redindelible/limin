@@ -4,10 +4,8 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 use slotmap::SecondaryMap;
 use crate::{lir, llvm};
-use crate::common::map_join;
 use crate::lir::{BlockKey, LocalKey};
-// use crate::hir::{FunctionKey, MayBreak, NameKey, StructKey};
-use crate::llvm::{Builder, CallingConvention, Constant, GEPIndex, GlobalRef, ParameterRef, Value};
+use crate::llvm::{Builder, CallingConvention, GEPIndex, GlobalRef, ParameterRef, Value};
 
 pub fn generate_llvm(lir: lir::LIR) -> llvm::Module {
     let mut gen = Codegen::new(&lir);
@@ -104,12 +102,6 @@ struct StackSim {
 }
 
 impl StackSim {
-    fn sim(lir: &lir::LIR, expr: &lir::Expr) -> usize {
-        let mut sim = StackSim { curr: 0, max: 0 };
-        sim._sim_expr(expr, lir);
-        sim.max
-    }
-
     fn sim_stmts(lir: &lir::LIR, stmts: &Vec<lir::Stmt>) -> usize {
         let mut sim = StackSim { curr: 0, max: 0 };
         sim._sim_stmts(stmts, lir);
@@ -145,9 +137,9 @@ impl StackSim {
                 let slots = self.stack_slots(&lir.locals[*local].typ);
                 self.push_n(slots);
             }
-            lir::Expr::StoreLocal(_, expr) => {
-                self._sim_expr(expr, lir);
-            }
+            // lir::Expr::StoreLocal(_, expr) => {
+            //     self._sim_expr(expr, lir);
+            // }
             lir::Expr::GetAttr(_, expr, _) => {
                 let reset_to = self.curr;
                 self._sim_expr(expr, lir);
@@ -346,7 +338,7 @@ impl Codegen<'_> {
         }
 
         for (key, body) in &lir.function_bodies {
-            let proto = &lir.function_prototypes[key];
+            // let proto = &lir.function_prototypes[key];
 
             let builder = Builder::new(&self.functions[key].llvm_ref);
 
@@ -468,7 +460,7 @@ impl Codegen<'_> {
     }
 
     fn generate_block(&mut self, block: &BlockKey, builder: &Builder, frame: &FrameInfo) -> Option<llvm::ValueRef> {
-        let lir::Block { stmts, ret, locals, ret_type } = &self.lir.blocks[*block];
+        let lir::Block { stmts, ret, .. } = &self.lir.blocks[*block];
         let block_frame = self.create_frame(*block, builder, ParentFrame::Block(frame));
         for stmt in stmts {
             self.generate_stmt(stmt, builder, &block_frame);
@@ -494,7 +486,7 @@ impl Codegen<'_> {
                 self.push_to_stack(ty, Rc::clone(&value), builder, frame);
                 value
             }
-            lir::Expr::StoreLocal(_, _) => todo!(),
+            // lir::Expr::StoreLocal(_, _) => todo!(),
             lir::Expr::GetAttr(struct_, expr, attr) => {
                 let stack_state = frame.pop_state();
 
