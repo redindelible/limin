@@ -58,7 +58,8 @@ pub struct Function<'a>  {
     pub type_parameters: Vec<Box<TypeParameter<'a>>>,
     pub parameters: Vec<Box<Parameter<'a>>>,
     pub return_type: Option<Box<Type<'a>>>,
-    pub body: Block<'a>
+    pub body: Block<'a>,
+    pub loc: Location<'a>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -117,6 +118,7 @@ pub enum Expr<'a> {
     Call { callee: Box<Expr<'a>>, arguments: Vec<Box<Expr<'a>>>, loc: Location<'a> },
     GenericCall { callee: Box<Expr<'a>>, generic_arguments: Vec<Box<Type<'a>>>, arguments: Vec<Box<Expr<'a>>>, loc: Location<'a> },
     Integer { number: u64, loc: Location<'a> },
+    Bool { value: bool, loc: Location<'a> },
     Block(Block<'a>),
     New { struct_: String, type_args: Option<Vec<Box<Type<'a>>>>, fields: Vec<Box<NewArgument<'a>>>, loc: Location<'a> }
 }
@@ -138,7 +140,8 @@ impl<'a> HasLoc<'a> for Expr<'a> {
             Expr::GenericCall { loc, .. } => *loc,
             Expr::Integer { loc, .. } => *loc,
             Expr::Block(Block{ loc, .. }) => *loc,
-            Expr::New { loc, .. } => *loc
+            Expr::New { loc, .. } => *loc,
+            Expr::Bool { loc, .. } => *loc,
         }
     }
 }

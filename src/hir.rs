@@ -86,6 +86,7 @@ impl<'s> HIR<'s> {
         match expr {
             Expr::Name { decl, .. } => self.type_of_name(*decl),
             Expr::Integer { .. } => Type::Integer { bits: 32 },
+            Expr::Bool { .. } => Type::Boolean,
             Expr::Unit { .. } => Type::Unit,
             Expr::LogicBinOp { .. } => Type::Boolean,
             Expr::Block(Block { trailing_expr, .. }) => {
@@ -161,8 +162,8 @@ pub struct FunctionPrototype<'ir> {
     pub params: Vec<Parameter<'ir>>,
     pub ret: Type,
 
-    // pub variants: HashSet<Vec<Type>>,
-    pub sig: Type
+    pub sig: Type,
+    pub loc: Location<'ir>
 }
 
 pub struct FunctionBody<'ir> {
@@ -213,6 +214,7 @@ pub struct Block<'ir> {
 pub enum Expr<'ir> {
     Name { decl: NameKey, loc: Location<'ir> },
     Integer { num: u64, loc: Location<'ir> },
+    Bool { value: bool, loc: Location<'ir> },
     Unit { loc: Location<'ir> },
     LogicBinOp { left: Box<Expr<'ir>>, op: LogicOp, right: Box<Expr<'ir>>, loc: Location<'ir> },
     Block(Block<'ir>),
@@ -226,7 +228,7 @@ pub enum Expr<'ir> {
 impl MayBreak for Expr<'_> {
     fn does_break(&self) -> bool {
         match self {
-            Expr::Name { .. } | Expr::Integer { .. } | Expr::Unit { .. } | Expr::Errored { .. } => false,
+            Expr::Name { .. } | Expr::Integer { .. } | Expr::Unit { .. } | Expr::Errored { .. } | Expr::Bool { .. } => false,
             Expr::LogicBinOp { left, right, .. } => left.does_break() || right.does_break(),
             Expr::Block( Block { stmts, trailing_expr, .. } ) => {
                 stmts.iter().any(|stmt| stmt.does_break()) || trailing_expr.as_ref().map_or(false, |e| e.does_break())

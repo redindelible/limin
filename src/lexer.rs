@@ -24,6 +24,8 @@ pub enum TokenType {
     Return,
     Struct,
     New,
+    True,
+    False,
     Unrecognized,
     EOF
 }
@@ -48,7 +50,9 @@ const KEYWORDS: phf::Map<&str, TokenType> = phf_map! {
     "let" => TokenType::Let,
     "return" => TokenType::Return,
     "struct" => TokenType::Struct,
-    "new" => TokenType::New
+    "new" => TokenType::New,
+    "true" => TokenType::True,
+    "false" => TokenType::False,
 };
 
 impl TokenType {
@@ -74,6 +78,8 @@ impl TokenType {
             TokenType::Struct => "'struct'",
             TokenType::EOF => "the end of the file",
             TokenType::New => "'new'",
+            TokenType::True => "'true'",
+            TokenType::False => "'false'",
             TokenType::Unrecognized => "unrecognized characters"
         }
     }

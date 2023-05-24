@@ -154,6 +154,7 @@ impl Lower {
 
     fn lower_expr(&mut self, expr: &hir::Expr, map: &HashMap<u64, lir::Type>, hir: &hir::HIR) -> lir::Expr {
         match expr {
+            hir::Expr::Bool { value, .. } => lir::Expr::Boolean(*value),
             hir::Expr::Integer { num, .. } => lir::Expr::Integer(*num),
             hir::Expr::Unit { .. } => lir::Expr::Unit,
             hir::Expr::Block(block) => lir::Expr::Block(self.lower_block(block, map, hir)),

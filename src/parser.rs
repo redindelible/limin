@@ -187,7 +187,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_function(&mut self) -> ParseResult<TopLevel<'a>> {
-        self.expect(TokenType::Fn)?;
+        let start = self.expect(TokenType::Fn)?;
         let name = self.expect(TokenType::Identifier)?;
         let type_parameters = if self.curr().typ == TokenType::LeftAngle {
             let (type_parameters, _) = self.delimited_parse(TokenType::LeftAngle, TokenType::RightAngle, Self::parse_type_parameter)?;
@@ -195,7 +195,7 @@ impl<'a> Parser<'a> {
         } else {
             vec![]
         };
-        let (parameters, _) = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, Self::parse_parameter)?;
+        let (parameters, param_loc) = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, Self::parse_parameter)?;
         let return_type = if self.matches_symbol(TokenType::Minus, TokenType::RightAngle) {
             self.expect_symbol(TokenType::Minus, TokenType::RightAngle, "->")?;
             Some(Box::new(self.parse_type()?))
@@ -203,7 +203,8 @@ impl<'a> Parser<'a> {
             None
         };
         let body = self.parse_block()?;
-        Ok(TopLevel::Function( Function { name: name.text.to_owned(), type_parameters, parameters, return_type, body }))
+        let loc = start.loc + return_type.as_ref().map_or(param_loc, |t| t.loc());
+        Ok(TopLevel::Function( Function { name: name.text.to_owned(), type_parameters, parameters, return_type, body, loc }))
     }
 
     fn parse_type_parameter(&mut self) -> ParseResult<TypeParameter<'a>> {
@@ -380,6 +381,14 @@ impl<'a> Parser<'a> {
                     return Err(0);
                 };
                 Ok(Expr::Integer { number: num, loc: tok.loc })
+            },
+            TokenType::True => {
+                let tok = self.advance();
+                Ok(Expr::Bool { value: true, loc: tok.loc })
+            }
+            TokenType::False => {
+                let tok = self.advance();
+                Ok(Expr::Bool { value: false, loc: tok.loc })
             }
             TokenType::LeftParenthesis => {
                 self.advance();

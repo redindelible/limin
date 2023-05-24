@@ -36,6 +36,7 @@ struct Args {
     clang: Option<PathBuf>,
 }
 
+#[derive(Debug)]
 enum CompileResult<'a> {
     CouldNotParse(Vec<ParserError<'a>>),
     CouldNotTypeCheck(Vec<TypeCheckError<'a>>),
@@ -48,15 +49,28 @@ enum CompileResult<'a> {
 struct Compiler {
     sources: Arena<Source>,
     output: PathBuf,
-    clang: PathBuf
+    clang: PathBuf,
+    rt_path: PathBuf,
 }
 
 impl Compiler {
     fn new(output: PathBuf, clang: Option<PathBuf>) -> Compiler {
+        let lib_path = std::env::current_exe().unwrap().with_file_name("lib");
+        let rt_path = lib_path.join("rt.c");
         Compiler {
             sources: Arena::new(),
             output,
-            clang: clang.unwrap_or(PathBuf::from("clang"))
+            clang: clang.unwrap_or(PathBuf::from("clang")),
+            rt_path
+        }
+    }
+
+    fn debug(output: PathBuf, rt_path: PathBuf) -> Compiler {
+        Compiler {
+            sources: Arena::new(),
+            output,
+            clang: PathBuf::from("clang"),
+            rt_path
         }
     }
 
@@ -117,9 +131,6 @@ impl Compiler {
         };
         drop(ll_file_handle);
 
-        let lib_path = std::env::current_exe().unwrap().with_file_name("lib");
-        let rt_path = lib_path.join("rt.c");
-
         let output = String::from_utf8(match Command::new(&self.clang).arg("--version").output() {
             Ok(o) => o,
             Err(e) => {
@@ -144,7 +155,7 @@ impl Compiler {
         let output = match
             Command::new(&self.clang)
                 .arg(&ll_file)
-                .arg(&rt_path)
+                .arg(&self.rt_path)
                 .arg("-o")
                 .arg(&self.output)
                 .arg("-Wno-override-module")
@@ -185,4 +196,32 @@ fn main() {
         CompileResult::ClangError => { /* then clang will write the error to stdout/stderr */ }
         CompileResult::Success => ()
     };
+}
+
+
+#[cfg(test)]
+mod test {
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use crate::{Compiler, CompileResult};
+
+    fn run_file(file: &Path) -> std::process::Output {
+        let dir = tempfile::tempdir().unwrap();
+        let output_path = dir.path().join("output");
+        let mut compiler = Compiler::debug(output_path.clone(), PathBuf::from("lib/rt.c"));
+        compiler.add_root(file).unwrap();
+        let res = compiler.compile();
+        assert!(matches!(res, CompileResult::Success), "{:?}", res);
+
+        let output = Command::new(&output_path).output().unwrap();
+        dir.close().unwrap();
+        output
+    }
+
+    #[test]
+    fn test_simple() {
+        let output = run_file(Path::new("test/test_files/test_simple.lmn"));
+        assert_eq!(output.status.code(), Some(0));
+    }
+
 }

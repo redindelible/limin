@@ -81,6 +81,9 @@ pub enum TypeCheckError<'a> {
     MissingFields { fields: Vec<String>, typ: String, loc: Location<'a> },
     CouldNotInferParameter(String, Location<'a>),
     NoMainFunction,
+    MultipleMainFunctions(Location<'a>, Location<'a>),
+    MainMustHaveNoArguments(Location<'a>),
+    MainMustReturnI32(Location<'a>),
 }
 
 impl<'a> Message for TypeCheckError<'a> {
@@ -148,6 +151,20 @@ impl<'a> Message for TypeCheckError<'a> {
                 eprintln!("Error: Could not infer the type of '{}'.", name);
                 Self::show_location(loc);
             }
+            TypeCheckError::MainMustHaveNoArguments(loc) => {
+                eprintln!("Error: 'main' function must have no arguments.");
+                Self::show_location(loc);
+            }
+            TypeCheckError::MainMustReturnI32(loc) => {
+                eprintln!("Error: 'main' function must return 'i32'.");
+                Self::show_location(loc);
+            }
+            TypeCheckError::MultipleMainFunctions(new_loc, old_loc) => {
+                eprintln!("Error: Multiple 'main' functions defined.");
+                Self::show_location(new_loc);
+                eprintln!(" | Note: Previous 'main' function defined here.");
+                Self::show_note_location(old_loc);
+            }
         }
         eprint!("\n");
     }
@@ -158,6 +175,7 @@ mod type_check_state {
     use std::collections::HashMap;
     use slotmap::{new_key_type, SlotMap};
     use crate::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, FunctionKey, FunctionPrototype, Expr};
+    use crate::type_check::DisplayType;
     pub use crate::type_check::TypeCheckError;
 
     new_key_type! {
@@ -447,17 +465,29 @@ fn collect_functions(collected: CollectedFields) -> CollectedFunctions {
                 params.push(Parameter { name: param.name.clone(), typ, loc: param.loc, decl });
             }
             let ret = func.return_type.as_ref().map_or(Type::Unit, |t| resolve_type(&checker, func_ns, t));
-            // let sig = Type::Function { params: params.iter().map(|p| p.typ.clone()).collect(), ret: Box::new(ret.clone()) };
 
             let key = checker.hir.function_prototypes.insert_with_key(|key| {
                 let decl = checker.hir.names.insert(NameInfo::Function { func: key });
                 checker.namespaces[file_ns].names.insert(func.name.clone(), decl);
                 let sig = Type::GenericFunction { func: key, type_params: type_params.clone(), params: params.iter().map(|p| p.typ.clone()).collect(), ret: Box::new(ret.clone()) };
-                FunctionPrototype { name: func.name.clone(), type_params, params, ret, sig, decl }
+                FunctionPrototype { name: func.name.clone(), type_params, params, ret, sig, decl, loc: func.loc }
             });
 
             if func.name == "main" {
-                checker.hir.main_function = Some(key);
+                let proto = &checker.hir.function_prototypes[key];
+                if !proto.params.is_empty() {
+                    checker.push_error(TypeCheckError::MainMustHaveNoArguments(func.loc))
+                }
+                if !matches!(proto.ret, Type::Integer { bits: 32 }) {
+                    checker.push_error(TypeCheckError::MainMustReturnI32(func.loc))
+                }
+
+                if let Some(prev_func) = checker.hir.main_function {
+                    let prev_loc = checker.hir.function_prototypes[prev_func].loc;
+                    checker.push_error(TypeCheckError::MultipleMainFunctions(func.loc, prev_loc))
+                } else {
+                    checker.hir.main_function = Some(key);
+                }
             }
 
             // checker.add_name(file_ns, func.name.clone(), NameInfo::Function { func: key });
@@ -677,6 +707,14 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                 let compat = self.check(&Type::Integer { bits: 32 }, yield_type, loc);
                 if compat {
                     Expr::Integer { num: *number, loc: *loc }
+                } else {
+                    Expr::Errored { loc: *loc }
+                }
+            }
+            ast::Expr::Bool { value, loc} => {
+                let compat = self.check(&Type::Boolean, yield_type, loc);
+                if compat {
+                    Expr::Bool { value: *value, loc: *loc }
                 } else {
                     Expr::Errored { loc: *loc }
                 }
@@ -965,8 +1003,8 @@ mod test {
 
             struct Gamma { }
 
-            fn main() {
-
+            fn main() -> i32 {
+                return 0;
             }
         ");
         let ast = parse_one(&s);
@@ -1015,8 +1053,8 @@ mod test {
                 return thing;
             }
 
-            fn main() {
-
+            fn main() -> i32 {
+                return 0;
             }
         ");
         let ast = parse_one(&s);
@@ -1037,8 +1075,8 @@ mod test {
                 return thing;
             }
 
-            fn main() {
-
+            fn main() -> i32 {
+                return 0;
             }
         ");
         let ast = parse_one(&s);
@@ -1122,8 +1160,8 @@ mod test {
 
             fn aleph(thing: Alpha) { }
 
-            fn main() {
-
+            fn main() -> i32 {
+                return 0;
             }
         ");
         let ast = parse_one(&s);

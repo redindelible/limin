@@ -137,7 +137,7 @@ impl StackSim {
 
     fn _sim_expr(&mut self, expr: &lir::Expr, lir: &lir::LIR) {
         match expr {
-            lir::Expr::Integer(_) | lir::Expr::Unit => {
+            lir::Expr::Integer(_) | lir::Expr::Unit | lir::Expr::Boolean(_) => {
                 self.push_n(0);
             },
             lir::Expr::Never => panic!("I don't think this is possible"),
@@ -486,6 +486,7 @@ impl Codegen<'_> {
             lir::Expr::Never => panic!(),
             lir::Expr::Unit => llvm::Types::int_constant(1, 0).to_value(),
             lir::Expr::Integer(num) => llvm::Types::int_constant(32, *num).to_value(),
+            lir::Expr::Boolean(value) => llvm::Types::int_constant(1, *value as u64).to_value(),
             lir::Expr::LoadLocal(local) => {
                 let ptr = Self::get_name_ptr(*local, builder, frame);
                 let ty = &self.lir.locals[*local].typ;
