@@ -477,7 +477,6 @@ impl Codegen<'_> {
             None
         } else {
             let value = self.generate_expr(&ret, builder, &block_frame);
-            self.push_to_stack(&ret_type, value.clone(), builder, frame);
             Some(value)
         }
     }
@@ -496,6 +495,8 @@ impl Codegen<'_> {
             }
             lir::Expr::StoreLocal(_, _) => todo!(),
             lir::Expr::GetAttr(struct_, expr, attr) => {
+                let stack_state = frame.pop_state();
+
                 let obj = self.generate_expr(expr, builder, frame);
                 let struct_info = &self.structs[*struct_];
                 let index = struct_info.fields[attr];
@@ -507,17 +508,25 @@ impl Codegen<'_> {
                     GEPIndex::ConstantIndex(index as u32),
                 ]).to_value();
                 let field = builder.load(None, field_ty.clone(), field_ptr).to_value();
+                frame.pop(stack_state, builder);
                 self.push_to_stack(&self.lir.struct_bodies[*struct_].fields[attr], field.clone(), builder, frame);
                 field
             },
             lir::Expr::LoadFunction(func) => {
-                builder.load(None, Self::function_type(), self.functions[*func].value_ref.clone()).to_value()
+                let value = builder.load(None, Self::function_type(), self.functions[*func].value_ref.clone()).to_value();
+                self.push_to_stack(&self.lir.function_prototypes[*func].sig(), value.clone(), builder, frame);
+                value
             },
             lir::Expr::Parameter(func, index) => {
                 let (_, param) = self.functions[*func].params.get_index(*index).unwrap();
+                self.push_to_stack(&self.lir.function_prototypes[*func].params[*index].1, param.clone(), builder, frame);
                 param.clone()
             },
-            lir::Expr::Block(block) => self.generate_block(block, builder, frame).unwrap(),
+            lir::Expr::Block(block) => {
+                let value = self.generate_block(block, builder, frame).unwrap();
+                self.push_to_stack(&self.lir.blocks[*block].ret_type, value.clone(), builder, frame);
+                value
+            },
             lir::Expr::Call(callee, arguments) => {
                 let lir::Type::Function(_, ret) = self.lir.type_of(callee) else { panic!() };
 
