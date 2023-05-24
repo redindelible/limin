@@ -1,27 +1,12 @@
-
-struct Thing<T> {
-    a: T;
+struct Alpha {
+    a: i32;
+    b: Alpha;
 }
 
-fn create_Thing<T>(a: T) -> Thing<T> {
-    return new Thing { a: a };
-}
-
-fn identity<T>(thing: T) -> T {
+fn aleph(thing: Alpha) -> Alpha {
     return thing;
 }
 
-fn identity2<T>(thing: T) -> T {
-    return identity(thing);
-}
-
-
 fn main() -> i32 {
-    let a := 33;
-
-    let thing := create_Thing(a);
-
-    let b := identity2(a);
-
-    return create_Thing(thing).a.a;
+    return 0;
 }

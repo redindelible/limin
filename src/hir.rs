@@ -95,10 +95,10 @@ impl<'s> HIR<'s> {
                 }
             },
             Expr::Call { callee, .. } => {
-                let Type::Function { ret, .. } = self.type_of_expr(callee) else {
-                    panic!("{:?}", self.type_of_expr(callee));
-                };
-                *ret
+                match self.type_of_expr(callee) {
+                    Type::GenericFunction { ret, .. } | Type::Function { ret, ..} => ret.as_ref().clone(),
+                    _ => panic!()
+                }
             },
             Expr::GenericCall { generic, callee, .. } => {
                 let proto = &self.function_prototypes[*callee];

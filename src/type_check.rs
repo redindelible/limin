@@ -73,6 +73,7 @@ pub enum TypeCheckError<'a> {
     ExpectedFunction { got: DisplayType<'a>, loc: Location<'a> },
     MismatchedArguments { expected: usize, got: usize, loc: Location<'a> },
     MismatchedTypeArguments { expected: usize, got: usize, loc: Location<'a> },
+    RequiredTypeArguments { got: String, loc: Location<'a>, note_loc: Location<'a> },
     NotEnoughInfoToInfer(Location<'a>),
     ExpectedStructName { got: String, loc: Location<'a> },
     ExpectedStruct { got: DisplayType<'a>, loc: Location<'a> },
@@ -110,8 +111,14 @@ impl<'a> Message for TypeCheckError<'a> {
                 Self::show_location(loc);
             }
             TypeCheckError::MismatchedTypeArguments { expected, got, loc } => {
-                eprintln!("Error: Expected {expected} type parameters, got {got} type arguments.");
+                eprintln!("Error: Expected {expected} type parameters, got {got} type parameters.");
                 Self::show_location(loc);
+            }
+            TypeCheckError::RequiredTypeArguments { got, loc, note_loc } => {
+                eprintln!("Error: Expected type parameters to be supplied for '{got}'.");
+                Self::show_location(loc);
+                eprintln!(" | Note: '{got}' defined here.");
+                Self::show_note_location(note_loc);
             }
             TypeCheckError::NotEnoughInfoToInfer(loc) => {
                 eprintln!("Error: Could not infer type.");
@@ -142,6 +149,7 @@ impl<'a> Message for TypeCheckError<'a> {
                 Self::show_location(loc);
             }
         }
+        eprint!("\n");
     }
 }
 
@@ -324,6 +332,13 @@ fn resolve_type<'a>(checker: &TypeCheck<'a>, ns: NamespaceKey, typ: &ast::Type<'
         ast::Type::Name { name, loc } => {
             if let Some(t) = checker.namespaces[ns].types.get(name) {
                 return t.clone();
+            }
+            if let Some(&t) = checker.namespaces[ns].structs.get(name) {
+                if !checker.hir.structs[t].type_params.is_empty() {
+                    checker.push_error(TypeCheckError::RequiredTypeArguments { got: checker.hir.structs[t].name.clone(), loc: *loc, note_loc: checker.hir.structs[t].loc });
+                    return Type::Errored
+                }
+                return Type::Struct { struct_: t, variant: vec![] };
             }
             if let Some(parent) = checker.namespaces[ns].parent {
                 return resolve_type(checker,parent, typ);
@@ -690,7 +705,6 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                 let resolved_callee = self.resolve_expr(callee, None);
                 let callee_ty = self.checker.hir.type_of_expr(&resolved_callee);
                 match &callee_ty {
-                    // todo delete Type::Function
                     Type::Function { params, ret } => {
                         if !self.check(ret, yield_type, loc) {
                             return Expr::Errored { loc: *loc };
@@ -928,14 +942,14 @@ mod test {
         let alpha = &hir.structs[alpha_key];
         assert_eq!(alpha.fields.len(), 3);
         assert_eq!(alpha.fields["x"].typ, Type::Integer { bits: 32 });
-        // assert_eq!(alpha.fields["y"].typ, Type::Struct { struct_: alpha_key });
-        // assert_eq!(alpha.fields["z"].typ, Type::Struct { struct_: beta_key });
+        assert_eq!(alpha.fields["y"].typ, Type::Struct { struct_: alpha_key, variant: vec![] });
+        assert_eq!(alpha.fields["z"].typ, Type::Struct { struct_: beta_key, variant: vec![] });
 
         let beta = &hir.structs[beta_key];
 
         assert_eq!(beta.fields.len(), 2);
         assert_eq!(beta.fields["x"].typ, Type::Boolean);
-        // assert_eq!(beta.fields["z"].typ, Type::Struct { struct_: beta_key });
+        assert_eq!(beta.fields["z"].typ, Type::Struct { struct_: beta_key, variant: vec![] });
     }
 
     #[test]
@@ -971,14 +985,14 @@ mod test {
         let hir = collected.checker.finalize().unwrap();
 
         let aleph = &hir.function_prototypes[aleph_key];
-        let Type::Function { params, ret} = &aleph.sig else { panic!("{:?}", &aleph.sig) };
-        // assert_eq!(ret.as_ref(), &Type::Struct { struct_: alpha_key });
+        let Type::GenericFunction { params, ret, .. } = &aleph.sig else { panic!("{:?}", &aleph.sig) };
+        assert_eq!(ret.as_ref(), &Type::Struct { struct_: alpha_key, variant: vec![] });
         assert_eq!(params, &vec![Type::Integer { bits: 32 }]);
 
         let bet = &hir.function_prototypes[bet_key];
-        let Type::Function { params, ret} = &bet.sig else { panic!("{:?}", &bet.sig) };
+        let Type::GenericFunction { params, ret, ..} = &bet.sig else { panic!("{:?}", &bet.sig) };
         assert_eq!(ret.as_ref(), &Type::Boolean);
-        // assert_eq!(params, &vec![Type::Struct { struct_: beta_key }, Type::Struct { struct_: gamma_key }]);
+        assert_eq!(params, &vec![Type::Struct { struct_: beta_key, variant: vec![] }, Type::Struct { struct_: gamma_key, variant: vec![] }]);
     }
 
     fn get_struct_with_name(hir: &HIR, name: &str) -> StructKey {
