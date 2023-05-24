@@ -23,5 +23,5 @@ fn main() -> i32 {
 
     let b := identity2(a);
 
-    return identity2(thing).a;
+    return create_Thing(thing).a.a;
 }

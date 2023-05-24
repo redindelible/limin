@@ -567,7 +567,13 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
             Type::TypeParameter { name, bound, .. } => {
                 DisplayType::TypeParameter { name: name.clone(), bound: bound.as_ref().map(|t| Box::new(self.display_type(t))) }
             }
-            Type::TypeParameterInstance { name, .. } => DisplayType::TypeParamInstance { name: name.clone() }
+            Type::TypeParameterInstance { name, id, .. } => {
+                if let Some(ty) = &self.core.generic_stack[*id] {
+                    self.display_type(ty)
+                } else {
+                    DisplayType::TypeParamInstance { name: name.clone() }
+                }
+            }
         }
     }
 
@@ -719,17 +725,16 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                         }
 
                         if !self.check(&ret.subs(&map), yield_type, loc) {
+                            println!("displaying error");
                             return Expr::Errored { loc: *loc };
                         }
 
-                        // let mut generic = HashMap::new();
                         let mut generic_tuple = vec![];
                         for type_param in type_params {
                             let Type::TypeParameterInstance { id, .. } = map[&type_param.id] else {
                                 panic!()
                             };
                             if let Some(typ) = &self.core.generic_stack[id] {
-                                // generic.insert(type_param.id, typ.clone());
                                 generic_tuple.push(typ.clone());
                             } else {
                                 self.push_error(TypeCheckError::CouldNotInferParameter(type_param.name.clone(), *loc));
@@ -738,8 +743,6 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                         if generic_tuple.len() != map.len() {
                             return Expr::Errored { loc: *loc };
                         }
-
-                        // self.checker.hir.function_prototypes[*func].variants.insert(generic_tuple.clone());
 
                         Expr::GenericCall { generic: generic_tuple, callee: *func, arguments: resolved_arguments, loc: *loc }
                     }
@@ -802,10 +805,19 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                     return Expr::Errored { loc: *loc };
                 };
 
+                let mut map = HashMap::new();
+                for (type_param, type_arg) in self.checker.hir.structs[struct_].type_params.iter().zip(variant.iter()) {
+                    map.insert(type_param.id, type_arg.clone());
+                }
+
                 let Some(field) = self.checker.hir.structs[struct_].fields.get(attr) else {
                     self.push_error(TypeCheckError::NoSuchFieldName { typ: self.checker.hir.structs[struct_].name.clone(), field: attr.clone(), loc: *loc });
                     return Expr::Errored { loc: *loc };
                 };
+
+                if !self.check(&field.typ.subs(&map), yield_type, loc) {
+                    return Expr::Errored { loc: *loc };
+                }
 
                 Expr::GetAttr { obj: Box::new(obj), attr: attr.clone(), loc: *loc }
 
@@ -838,6 +850,9 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
             ast::Stmt::Return { value, loc} => {
                 let expected_return = self.checker.hir.function_prototypes[self.func].ret.clone();
                 Stmt::Return { value: self.resolve_expr(value, Some(expected_return)), loc: *loc }
+                // let value = self.resolve_expr(value, None);
+                // self.check(&self.checker.hir.type_of_expr(&value), Some(expected_return), loc);
+                // Stmt::Return { value, loc: *loc }
             }
         }
     }
