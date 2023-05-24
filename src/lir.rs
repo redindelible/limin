@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use slotmap::{new_key_type, SecondaryMap, SlotMap};
 use indexmap::IndexMap;
 use crate::common::map_join;
@@ -39,7 +40,8 @@ impl LIR {
                     panic!();
                 };
                 ret.as_ref().clone()
-            }
+            },
+            Expr::New(struct_key, _) => Type::Struct(*struct_key),
         }
     }
 }
@@ -105,6 +107,7 @@ pub enum Expr {
     LoadFunction(FunctionKey),
     StoreLocal(LocalKey, Box<Expr>),
     Call(Box<Expr>, Vec<Expr>),
+    New(StructKey, IndexMap<String, Expr>),
     Block(BlockKey)
 }
 

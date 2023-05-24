@@ -7,7 +7,7 @@ use crate::source::{Location, Source};
 pub enum TokenType {
     Identifier,
     Integer,
-    LessThan,
+    LeftAngle,
     GreaterThan,
     LeftParenthesis,
     RightParenthesis,
@@ -27,7 +27,7 @@ pub enum TokenType {
 }
 
 const BASIC_TOKENS: phf::Map<char, TokenType> = phf_map! {
-    '<' => TokenType::LessThan,
+    '<' => TokenType::LeftAngle,
     '>' => TokenType::GreaterThan,
     '(' => TokenType::LeftParenthesis,
     ')' => TokenType::RightParenthesis,
@@ -53,7 +53,7 @@ impl TokenType {
         match self {
             TokenType::Identifier => "an identifier",
             TokenType::Integer => "an integer",
-            TokenType::LessThan => "'<'",
+            TokenType::LeftAngle => "'<'",
             TokenType::GreaterThan => "'>'",
             TokenType::LeftParenthesis => "'('",
             TokenType::RightParenthesis => "')'",

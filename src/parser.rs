@@ -158,6 +158,13 @@ impl<'a> Parser<'a> {
         let start = self.expect(TokenType::Struct)?;
         let name = self.expect(TokenType::Identifier)?;
 
+        let type_params = if self.curr().typ == TokenType::LeftAngle {
+            let (type_parameters, _) = self.delimited_parse(TokenType::LeftAngle, TokenType::GreaterThan, Self::parse_type_parameter)?;
+            type_parameters
+        } else {
+            vec![]
+        };
+
         let mut items = Vec::new();
         self.expect(TokenType::LeftBrace)?;
         while self.curr().typ != TokenType::RightBrace {
@@ -168,7 +175,7 @@ impl<'a> Parser<'a> {
 
         let loc = name.loc + start.loc;
 
-        Ok(TopLevel::Struct(Struct { name: name.text.to_owned(), items, loc }))
+        Ok(TopLevel::Struct(Struct { name: name.text.to_owned(), type_params, items, loc }))
     }
 
     fn parse_struct_item(&mut self) -> ParseResult<StructItem<'a>> {
@@ -182,8 +189,8 @@ impl<'a> Parser<'a> {
     fn parse_function(&mut self) -> ParseResult<TopLevel<'a>> {
         self.expect(TokenType::Fn)?;
         let name = self.expect(TokenType::Identifier)?;
-        let type_parameters = if self.curr().typ == TokenType::LessThan {
-            let (type_parameters, _) = self.delimited_parse(TokenType::LessThan, TokenType::GreaterThan, Self::parse_type_parameter)?;
+        let type_parameters = if self.curr().typ == TokenType::LeftAngle {
+            let (type_parameters, _) = self.delimited_parse(TokenType::LeftAngle, TokenType::GreaterThan, Self::parse_type_parameter)?;
             type_parameters
         } else {
             vec![]
@@ -261,7 +268,7 @@ impl<'a> Parser<'a> {
         let mut left = self.parse_call()?;
         loop {
             match self.curr().typ {
-                TokenType::LessThan => {
+                TokenType::LeftAngle => {
                     self.advance();
                     let right = self.parse_call()?;
                     let loc = left.loc() + right.loc();
@@ -288,10 +295,10 @@ impl<'a> Parser<'a> {
                     let loc = left.loc() + args_loc;
                     left = Expr::Call { callee: Box::new(left), arguments, loc };
                 }
-                TokenType::LessThan => {
+                TokenType::LeftAngle => {
                     let state = self.store();
                     let result: Result<_, usize> = (|| {
-                        let type_arguments = self.delimited_parse(TokenType::LessThan, TokenType::GreaterThan, Self::parse_type)?;
+                        let type_arguments = self.delimited_parse(TokenType::LeftAngle, TokenType::GreaterThan, Self::parse_type)?;
                         let arguments = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, Self::parse_expr)?;
                         Ok((type_arguments, arguments))
                     })();
@@ -338,7 +345,14 @@ impl<'a> Parser<'a> {
         match self.curr().typ {
             TokenType::New => {
                 let start = self.advance();
-                let typ = Box::new(self.parse_type()?);
+                let struct_ = self.expect(TokenType::Identifier)?.text.into();
+                let type_args = if self.curr().typ == TokenType::LeftAngle {
+                    let (type_args, _) = self.delimited_parse(TokenType::LeftAngle, TokenType::GreaterThan, Self::parse_type)?;
+                    Some(type_args)
+                } else {
+                    None
+                };
+
                 let (fields, loc) = self.delimited_parse(TokenType::LeftBrace, TokenType::RightBrace, |this| {
                     let name = this.expect(TokenType::Identifier)?;
                     this.expect(TokenType::Colon)?;
@@ -347,7 +361,7 @@ impl<'a> Parser<'a> {
                     Ok(NewArgument { field_name: name.text.to_owned(), argument: Box::new(argument), name_loc: loc })
                 })?;
                 let loc = loc + start.loc;
-                Ok(Expr::New { typ, fields, loc})
+                Ok(Expr::New { struct_, type_args, fields, loc})
             },
             TokenType::Identifier => {
                 let tok = self.advance();
@@ -385,7 +399,13 @@ impl<'a> Parser<'a> {
         match self.curr().typ {
             TokenType::Identifier => {
                 let name = self.advance();
-                Ok(Type::Name { name: name.text.to_owned(), loc: name.loc })
+                if self.curr().typ == TokenType::LeftAngle {
+                    let (type_args, loc) = self.delimited_parse(TokenType::LeftAngle, TokenType::GreaterThan, Self::parse_type)?;
+                    let loc = loc + name.loc;
+                    Ok(Type::Generic { name: name.text.to_owned(), type_args, loc })
+                } else {
+                    Ok(Type::Name { name: name.text.to_owned(), loc: name.loc })
+                }
             },
             TokenType::LeftParenthesis => {
                 let (parameters, start) = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, |this| this.parse_type())?;

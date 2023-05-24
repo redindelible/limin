@@ -24,7 +24,7 @@ pub enum Type {
     Never,
     Boolean,
     Integer { bits: u8 },
-    Struct { struct_: StructKey },
+    Struct { struct_: StructKey, variant: Vec<Type> },
     Function { params: Vec<Type>, ret: Box<Type> },
     GenericFunction { func: FunctionKey, type_params: Vec<TypeParameter>, params: Vec<Type>, ret: Box<Type> },
     TypeParameter { name: String, bound: Option<Box<Type>>, id: u64 },
@@ -34,15 +34,21 @@ pub enum Type {
 impl Type {
     pub fn subs(&self, map: &HashMap<u64, Type>) -> Type {
         match self {
+            Type::Never | Type::Unit | Type::Boolean => self.clone(),
+            Type::Errored => Type::Errored,
+            Type::Integer { bits } => Type::Integer { bits: *bits },
             Type::TypeParameter { id, .. } if map.contains_key(id) => {
                 map[id].clone()
             },
+            Type::TypeParameter { .. } | Type::TypeParameterInstance { .. }=> self.clone(),
             Type::Function { params, ret } => {
                 Type::Function { params: params.iter().map(|t| t.subs(map)).collect(), ret: Box::new(ret.subs(map)) }
             },
+            Type::Struct { struct_, variant } => {
+                Type::Struct { struct_: *struct_, variant: variant.iter().map(|t| t.subs(map)).collect() }
+            },
             // I don't think this one is possible
             Type::GenericFunction { .. } => panic!(),
-            _ => self.clone()
         }
     }
 }
@@ -102,8 +108,8 @@ impl<'s> HIR<'s> {
                 };
                 proto.ret.subs(&map)
             },
-            Expr::New { struct_, .. } => {
-                Type::Struct { struct_: *struct_ }
+            Expr::New { struct_, variant, .. } => {
+                Type::Struct { struct_: *struct_, variant: variant.clone() }
             },
             Expr::Errored { .. } => Type::Errored
         }
@@ -116,7 +122,7 @@ impl<'s> HIR<'s> {
             (Type::Unit, Type::Unit) => true,
             (Type::Boolean, Type::Boolean) => true,
             (Type::Integer { bits: a }, Type::Integer { bits: b}) if a <= b => true,
-            (Type::Struct { struct_: a}, Type::Struct { struct_: b}) if a == b => true,
+            (Type::Struct { struct_: a, variant: a_var}, Type::Struct { struct_: b, variant: b_var}) if a == b && a_var == b_var => true,
             (Type::Function { params: a_params, ret: a_ret }, Type::Function { params: b_params, ret: b_ret }) => {
                 self.is_subtype(a_ret, b_ret) && b_params.iter().zip(a_params.iter()).all(|(b_typ, a_typ)| self.is_subtype(b_typ, a_typ))
             },
@@ -124,34 +130,11 @@ impl<'s> HIR<'s> {
             _ => false
         }
     }
-
-    pub fn shorthand_name(&self, typ: &Type) -> String {
-        match typ {
-            Type::Errored => panic!(),
-            Type::Never => "!".into(),
-            Type::Unit => "()".into(),
-            Type::Boolean => "bool".into(),
-            Type::Integer { bits } => format!("i{bits}"),
-            Type::Struct { struct_ } => self.structs[*struct_].name.clone(),
-            Type::Function { params, ret } => format!(
-                "({}) -> {}",
-                map_join(params, |p| self.shorthand_name(p)),
-                self.shorthand_name(ret)
-            ),
-            Type::GenericFunction { type_params, params, ret, .. } => format!(
-                "<{}>({}) -> {}",
-                map_join(type_params, |p| &p.name),
-                map_join(params, |p| self.shorthand_name(p)),
-                self.shorthand_name(ret)
-            ),
-            Type::TypeParameter { name, .. } => name.clone(),
-            Type::TypeParameterInstance { name, .. } => name.clone()
-        }
-    }
 }
 
 pub struct Struct<'ir> {
     pub name: String,
+    pub type_params: Vec<TypeParameter>,
     pub fields: IndexMap<String, StructField<'ir>>,
     pub loc: Location<'ir>
 }
@@ -183,8 +166,13 @@ pub struct FunctionBody<'ir> {
 pub struct TypeParameter {
     pub name: String,
     pub bound: Option<Type>,
-    pub typ: Type,
     pub id: u64,
+}
+
+impl TypeParameter {
+    pub fn as_type(&self) -> Type {
+        Type::TypeParameter { name: self.name.clone(), id: self.id, bound: self.bound.as_ref().map(|t| Box::new(t.clone())) }
+    }
 }
 
 #[derive(Clone)]
@@ -223,7 +211,7 @@ pub enum Expr<'ir> {
     Call { callee: Box<Expr<'ir>>, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
     GenericCall { generic: Vec<Type>, callee: FunctionKey, arguments: Vec<Expr<'ir>>, loc: Location<'ir>},
     Errored { loc: Location<'ir> },
-    New { struct_: StructKey, fields: IndexMap<String, Box<Expr<'ir>>>, loc: Location<'ir> }
+    New { struct_: StructKey, variant: Vec<Type>, fields: IndexMap<String, Box<Expr<'ir>>>, loc: Location<'ir> }
 }
 
 impl MayBreak for Expr<'_> {

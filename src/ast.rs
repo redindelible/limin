@@ -71,6 +71,7 @@ pub struct TypeParameter<'a> {
 #[derive(Debug, Eq, PartialEq)]
 pub struct Struct<'a> {
     pub name: String,
+    pub type_params: Vec<Box<TypeParameter<'a>>>,
     pub items: Vec<StructItem<'a>>,
     pub loc: Location<'a>
 }
@@ -116,7 +117,7 @@ pub enum Expr<'a> {
     GenericCall { callee: Box<Expr<'a>>, generic_arguments: Vec<Box<Type<'a>>>, arguments: Vec<Box<Expr<'a>>>, loc: Location<'a> },
     Integer { number: u64, loc: Location<'a> },
     Block(Block<'a>),
-    New { typ: Box<Type<'a>>, fields: Vec<Box<NewArgument<'a>>>, loc: Location<'a> }
+    New { struct_: String, type_args: Option<Vec<Box<Type<'a>>>>, fields: Vec<Box<NewArgument<'a>>>, loc: Location<'a> }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -143,14 +144,16 @@ impl<'a> HasLoc<'a> for Expr<'a> {
 #[derive(Debug, Eq, PartialEq)]
 pub enum Type<'a> {
     Name { name: String, loc: Location<'a> },
-    Function { parameters: Vec<Box<Type<'a>>>, ret: Box<Type<'a>>, loc: Location<'a> }
+    Function { parameters: Vec<Box<Type<'a>>>, ret: Box<Type<'a>>, loc: Location<'a> },
+    Generic { name: String, type_args: Vec<Box<Type<'a>>>, loc: Location<'a> }
 }
 
 impl<'s> HasLoc<'s> for Type<'s> {
     fn loc(&self) -> Location<'s> {
         match self {
             Type::Name { loc, .. } => *loc,
-            Type::Function { loc, .. } => *loc
+            Type::Function { loc, .. } => *loc,
+            Type::Generic { loc, .. } => *loc
         }
     }
 }

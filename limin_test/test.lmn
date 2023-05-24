@@ -1,4 +1,12 @@
 
+struct Thing<T> {
+    a: T;
+}
+
+fn create_Thing<T>(a: T) -> Thing<T> {
+    return new Thing { a: a };
+}
+
 fn identity<T>(thing: T) -> T {
     return thing;
 }
@@ -10,6 +18,8 @@ fn identity2<T>(thing: T) -> T {
 
 fn main() -> i32 {
     let a := 32;
+
+    let thing := create_Thing(a);
 
     let b := identity2(a);
 

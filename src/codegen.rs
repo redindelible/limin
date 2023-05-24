@@ -158,7 +158,7 @@ impl StackSim {
                 let slots = self.stack_slots(&lir.blocks[*block].ret_type);
                 self.push_n(slots);
             }
-            lir::Expr::Call( callee, arguments) => {
+            lir::Expr::Call(callee, arguments) => {
                 let reset_to = self.curr;
                 self._sim_expr(callee, lir);
                 for arg in arguments {
@@ -167,6 +167,14 @@ impl StackSim {
                 self.curr = reset_to;
                 let slots = self.stack_slots(&lir.type_of(expr));
                 self.push_n(slots);
+            }
+            lir::Expr::New(_, fields) => {
+                let reset_to = self.curr;
+                for expr in fields.values() {
+                    self._sim_expr(expr, lir);
+                }
+                self.curr = reset_to;
+                self.push_n(1);
             }
             _ => {
                 panic!("{:?}", expr);
@@ -241,18 +249,6 @@ impl Codegen<'_> {
             trace_stack_fn,
         }
     }
-
-    // fn gen_mangled2(&self, prefix: &'static str, name: &str) -> String {
-    //     let num = *self.mangle.borrow();
-    //     *self.mangle.borrow_mut() += 1;
-    //     format!("{prefix}_{name}_{:>08X}", num)
-    // }
-    //
-    // fn gen_mangled(&self, prefix: &'static str) -> String {
-    //     let num = *self.mangle.borrow();
-    //     *self.mangle.borrow_mut() += 1;
-    //     format!("{prefix}_{:>08X}", num)
-    // }
 
     fn mangled<const N: usize>(&self, things: [&str; N]) -> String {
         let num = *self.mangle.borrow();
@@ -527,30 +523,30 @@ impl Codegen<'_> {
                 self.push_to_stack(&ret, Rc::clone(&value), builder, frame);
                 value
             }
-            // hir::Expr::New { struct_, fields, .. } => {
-            //     let stack_state = frame.pop_state();
-            //
-            //     let type_info = &self.structs[*struct_].type_info;
-            //     let value = builder.call(None, CallingConvention::CCC, llvm::Types::ptr(), &self.create_object_fn, vec![
-            //         Rc::clone(type_info).to_value(),
-            //         Rc::clone(&frame.llvm_ref)
-            //     ]).to_value();
-            //
-            //     for (field_name, field_init) in fields {
-            //         let index = self.structs[*struct_].fields[field_name];
-            //         let init = self.generate_expr(field_init, builder, frame);
-            //         let field_ptr = builder.gep(None, self.structs[*struct_].llvm_ref.as_type_ref(), Rc::clone(&value), vec![
-            //             GEPIndex::ConstantIndex(0),
-            //             GEPIndex::ConstantIndex(index as u32)
-            //         ]).to_value();
-            //         builder.store(&field_ptr, &init);
-            //         self.push_to_stack(&self.hir.type_of_expr(field_init), init, builder, frame);
-            //     }
-            //
-            //     frame.pop(stack_state, builder);
-            //     self.push_to_stack(&self.hir.type_of_expr(expr), Rc::clone(&value), builder, frame);
-            //     value
-            // }
+            lir::Expr::New(struct_, fields) => {
+                let stack_state = frame.pop_state();
+
+                let type_info = &self.structs[*struct_].type_info;
+                let value = builder.call(None, CallingConvention::CCC, llvm::Types::ptr(), &self.create_object_fn, vec![
+                    Rc::clone(type_info).to_value(),
+                    Rc::clone(&frame.llvm_ref)
+                ]).to_value();
+
+                for (field_name, field_init) in fields {
+                    let index = self.structs[*struct_].fields[field_name];
+                    let init = self.generate_expr(field_init, builder, frame);
+                    let field_ptr = builder.gep(None, self.structs[*struct_].llvm_ref.as_type_ref(), Rc::clone(&value), vec![
+                        GEPIndex::ConstantIndex(0),
+                        GEPIndex::ConstantIndex(index as u32)
+                    ]).to_value();
+                    builder.store(&field_ptr, &init);
+                    self.push_to_stack(&self.lir.type_of(field_init), init, builder, frame);
+                }
+
+                frame.pop(stack_state, builder);
+                self.push_to_stack(&self.lir.type_of(expr), Rc::clone(&value), builder, frame);
+                value
+            }
             _ => panic!("{:?}", expr)
         }
     }
