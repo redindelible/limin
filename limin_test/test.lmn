@@ -12,10 +12,13 @@ struct FooBar {
     bar: Bar;
 }
 
+fn identity<T>(a: T) -> T {
+    return a;
+}
 
 fn main() -> i32 {
     let foo := new Foo { foo: 32 };
     let bar := new Bar { bar: false };
     let foobar := new FooBar { foo: foo, bar: bar };
-    return foobar.foo.foo;
+    return identity(foobar).foo.foo;
 }

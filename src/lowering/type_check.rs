@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use indexmap::IndexMap;
 use slotmap::{SecondaryMap, SlotMap};
-use crate::ast;
-use crate::common::map_join;
+use crate::parsing::ast;
+use crate::util::map_join;
 use crate::error::Message;
-use crate::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, Stmt, MayBreak, TypeParameter, TypeParamKey, Block};
+use crate::lowering::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, Stmt, MayBreak, TypeParameter, TypeParamKey, Block};
+use crate::lowering::type_check::type_check_state::NamespaceKey;
 use crate::source::{HasLoc, Location};
-use crate::type_check::type_check_state::NamespaceKey;
 
 pub fn resolve_types(ast: ast::AST) -> Result<HIR, Vec<TypeCheckError>> {
     collect_function_bodies(collect_functions(collect_fields(collect_structs(initialize(ast)))))
@@ -177,8 +177,8 @@ mod type_check_state {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use slotmap::{new_key_type, SlotMap};
-    use crate::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, FunctionKey, Expr};
-    pub use crate::type_check::TypeCheckError;
+    use crate::lowering::hir::*;
+    pub use crate::lowering::type_check::TypeCheckError;
 
     new_key_type! {
         pub struct NamespaceKey;
@@ -916,7 +916,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
 mod test {
     use std::collections::HashMap;
     use std::path::Path;
-    use crate::ast;
+    use crate::parsing::ast;
     use crate::hir::{FunctionKey, HIR, StructKey, Type};
     use crate::source::Source;
     use crate::type_check::{collect_fields, collect_function_bodies, collect_functions, collect_structs, initialize, resolve_types};

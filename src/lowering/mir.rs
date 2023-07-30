@@ -9,7 +9,7 @@ new_key_type! {
 }
 
 
-pub struct LIR {
+pub struct MIR {
     pub main_fn: FunctionKey,
 
     pub struct_prototypes: SlotMap<StructKey, StructPrototype>,
@@ -22,7 +22,7 @@ pub struct LIR {
     pub locals: SlotMap<LocalKey, LocalInfo>
 }
 
-impl LIR {
+impl MIR {
     pub fn type_of(&self, expr: &Expr) -> Type {
         match expr {
             Expr::Never => Type::Never,
@@ -42,6 +42,57 @@ impl LIR {
                 ret.as_ref().clone()
             },
             Expr::New(struct_key, _) => Type::Struct(*struct_key),
+        }
+    }
+
+    pub fn is_zero_sized(&self, ty: &Type) -> bool {
+        self.is_zero_sized_helper(ty, &mut Vec::new())
+    }
+
+    fn is_zero_sized_helper(&self, ty: &Type, visited: &mut Vec<StructKey>) -> bool {
+        match ty {
+            Type::Unit => true,
+            Type::Never => false,
+            Type::Boolean => false,
+            Type::Integer(_) => false,
+            Type::Struct(key) => {
+                if visited.contains(key) {
+                    return true;
+                }
+
+                visited.push(*key);
+                let result = self.struct_bodies[*key].fields.values().all(|ty| self.is_zero_sized_helper(ty, visited));
+                visited.pop();
+                result
+            }
+            Type::Function(_, _) => false,
+        }
+    }
+
+    pub fn is_never(&self, ty: &Type) -> bool {
+        self.is_never_helper(ty, &mut Vec::new())
+    }
+
+    fn is_never_helper(&self, ty: &Type, visited: &mut Vec<StructKey>) -> bool {
+        match ty {
+            Type::Never => true,
+            Type::Struct(key) => {
+                if visited.contains(key) {
+                    return false;
+                }
+
+                visited.push(*key);
+                let result = self.struct_bodies[*key].fields.values().any(|ty| self.is_never(ty));
+                visited.pop();
+                result
+            }
+            Type::Function(params, _) => {
+                params.iter().any(|ty| self.is_never_helper(ty, visited))
+            }
+
+            Type::Unit => false,
+            Type::Boolean => false,
+            Type::Integer(_) => false,
         }
     }
 }
@@ -116,6 +167,6 @@ pub enum Expr {
 #[derive(Clone)]
 pub enum Stmt {
     Expr(Box<Expr>),
-    Decl(LocalKey, Box<Expr>),
+    Decl(LocalKey, Type, Box<Expr>),
     Ret(Box<Expr>)
 }

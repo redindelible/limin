@@ -1,0 +1,321 @@
+use std::collections::HashMap;
+use indexmap::IndexMap;
+use crate::emit::lir;
+use crate::util::Counter;
+
+
+pub struct LIRBuilder {
+    functions: IndexMap<lir::FunctionID, Option<lir::Function>>,
+    structs: IndexMap<lir::StructID, Option<lir::Struct>>,
+
+    main_function: Option<lir::FunctionID>
+}
+
+impl LIRBuilder {
+    pub fn new() -> LIRBuilder {
+        LIRBuilder {
+            functions: IndexMap::new(),
+            structs: IndexMap::new(),
+            main_function: None
+        }
+    }
+
+    pub fn finish(self) -> lir::LIR {
+        let LIRBuilder { functions, structs, main_function } = self;
+
+        lir::LIR {
+            functions: functions.into_iter().map(|(k, v)| (k, v.unwrap())).collect(),
+            structs: structs.into_iter().map(|(k, v)| (k, v.unwrap())).collect(),
+            main_function: main_function.unwrap(),
+        }
+    }
+
+    pub fn declare_function(&mut self) -> lir::FunctionID {
+        let id = lir::FunctionID(self.functions.len());
+        if self.functions.insert(id, None).is_some() {
+            panic!("function already declared")
+        };
+        id
+    }
+
+    pub fn define_function<F>(&mut self, id: lir::FunctionID, name: String, f: F) where F: FnOnce(FunctionBuilder) -> lir::Function {
+        let builder = FunctionBuilder { id, name, ret: None, parameters: Vec::new(), counter: Counter::new(0) };
+        let func = f(builder);
+        if self.functions.get_mut(&id).unwrap().replace(func).is_some() {
+            panic!("function already defined")
+        };
+    }
+
+    pub fn declare_struct(&mut self) -> lir::StructID {
+        let id = lir::StructID(self.structs.len());
+        if self.structs.insert(id, None).is_some() {
+            panic!("struct already declared")
+        };
+        id
+    }
+
+    pub fn define_struct<F>(&mut self, id: lir::StructID, name: String, f: F) where F: FnOnce(&mut StructBuilder) {
+        let mut builder = StructBuilder { id, name, fields: Vec::new() };
+        f(&mut builder);
+        if self.structs.get_mut(&id).unwrap().replace(builder.finish()).is_some() {
+            panic!("struct already defined");
+        };
+    }
+
+    pub fn main_function(&mut self, id: lir::FunctionID) {
+        if self.main_function.replace(id).is_some() {
+            panic!("main function already defined");
+        }
+    }
+}
+
+pub struct StructBuilder {
+    id: lir::StructID,
+    name: String,
+    fields: Vec<lir::StructField>
+}
+
+impl StructBuilder {
+    pub fn field(&mut self, name: String, ty: lir::Type) {
+        self.fields.push(lir::StructField { name, ty });
+    }
+
+    fn finish(self) -> lir::Struct {
+        let StructBuilder { id, name, fields } = self;
+        lir::Struct {
+            id,
+            name,
+            fields
+        }
+    }
+}
+
+pub struct FunctionBuilder {
+    id: lir::FunctionID,
+    name: String,
+    ret: Option<lir::Type>,
+    parameters: Vec<lir::FunctionParameter>,
+
+    counter: Counter,
+}
+
+impl FunctionBuilder {
+    pub fn parameter(&mut self, name: String, ty: lir::Type) -> lir::LocalID {
+        let local = lir::LocalID(self.counter.next());
+        self.parameters.push(lir::FunctionParameter { local, name, ty });
+        local
+    }
+
+    pub fn return_type(&mut self, ty: lir::Type) {
+        self.ret = Some(ty);
+    }
+
+    pub fn return_void(&mut self) {
+        self.ret = None;
+    }
+
+    pub fn build<F>(self, f: F) -> lir::Function where F: FnOnce(BlockBuilder) -> lir::Block {
+        let FunctionBuilder { id, name, ret, parameters, mut counter, .. } = self;
+
+        let block = {
+            let mut block_builder: BlockBuilder = BlockBuilder::new(&mut counter);
+            for param in &parameters {
+                block_builder.locals.insert(param.local, param.ty.clone());
+            }
+            f(block_builder)
+        };
+
+        lir::Function {
+            id,
+            name,
+            ret,
+            parameters,
+            block
+        }
+    }
+}
+
+
+pub struct BlockBuilder<'a> {
+    counter: &'a mut Counter,
+
+    instructions: Vec<lir::Instruction>,
+
+    stack_types: Vec<lir::Type>,
+    locals: HashMap<lir::LocalID, lir::Type>
+}
+
+impl<'a> BlockBuilder<'a> {
+    fn new(counter: &'a mut Counter) -> BlockBuilder<'a> {
+        BlockBuilder {
+            counter,
+            instructions: Vec::new(),
+            stack_types: Vec::new(),
+            locals: HashMap::new()
+        }
+    }
+
+    fn push_type(&mut self, ty: lir::Type) {
+        self.stack_types.push(ty);
+    }
+
+    fn pop_type(&mut self, eq_ty: &lir::Type) {
+        let ty = self.stack_types.pop().unwrap();
+        if &ty != eq_ty {
+            panic!("Expected {:?}, got {:?}", eq_ty, ty);
+        }
+    }
+
+    pub fn declare_variable(&mut self, ty: lir::Type) -> lir::LocalID {
+        self.pop_type(&ty);
+        let id = lir::LocalID(self.counter.next());
+        self.locals.insert(id, ty);
+        self.instructions.push(lir::Instruction::DeclareLocal(id));
+        id
+    }
+
+    pub fn load_i32(&mut self, value: i32) {
+        self.push_type(lir::Type::Int32);
+        self.instructions.push(lir::Instruction::LoadI32(value));
+    }
+
+    pub fn load_bool(&mut self, value: bool) {
+        self.push_type(lir::Type::Boolean);
+        self.instructions.push(lir::Instruction::LoadBool(value));
+    }
+
+    pub fn load_variable(&mut self, id: lir::LocalID) -> lir::Type {
+        self.push_type(self.locals[&id].clone());
+        self.instructions.push(lir::Instruction::LoadLocal(id));
+        self.locals[&id].clone()
+    }
+
+    pub fn load_function(&mut self, id: lir::FunctionID, ty: lir::Type) {
+        assert!(matches!(ty, lir::Type::Function(_, _)));
+        self.push_type(ty.clone());
+        self.instructions.push(lir::Instruction::LoadFunction(id));
+    }
+
+    pub fn load_null(&mut self) {
+        self.push_type(lir::Type::AnyRef);
+        self.instructions.push(lir::Instruction::LoadNull);
+    }
+
+    pub fn create_tuple(&mut self, tys: Vec<lir::Type>) {
+        for ty in tys.iter().rev() {
+            self.pop_type(ty);
+        }
+        self.instructions.push(lir::Instruction::CreateTuple(tys.len()));
+        self.push_type(lir::Type::Tuple(tys));
+    }
+
+    pub fn splat(&mut self, tys: Vec<lir::Type>) {
+        self.pop_type(&lir::Type::Tuple(tys.clone()));
+        self.instructions.push(lir::Instruction::Splat);
+        for ty in tys {
+            self.push_type(ty)
+        }
+    }
+
+    pub fn create_struct(&mut self, struct_: lir::StructID, fields: Vec<(String, lir::Type)>) {
+        let mut field_names = Vec::new();
+        for (name, ty) in fields.into_iter().rev() {
+            self.pop_type(&ty);
+            field_names.push(name);
+        }
+        self.push_type(lir::Type::StructRef(struct_));
+        self.instructions.push(lir::Instruction::CreateStruct(struct_, field_names));
+    }
+
+    pub fn get_field(&mut self, struct_: lir::StructID, field: (String, lir::Type)) {
+        self.pop_type(&lir::Type::StructRef(struct_));
+        self.push_type(field.1);
+        self.instructions.push(lir::Instruction::GetField(struct_, field.0));
+    }
+
+    pub fn call(&mut self, params: &[lir::Type], ret: lir::Type) {
+        for ty in params.iter().rev() {
+            self.pop_type(ty);
+        }
+        self.pop_type(&lir::Type::Function(params.to_vec(), Some(Box::new(ret.clone()))));
+        self.push_type(ret);
+        self.instructions.push(lir::Instruction::Call(params.len()));
+    }
+
+    pub fn call_void(&mut self, params: &[lir::Type]) {
+        for ty in params.iter().rev() {
+            self.pop_type(ty);
+        }
+        self.pop_type(&lir::Type::Function(params.to_vec(), None));
+        self.instructions.push(lir::Instruction::CallVoid(params.len()));
+    }
+
+    pub fn pop(&mut self, ty: lir::Type) {
+        self.pop_type(&ty);
+        self.instructions.push(lir::Instruction::Pop);
+    }
+
+    pub fn return_value(&mut self, ty: lir::Type) {
+        self.pop_type(&ty);
+        self.instructions.push(lir::Instruction::Return);
+    }
+
+    pub fn return_void(&mut self) {
+        self.instructions.push(lir::Instruction::ReturnVoid);
+    }
+
+    pub fn statepoint(&mut self) {
+        self.instructions.push(lir::Instruction::StatePoint);
+    }
+
+    pub fn unreachable(&mut self) {
+        self.instructions.push(lir::Instruction::Unreachable);
+    }
+
+    pub fn block_value<F: FnOnce(BlockBuilder) -> lir::Block>(&mut self, ty: lir::Type, f: F) {
+        let builder = BlockBuilder::new(self.counter);
+        let block = f(builder);
+        assert_eq!(&ty, block.yield_type.as_ref().unwrap());
+        self.instructions.push(lir::Instruction::BlockValue(block));
+        self.push_type(ty);
+    }
+
+    pub fn block_void<F: FnOnce(BlockBuilder) -> lir::Block>(&mut self, f: F) {
+        let builder = BlockBuilder::new(self.counter);
+        let block = f(builder);
+        assert!(block.yield_type.is_none());
+        self.instructions.push(lir::Instruction::BlockValue(block));
+    }
+
+    pub fn yield_none(self) -> lir::Block {
+        let BlockBuilder { instructions, .. } = self;
+
+        lir::Block {
+            instructions,
+            yield_type: None,
+            diverges: false
+        }
+    }
+
+    pub fn yield_diverges(self) -> lir::Block {
+        let BlockBuilder { instructions, .. } = self;
+
+        lir::Block {
+            instructions,
+            yield_type: None,
+            diverges: true
+        }
+    }
+
+    pub fn yield_value(mut self, ty: lir::Type) -> lir::Block {
+        self.pop_type(&ty);
+
+        let BlockBuilder { instructions, .. } = self;
+
+        lir::Block {
+            instructions,
+            yield_type: Some(ty),
+            diverges: false
+        }
+    }
+}

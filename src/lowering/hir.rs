@@ -55,6 +55,8 @@ impl Type {
 pub struct HIR<'s> {
     pub name: String,
     pub main_function: Option<FunctionKey>,
+    
+    // todo find some way to preserve insertion order
 
     pub names: SlotMap<NameKey, NameInfo<'s>>,
     pub structs: SlotMap<StructKey, Struct<'s>>,

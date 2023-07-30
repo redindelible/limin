@@ -1,11 +1,64 @@
+#![allow(dead_code)]
+
+use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::fmt::{Debug, Formatter};
 use std::rc::Rc;
 use indexmap::IndexMap;
 
-pub type FunctionRef = Rc<Function>;
+use crate::util::map_join;
 
-pub type StructRef = Rc<NamedStruct>;
+#[derive(Clone)]
+pub struct FunctionRef(Rc<Function>);
+
+impl Value for FunctionRef {
+    fn emit_value(&self) -> String {
+        format!(r"@{}", self.0.name)
+    }
+
+    fn ty(&self) -> TypeRef {
+        Types::ptr()
+    }
+}
+
+impl FunctionRef {
+    pub fn memory(self, access: MemoryAccess) -> Self {
+        self.0.attrs.borrow_mut().memory = access;
+        self
+    }
+
+    pub fn willreturn(self) -> Self {
+        self.0.attrs.borrow_mut().willreturn = true;
+        self
+    }
+
+    pub fn nounwind(self) -> Self {
+        self.0.attrs.borrow_mut().nounwind = true;
+        self
+    }
+
+    pub fn ret_noalias(self) -> Self {
+        self.0.attrs.borrow_mut().ret_noalias = true;
+        self
+    }
+    
+    pub fn parameters(&self) -> &[ParameterRef] {
+        &self.0.parameters
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct StructRef(Rc<NamedStruct>);
+
+impl StructRef {
+    pub fn set_fields(&self, fields: Vec<TypeRef>) {
+        self.0.set_fields(fields)
+    }
+
+    pub fn as_type_ref(&self) -> TypeRef {
+        Rc::new(Type::NamedStruct(self.clone()))
+    }
+}
 
 pub type TypeRef = Rc<Type>;
 
@@ -27,7 +80,7 @@ impl Type {
             Type::Pointer => "ptr".into(),
             Type::Integer(bits) => format!("i{}", bits),
             Type::Array(t, count) => format!("[{} x {}]", count, t.emit()),
-            Type::NamedStruct(s) => format!("%{}", s.name),
+            Type::NamedStruct(s) => format!("%{}", s.0.name),
             Type::Struct(items) => {
                 let items: Vec<String> = items.iter().map(|t| t.emit()).collect();
                 format!("{{ {} }}", items.join(", "))
@@ -42,7 +95,7 @@ impl Type {
     fn type_at_index(&self, index: Option<usize>) -> TypeRef {
         match self {
             Type::NamedStruct(struct_ref) => {
-                Rc::clone(&struct_ref.fields.borrow().clone().unwrap()[index.unwrap()])
+                Rc::clone(&struct_ref.0.fields.borrow().clone().unwrap()[index.unwrap()])
             }
             Type::Struct(fields) => {
                 Rc::clone(&fields[index.unwrap()])
@@ -55,10 +108,34 @@ impl Type {
             }
         }
     }
+
+    pub fn size(&self) -> usize {
+        match self {
+            Type::Void => 0,
+            Type::Pointer => 8,  // todo
+            Type::Integer(bits) => (*bits / 8) as usize,
+            Type::Array(base, count) => base.size() * *count,
+            Type::NamedStruct(struct_) => struct_.0.size(),
+            Type::Struct(fields) => size_of_struct(fields),
+            Type::Function(_, _) => 8  // todo
+        }
+    }
+
+    pub fn align(&self) -> usize {
+        match self {
+            Type::Void => 1,
+            Type::Pointer => 8,  // todo
+            Type::Integer(bits) => ((*bits / 8) as usize).max(1),
+            Type::Array(base, _) => base.align(),
+            Type::NamedStruct(struct_) => struct_.0.align(),
+            Type::Struct(fields) => align_of_struct(fields),
+            Type::Function(_, _) => 8 // todo
+        }
+    }
 }
 
 pub struct Types {
-    named_structs: IndexMap<String, Rc<NamedStruct>>
+    named_structs: IndexMap<String, StructRef>
 }
 
 impl Types {
@@ -68,9 +145,10 @@ impl Types {
         }
     }
 
-    pub fn add_struct(&mut self, name: String) -> StructRef {
-        let item = Rc::new(NamedStruct { name: name.clone(), fields: RefCell::new(None) });
-        self.named_structs.insert(name, Rc::clone(&item));
+    pub fn add_struct(&mut self, name: impl Into<String>) -> StructRef {
+        let name = name.into();
+        let item = StructRef(Rc::new(NamedStruct { name: format!(r#""{}""#, &name), fields: RefCell::new(None) }));
+        self.named_structs.insert(name, item.clone());
         item
     }
 
@@ -87,6 +165,10 @@ impl Types {
         Constant::Struct { items, ty }
     }
 
+    // pub fn struct_literal(items: Vec<ValueRef>) -> ValueRef {
+    //     StructLiteral { elements: items }.to_value()
+    // }
+
     pub fn array(elem: &TypeRef, count: usize) -> TypeRef {
         Rc::new(Type::Array(Rc::clone(elem), count))
     }
@@ -96,7 +178,7 @@ impl Types {
     }
 
     pub fn function_constant(func: &FunctionRef) -> Constant {
-        Constant::Function(Rc::clone(func))
+        Constant::Function(func.clone())
     }
 
     pub fn void() -> TypeRef {
@@ -120,13 +202,13 @@ impl Types {
     }
 
     pub fn null() -> Constant {
-        Constant::ZeroInitializer(Types::ptr())
+        Constant::Null
     }
 
     fn emit(&self) -> String {
         let mut types = String::new();
         for s in self.named_structs.values() {
-            types += s.emit().as_str();
+            types += s.0.emit().as_str();
             types += "\n";
         }
         types
@@ -135,37 +217,39 @@ impl Types {
 
 pub struct Module {
     pub name: String,
-    functions: IndexMap<String, Rc<Function>>,
-    globals: IndexMap<String, Rc<Global>>,
+    functions: IndexMap<String, FunctionRef>,
+    globals: IndexMap<String, GlobalRef>,
     pub types: Types
 }
 
 impl Module {
-    pub fn new(name: String) -> Module {
+    pub fn new(name: impl Into<String>) -> Module {
         Module {
-            name,
+            name: name.into(),
             functions: IndexMap::new(),
             globals: IndexMap::new(),
             types: Types::new(),
         }
     }
 
-    pub fn add_function(&mut self, name: &str, ret: TypeRef, parameters: Vec<ParameterRef>, cc: CallingConvention) -> FunctionRef {
-        let param_types: Vec<TypeRef> = parameters.iter().map(|p| Rc::clone(&p.typ)).collect();
-        let item = Rc::new(Function {
-            name: name.into(),
+    pub fn add_function(&mut self, name: impl Into<String>, ret: TypeRef, parameters: Vec<ParameterRef>, cc: CallingConvention) -> FunctionRef {
+        let name = name.into();
+        let param_types: Vec<TypeRef> = parameters.iter().map(|p| Rc::clone(&p.0.typ)).collect();
+        let item = FunctionRef(Rc::new(Function {
+            name: format!(r#""{}""#, &name),
             cc,
             ret: Rc::clone(&ret), parameters,
             blocks: RefCell::new(vec![]),
-            ty: Types::function(ret, param_types)
-        });
-        self.functions.insert(name.into(), Rc::clone(&item));
+            ty: Types::function(ret, param_types),
+            attrs: Default::default()
+        }));
+        self.functions.insert(name, item.clone());
         item
     }
 
     pub fn add_global_constant(&mut self, name: String, initializer: Constant) -> GlobalRef {
-        let global = Rc::new(Global { name: name.clone(), typ: initializer.ty(), is_const: true, initializer });
-        self.globals.insert(name, Rc::clone(&global));
+        let global = GlobalRef(Rc::new(Global { name: name.clone(), typ: initializer.ty(), is_const: true, initializer: RefCell::new(initializer) }));
+        self.globals.insert(name, global.clone());
         global
     }
 
@@ -174,11 +258,11 @@ impl Module {
         module += self.types.emit().as_str();
 
         for global in self.globals.values() {
-            module += global.emit().as_str();
+            module += global.0.emit().as_str();
         }
 
         for func in self.functions.values() {
-            module += func.emit().as_str();
+            module += func.0.emit().as_str();
         }
 
         module
@@ -197,6 +281,7 @@ pub trait Value {
 
 #[derive(Clone)]
 pub enum Constant {
+    Null,
     ZeroInitializer(TypeRef),
     Integer {
         ty: TypeRef,
@@ -223,6 +308,7 @@ pub enum Constant {
 impl Value for Constant {
     fn emit_value(&self) -> String {
         match self {
+            Constant::Null => "null".into(),
             Constant::ZeroInitializer(_) => "zeroinitializer".into(),
             Constant::Integer { value, .. } => {
                 format!("{}", value)
@@ -242,7 +328,7 @@ impl Value for Constant {
                 if *value { "true".into() } else { "false".into() }
             }
             Constant::Function(func) => {
-                format!("@{}", &func.name)
+                format!("@{}", &func.0.name)
             }
             Constant::Sizeof(ty) => {
                 format!("ptrtoint (ptr getelementptr ({}, ptr null, i32 1) to i64)", ty.emit())
@@ -252,6 +338,7 @@ impl Value for Constant {
 
     fn ty(&self) -> TypeRef {
         match self {
+            Constant::Null => Types::ptr(),
             Constant::ZeroInitializer(ty) => Rc::clone(ty),
             Constant::Integer  { ty, .. } => Rc::clone(ty),
             Constant::String   { ty, .. } => Rc::clone(ty),
@@ -264,28 +351,49 @@ impl Value for Constant {
     }
 }
 
-pub type GlobalRef = Rc<Global>;
+// struct StructLiteral {
+//     elements: Vec<ValueRef>
+// }
+//
+// impl Value for StructLiteral {
+//     fn emit_value(&self) -> String {
+//         format!("{{ {} }}", map_join(&self.elements, |item| item.ty().emit() + " " + &item.emit_value()))
+//     }
+//
+//     fn ty(&self) -> TypeRef {
+//         Types::struct_(self.elements.iter().map(|item| item.ty()).collect())
+//     }
+// }
+
+#[derive(Clone)]
+pub struct GlobalRef(Rc<Global>);
 
 pub struct Global {
     name: String,
     typ: TypeRef,
     is_const: bool,
-    initializer: Constant
+    initializer: RefCell<Constant>
 }
 
 impl Global {
     fn emit(&self) -> String {
-        format!("@{} = {} {} {}\n", &self.name, if self.is_const { "constant" } else { "global" }, self.typ.emit(), self.initializer.emit_value())
+        format!("@{} = {} {} {}\n", &self.name, if self.is_const { "constant" } else { "global" }, self.typ.emit(), self.initializer.borrow().emit_value())
     }
 }
 
-impl Value for Rc<Global> {
+impl Value for GlobalRef {
     fn emit_value(&self) -> String {
-        format!("@{}", &self.name)
+        format!("@{}", &self.0.name)
     }
 
     fn ty(&self) -> TypeRef {
         Types::ptr()
+    }
+}
+
+impl GlobalRef {
+    pub fn initialize(&mut self, constant: Constant) {
+        *self.0.initializer.borrow_mut() = constant;
     }
 }
 
@@ -305,19 +413,72 @@ impl CallingConvention {
     }
 }
 
-pub struct Function {
+struct Function {
     name: String,
     cc: CallingConvention,
     ret: TypeRef,
     pub parameters: Vec<ParameterRef>,
     blocks: RefCell<Vec<BasicBlockRef>>,
     ty: TypeRef,
+
+    attrs: RefCell<FunctionAttributes>
+}
+
+#[derive(Default, Copy, Clone, Eq, PartialEq)]
+pub enum MemoryAccess {
+    None,
+    Read,
+    Write,
+    #[default]
+    ReadWrite
+}
+
+#[derive(Default)]
+struct FunctionAttributes {
+    memory: MemoryAccess,
+    willreturn: bool,
+    nounwind: bool,
+
+    ret_noalias: bool,
+}
+
+impl MemoryAccess {
+    fn emit(&self) -> String {
+        match self {
+            MemoryAccess::None => "memory(none) ".into(),
+            MemoryAccess::Read => "memory(read) ".into(),
+            MemoryAccess::Write => "memory(write) ".into(),
+            MemoryAccess::ReadWrite => "".into()
+        }
+    }
+}
+
+impl FunctionAttributes {
+    fn emit(&self) -> String {
+        let mut attrs = String::from(" ");
+        attrs += &self.memory.emit();
+        if self.willreturn {
+            attrs += "willreturn ";
+        }
+        if self.nounwind {
+            attrs += "nounwind ";
+        }
+        attrs
+    }
+
+    fn emit_ret(&self) -> String {
+        let mut attrs = String::from(" ");
+        if self.ret_noalias {
+            attrs += "noalias ";
+        }
+        attrs
+    }
 }
 
 impl Function {
-    fn add_block(self: &Rc<Function>, name: String) -> BasicBlockRef {
+    fn add_block(&self, name: impl Into<String>) -> BasicBlockRef {
         let item = Rc::new(BasicBlock {
-            label: name,
+            label: name.into(),
             instructions: RefCell::new(vec![]),
             terminator: RefCell::new(None)
         });
@@ -326,7 +487,7 @@ impl Function {
     }
 
     fn emit(&self) -> String {
-        let arguments: Vec<String> = self.parameters.iter().map(|t| t.emit()).collect();
+        let arguments: String = map_join(&self.parameters, |t| t.0.emit());
 
         let cc = self.cc.emit();
 
@@ -335,49 +496,102 @@ impl Function {
             for block in self.blocks.borrow().iter() {
                 blocks += block.emit().as_str();
             }
-            format!("define {cc} {} @{}({}) {{\n{}}}\n\n", self.ret.emit(), self.name, arguments.join(", "), blocks)
+            format!("define {cc}{}{} @{}({}){}{{\n{}}}\n\n", self.attrs.borrow().emit_ret(), self.ret.emit(), self.name, arguments, self.attrs.borrow().emit(), blocks)
         } else {
-            format!("declare {cc} {} @{}({})\n\n", self.ret.emit(), self.name, arguments.join(", "))
+            format!("declare {cc}{}{} @{}({}){}\n\n", self.attrs.borrow().emit_ret(), self.ret.emit(), self.name, arguments, self.attrs.borrow().emit())
         }
     }
 }
 
-impl Value for Rc<Function> {
-    fn emit_value(&self) -> String {
-        format!("@{}", self.name)
+#[derive(Clone)]
+pub struct ParameterRef(Rc<Parameter>);
+
+impl ParameterRef {
+    pub fn new(name: impl AsRef<str>, typ: TypeRef) -> ParameterRef {
+        ParameterRef(Rc::new(Parameter { name: format!(r#""{}""#, name.as_ref()), typ, attrs: Default::default() }))
     }
 
-    fn ty(&self) -> TypeRef {
-        Rc::clone(&self.ty)
+    pub fn noalias(self) -> ParameterRef {
+        self.0.attrs.borrow_mut().noalias = true;
+        self
+    }
+
+    pub fn nocapture(self) -> ParameterRef {
+        self.0.attrs.borrow_mut().nocapture = true;
+        self
+    }
+
+    pub fn nofree(self) -> ParameterRef {
+        self.0.attrs.borrow_mut().nofree = true;
+        self
+    }
+
+    pub fn noread(self) -> ParameterRef {
+        self.0.attrs.borrow_mut().noread = true;
+        self
+    }
+
+    pub fn nowrite(self) -> ParameterRef {
+        self.0.attrs.borrow_mut().nowrite = true;
+        self
     }
 }
 
-pub type ParameterRef = Rc<Parameter>;
+struct Parameter {
+    name: String,
+    typ: TypeRef,
+    attrs: RefCell<ParameterAttributes>
+}
 
-pub struct Parameter {
-    pub name: String,
-    pub typ: TypeRef
+#[derive(Default)]
+struct ParameterAttributes {
+    noalias: bool,
+    nocapture: bool,
+    nofree: bool,
+    noread: bool,
+    nowrite: bool,
+}
+
+impl ParameterAttributes {
+    fn emit(&self) -> String {
+        let mut attrs = String::from(" ");
+        if self.noalias {
+            attrs.push_str("noalias ")
+        }
+        if self.nocapture {
+            attrs.push_str("nocapture ")
+        }
+        if self.nofree {
+            attrs.push_str("nofree ")
+        }
+        if self.noread && self.nowrite {
+            attrs.push_str("readnone ")
+        } else if self.noread {
+            attrs.push_str("writeonly ")
+        } else if self.nowrite {
+            attrs.push_str("readonly ")
+        }
+        attrs
+    }
 }
 
 impl Parameter {
-    pub fn new(name: String, typ: TypeRef) -> ParameterRef {
-        Rc::new(Parameter { name, typ })
-    }
-
     fn emit(&self) -> String {
-        format!("{} %{}", self.typ.emit(), self.name)
+        format!("{}{}%{}", self.typ.emit(), self.attrs.borrow().emit(), self.name)
     }
 }
 
-impl Value for Rc<Parameter> {
+impl Value for ParameterRef {
     fn emit_value(&self) -> String {
-        format!("%{}", &self.name)
+        format!("%{}", &self.0.name)
     }
 
     fn ty(&self) -> TypeRef {
-        Rc::clone(&self.typ)
+        Rc::clone(&self.0.typ)
     }
 }
+
+pub struct BlockToken(FunctionRef, BasicBlockRef);
 
 pub struct Builder {
     func: FunctionRef,
@@ -387,10 +601,22 @@ pub struct Builder {
 
 impl Builder {
     pub fn new(func: &FunctionRef) -> Builder {
-        let entry = func.add_block("entry".into());
+        let entry = func.0.add_block("entry");
         Builder {
-            func: Rc::clone(func), mangle: RefCell::new(0), curr: entry
+            func: func.clone(), mangle: RefCell::new(0), curr: entry
         }
+    }
+
+    pub fn build<F: FnOnce(&mut Builder)>(&mut self, tok: BlockToken, f: F) {
+        let mut builder = Builder { mangle: self.mangle.clone(), func: tok.0, curr: tok.1 };
+        f(&mut builder);
+        *self.mangle.borrow_mut() = builder.mangle.into_inner();
+    }
+
+    pub fn new_block<N: Into<String>>(&self, name: Option<N>) -> BlockToken {
+        let name = name.map(Into::into).unwrap_or_else(|| format!("block_{}", self.next()));
+        let block_ref = self.func.0.add_block(name);
+        BlockToken(self.func.clone(), block_ref)
     }
 
     fn next(&self) -> String {
@@ -398,7 +624,6 @@ impl Builder {
         *self.mangle.borrow_mut() += 1;
         format!("{}", num)
     }
-
 
     pub fn ret(&self, val: ValueRef) {
         *self.curr.terminator.borrow_mut() = Some(Terminator::Return(val))
@@ -408,50 +633,70 @@ impl Builder {
         *self.curr.terminator.borrow_mut() = Some(Terminator::ReturnVoid)
     }
 
+    pub fn branch(&self, target: &BlockToken) {
+        assert!(Rc::ptr_eq(&self.func.0, &target.0.0));
+        *self.curr.terminator.borrow_mut() = Some(Terminator::Branch(target.1.clone()));
+    }
+
     pub fn alloca(&self, name: Option<String>, ty: TypeRef) -> InstrRef {
-        let name = name.unwrap_or_else(|| self.next());
-        let instr_ref = Rc::new(Instruction::Alloca { name, ty });
-        self.curr.instructions.borrow_mut().push(Rc::clone(&instr_ref));
+        let name = name.map(Into::into).unwrap_or_else(|| self.next());
+        let instr_ref = InstrRef::new(Instruction::Alloca { name, ty });
+        self.curr.instructions.borrow_mut().push(instr_ref.clone());
         instr_ref
     }
 
     pub fn call(&self, name: Option<String>, cc: CallingConvention, ret: TypeRef, func: &ValueRef, args: Vec<ValueRef>) -> InstrRef {
         let name = name.unwrap_or_else(|| self.next());
-        let instr_ref = Rc::new(Instruction::Call { name, cc, ret, func: Rc::clone(func), args});
-        self.curr.instructions.borrow_mut().push(Rc::clone(&instr_ref));
+        let instr_ref = InstrRef::new(Instruction::Call { name, cc, ret, func: Rc::clone(func), args});
+        self.curr.instructions.borrow_mut().push(instr_ref.clone());
         instr_ref
     }
 
     pub fn call_void(&self, cc: CallingConvention, func: &ValueRef, args: Vec<ValueRef>) {
-        let instr_ref = Rc::new(Instruction::CallVoid { cc, func: Rc::clone(func), args});
-        self.curr.instructions.borrow_mut().push(Rc::clone(&instr_ref));
+        let instr_ref = InstrRef::new(Instruction::CallVoid { cc, func: Rc::clone(func), args});
+        self.curr.instructions.borrow_mut().push(instr_ref.clone());
     }
 
     pub fn gep(&self, name: Option<String>, ty: TypeRef, base: ValueRef, indices: Vec<GEPIndex>) -> InstrRef {
         let name = name.unwrap_or_else(|| self.next());
-        let instr_ref = Rc::new(Instruction::GetElementPointer { name, ty, base, indices });
-        self.curr.instructions.borrow_mut().push(Rc::clone(&instr_ref));
+        let instr_ref = InstrRef::new(Instruction::GetElementPointer { name, ty, base, indices });
+        self.curr.instructions.borrow_mut().push(instr_ref.clone());
         instr_ref
     }
+
+    // pub fn gep(&self, name: Option<String>, base: ValueRef, indices: Vec<GEPIndex>) -> InstrRef {
+    //     let name = name.unwrap_or_else(|| self.next());
+    //     let instr_ref = InstrRef::new(Instruction::GetElementPointer { name, ty: base.ty(), base, indices });
+    //     self.curr.instructions.borrow_mut().push(instr_ref.clone());
+    //     instr_ref
+    // }
 
     pub fn load(&self, name: Option<String>, ty: TypeRef, ptr: ValueRef) -> InstrRef {
         let name = name.unwrap_or_else(|| self.next());
-        let instr_ref = Rc::new(Instruction::Load { name, ty, ptr });
-        self.curr.instructions.borrow_mut().push(Rc::clone(&instr_ref));
+        let instr_ref = InstrRef::new(Instruction::Load { name, ty, ptr });
+        self.curr.instructions.borrow_mut().push(instr_ref.clone());
         instr_ref
     }
 
-    pub fn store(&self, ptr: &ValueRef, value: &ValueRef) -> InstrRef {
-        let instr_ref = Rc::new(Instruction::Store { ptr: Rc::clone(ptr), value: Rc::clone(value) });
-        self.curr.instructions.borrow_mut().push(Rc::clone(&instr_ref));
+    pub fn store(&self, ptr: impl Borrow<ValueRef>, value: impl Borrow<ValueRef>) -> InstrRef {
+        let instr_ref = InstrRef::new(Instruction::Store { ptr: Rc::clone(ptr.borrow()), value: Rc::clone(value.borrow()) });
+        self.curr.instructions.borrow_mut().push(instr_ref.clone());
         instr_ref
     }
 
     pub fn extractvalue(&self, name: Option<String>, base: &ValueRef, indices: Vec<u32>) -> InstrRef {
         assert!(matches!(base.ty().as_ref(), Type::NamedStruct(_) | Type::Struct(_)), "Actual Type: {:?}", base.ty());
         let name = name.unwrap_or_else(|| self.next());
-        let instr_ref = Rc::new(Instruction::ExtractValue { name, base: Rc::clone(base), indices });
-        self.curr.instructions.borrow_mut().push(Rc::clone(&instr_ref));
+        let instr_ref = InstrRef::new(Instruction::ExtractValue { name, base: Rc::clone(base), indices });
+        self.curr.instructions.borrow_mut().push(instr_ref.clone());
+        instr_ref
+    }
+
+    pub fn insertvalue(&self, name: Option<String>, base: &ValueRef, value: ValueRef, indices: Vec<u32>) -> InstrRef {
+        assert!(matches!(base.ty().as_ref(), Type::Struct(_)), "Actual Type: {:?}", base.ty());
+        let name = name.unwrap_or_else(|| self.next());
+        let instr_ref = InstrRef::new(Instruction::InsertValue { name, base: Rc::clone(base), value, indices });
+        self.curr.instructions.borrow_mut().push(instr_ref.clone());
         instr_ref
     }
 }
@@ -469,10 +714,10 @@ impl BasicBlock {
         let mut s = format!("{}:\n", self.label);
         for instr in self.instructions.borrow().iter() {
             s += "  ";
-            s += instr.emit().as_str();
+            s += instr.0.emit().as_str();
         }
         s += "  ";
-        s += self.terminator.borrow().as_ref().unwrap().emit().as_str();
+        s += &self.terminator.borrow().as_ref().map(|t| t.emit()).unwrap_or("<no terminator>\n".into());
         s
     }
 
@@ -481,7 +726,15 @@ impl BasicBlock {
     }
 }
 
-pub type InstrRef = Rc<Instruction>;
+#[derive(Clone)]
+pub struct InstrRef(Rc<Instruction>);
+
+impl InstrRef {
+    fn new(instr: Instruction) -> InstrRef {
+        InstrRef(Rc::new(instr))
+    }
+}
+
 pub type ValueRef = Rc<dyn Value>;
 
 pub enum GEPIndex {
@@ -497,7 +750,8 @@ pub enum Instruction {
     GetElementPointer { name: String, ty: TypeRef, base: ValueRef, indices: Vec<GEPIndex> },
     Load { name: String, ty: TypeRef, ptr: ValueRef },
     Store { ptr: ValueRef, value: ValueRef },
-    ExtractValue { name: String, base: ValueRef, indices: Vec<u32> }
+    ExtractValue { name: String, base: ValueRef, indices: Vec<u32> },
+    InsertValue { name: String, base: ValueRef, value: ValueRef, indices: Vec<u32> },
 }
 
 impl Instruction {
@@ -541,13 +795,17 @@ impl Instruction {
                 let rendered: Vec<String> = indices.iter().map(|index| format!("{index}")).collect();
                 format!("%{} = extractvalue {} {}, {}\n", name, base.ty().emit(), base.emit_value(), rendered.join(", "))
             }
+            Instruction::InsertValue { name, base, value, indices } => {
+                let rendered: Vec<String> = indices.iter().map(|index| format!("{index}")).collect();
+                format!("%{} = insertvalue {} {}, {} {}, {}\n", name, base.ty().emit(), base.emit_value(), value.ty().emit(), value.emit_value(), rendered.join(", "))
+            }
         }
     }
 }
 
-impl Value for Rc<Instruction> {
+impl Value for InstrRef {
     fn emit_value(&self) -> String {
-        match self.as_ref() {
+        match self.0.as_ref() {
             Instruction::Add { name, .. } => format!("%{}", name),
             Instruction::Alloca { name, .. } => format!("%{name}"),
             Instruction::Call { name, .. } => format!("%{name}"),
@@ -556,29 +814,16 @@ impl Value for Rc<Instruction> {
             Instruction::Load { name, .. } => format!("%{name}"),
             Instruction::Store { .. } => panic!(),
             Instruction::ExtractValue { name, .. } => format!("%{name}"),
+            Instruction::InsertValue { name, .. } => format!("%{name}"),
         }
     }
 
     fn ty(&self) -> TypeRef {
-        match self.as_ref() {
+        match self.0.as_ref() {
             Instruction::Add { ret, .. } => Rc::clone(ret),
             Instruction::Alloca { .. } => Types::ptr(),
             Instruction::Call { ret, .. } => Rc::clone(ret),
             Instruction::CallVoid { .. } => panic!(),
-            // Instruction::GetElementPointer { ty, indices, .. } => {
-            //     let mut curr = Rc::clone(ty);
-            //     for index in &indices[1..] {
-            //         match index {
-            //             GEPIndex::ConstantIndex(value) => {
-            //                 curr = curr.type_at_index(Some(*value as usize));
-            //             }
-            //             GEPIndex::ArrayIndex(_) => {
-            //                 curr = curr.type_at_index(None);
-            //             }
-            //         }
-            //     }
-            //     return curr;
-            // },
             Instruction::GetElementPointer { .. } => Types::ptr(),
             Instruction::Load { ty, .. } => Rc::clone(ty),
             Instruction::Store { .. } => panic!(),
@@ -588,6 +833,9 @@ impl Value for Rc<Instruction> {
                     curr = curr.type_at_index(Some(*index as usize));
                 }
                 return curr;
+            }
+            Instruction::InsertValue { base, .. } => {
+                base.ty()
             }
         }
     }
@@ -609,7 +857,6 @@ impl Terminator {
             Terminator::Branch(block) => {
                 format!("br {}\n", block.emit_ref())
             }
-
             Terminator::CondBranch(cond, if_true, if_false) => {
                 format!("br i1 {}, {}, {}\n", cond.emit_value(), if_true.emit_ref(), if_false.emit_ref())
             }
@@ -620,7 +867,7 @@ impl Terminator {
     }
 }
 
-pub struct NamedStruct {
+struct NamedStruct {
     name: String,
     fields: RefCell<Option<Vec<TypeRef>>>,
 }
@@ -636,10 +883,6 @@ impl NamedStruct {
         *self.fields.borrow_mut() = Some(fields);
     }
 
-    pub fn as_type_ref(self: &Rc<NamedStruct>) -> TypeRef {
-        Rc::new(Type::NamedStruct(self.clone()))
-    }
-
     fn emit(&self) -> String {
         match self.fields.borrow().as_ref() {
             Some(fields) => {
@@ -651,11 +894,59 @@ impl NamedStruct {
             }
         }
     }
+
+    fn size(&self) -> usize {
+        let fields = self.fields.borrow();
+        if let Some(fields) = fields.as_ref() {
+            size_of_struct(fields)
+        } else {
+            panic!()
+        }
+    }
+
+    fn align(&self) -> usize {
+        let fields = self.fields.borrow();
+        if let Some(fields) = fields.as_ref() {
+            align_of_struct(fields)
+        } else {
+            panic!()
+        }
+    }
+}
+
+fn size_of_struct(fields: &[TypeRef]) -> usize {
+    let mut offset = 0;
+    let mut largest_align = 1;
+    for field in fields {
+        let needed_align = field.align();
+        if offset % needed_align != 0 {
+            offset += needed_align - (offset % needed_align);
+        }
+        if needed_align > largest_align {
+            largest_align = needed_align;
+        }
+        offset += field.size();
+    }
+    if offset % largest_align != 0 {
+        offset += largest_align - (offset % largest_align);
+    }
+    offset
+}
+
+fn align_of_struct(fields: &[TypeRef]) -> usize {
+    let mut largest_align = 1;
+    for field in fields {
+        let needed_align = field.align();
+        if needed_align > largest_align {
+            largest_align = needed_align;
+        }
+    }
+    largest_align
 }
 
 #[cfg(test)]
 mod test {
-    use crate::llvm::{Constant, Module, Parameter, Type, Types};
+    use super::{Module, Types};
 
     #[test]
     fn test_create_module() {
@@ -665,7 +956,7 @@ mod test {
     #[test]
     fn test_types() {
         let mut m = Module::new(String::from("test"));
-        m.types.add_struct("<test>".into()).set_fields(vec![Types::int(32)]);
+        m.types.add_struct("<test>").set_fields(vec![Types::int(32)]);
 
         m.emit();
     }

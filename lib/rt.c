@@ -21,7 +21,7 @@ struct ObjectHeader {
 struct Frame {
     struct Frame* parent;
     FrameTraceFn trace;
-    uint64_t stack_size;
+    uint32_t frame_state;
     uint8_t frame[];
 };
 

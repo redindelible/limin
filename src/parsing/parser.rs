@@ -1,8 +1,8 @@
 use std::path::PathBuf;
-use crate::ast::*;
+use crate::parsing::ast::*;
 use crate::error::Message;
 use crate::source::{Source, HasLoc, Location};
-use crate::lexer::{Lexer, Token, TokenType};
+use crate::parsing::lexer::{Lexer, Token, TokenType};
 
 
 pub fn parse_file(source: &Source) -> Result<File, Vec<ParserError>> {
@@ -245,7 +245,7 @@ impl<'a> Parser<'a> {
         let name = self.expect(TokenType::Identifier)?.text.to_owned();
         self.expect(TokenType::Colon)?;
         let typ = if self.curr().typ != TokenType::Equal {
-             Some(Box::new(self.parse_type()?))
+            Some(Box::new(self.parse_type()?))
         } else {
             None
         };
@@ -440,7 +440,7 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod test {
-    use crate::ast::{BinOp, Expr, Function, TopLevel, Type};
+    use crate::parsing::ast::{BinOp, Expr, Function, TopLevel, Type};
     use crate::parser::{parse_file, Parser};
     use crate::source::Source;
 
