@@ -50,6 +50,20 @@ impl Type {
             Type::GenericFunction { .. } => panic!(),
         }
     }
+
+    pub fn is_never(&self, _hir: &HIR) -> bool {
+        match self {
+            Type::Never => true,
+            _ => false
+        }
+    }
+    
+    pub fn is_error(&self) -> bool {
+        match self {
+            Type::Errored => true,
+            _ => false
+        }
+    }
 }
 
 pub struct HIR<'s> {
@@ -90,6 +104,9 @@ impl<'s> HIR<'s> {
             Expr::Bool { .. } => Type::Boolean,
             Expr::Unit { .. } => Type::Unit,
             Expr::Block(Block { trailing_expr, .. }) => {
+                if expr.always_diverges(self) {
+                    return Type::Never
+                }
                 match trailing_expr {
                     Some(t) => self.type_of_expr(t),
                     None => Type::Unit
@@ -120,6 +137,9 @@ impl<'s> HIR<'s> {
                     map.insert(type_param.id, typ.clone());
                 };
                 self.structs[struct_].fields[attr].typ.subs(&map)
+            },
+            Expr::IfElse { yield_type, .. } => {
+                yield_type.clone()
             }
         }
     }
@@ -135,7 +155,7 @@ impl<'s> HIR<'s> {
             (Type::Function { params: a_params, ret: a_ret }, Type::Function { params: b_params, ret: b_ret }) => {
                 self.is_subtype(a_ret, b_ret) && b_params.iter().zip(a_params.iter()).all(|(b_typ, a_typ)| self.is_subtype(b_typ, a_typ))
             },
-            (Type::TypeParameter { id: a, ..}, Type::TypeParameter { id: b, .. }) => a == b,
+            (Type::TypeParameter { id: a, .. }, Type::TypeParameter { id: b, .. }) => a == b,
             _ => false
         }
     }
@@ -192,10 +212,6 @@ pub struct Parameter<'ir> {
     pub decl: NameKey,
 }
 
-pub trait MayBreak {
-    fn does_break(&self) -> bool;
-}
-
 #[derive(Debug)]
 pub struct Block<'ir> {
     pub stmts: Vec<Stmt<'ir>>,
@@ -215,27 +231,35 @@ pub enum Expr<'ir> {
     Call { callee: Box<Expr<'ir>>, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
     GenericCall { generic: Vec<Type>, callee: FunctionKey, arguments: Vec<Expr<'ir>>, loc: Location<'ir>},
     Errored { loc: Location<'ir> },
-    New { struct_: StructKey, variant: Vec<Type>, fields: IndexMap<String, Box<Expr<'ir>>>, loc: Location<'ir> }
+    New { struct_: StructKey, variant: Vec<Type>, fields: IndexMap<String, Box<Expr<'ir>>>, loc: Location<'ir> },
+    IfElse { cond: Box<Expr<'ir>>, then_do: Box<Expr<'ir>>, else_do: Box<Expr<'ir>>, yield_type: Type, loc: Location<'ir> }
 }
 
-impl MayBreak for Expr<'_> {
-    fn does_break(&self) -> bool {
+impl Expr<'_> {
+    pub fn always_diverges(&self, hir: &HIR) -> bool {
         match self {
             Expr::Name { .. } | Expr::Integer { .. } | Expr::Unit { .. } | Expr::Errored { .. } | Expr::Bool { .. } => false,
             Expr::Block( Block { stmts, trailing_expr, .. } ) => {
-                stmts.iter().any(|stmt| stmt.does_break()) || trailing_expr.as_ref().map_or(false, |e| e.does_break())
+                stmts.iter().any(|stmt| stmt.always_diverges(hir)) || trailing_expr.as_ref().map_or(false, |e| e.always_diverges(hir))
             },
             Expr::Call { callee, arguments, .. } => {
-                callee.does_break() || arguments.iter().any(|arg| arg.does_break())
+                if callee.always_diverges(hir) || arguments.iter().any(|arg| arg.always_diverges(hir)) {
+                    return true;
+                }
+                let Type::Function { ret, .. } = hir.type_of_expr(callee) else { panic!() };
+                ret.is_never(hir)
             },
             Expr::GenericCall { arguments, .. } => {
-                arguments.iter().any(|arg| arg.does_break())
+                arguments.iter().any(|arg| arg.always_diverges(hir))
             },
             Expr::New { fields, .. } => {
-                fields.values().any(|val| val.does_break())
+                fields.values().any(|val| val.always_diverges(hir))
             }
             Expr::GetAttr { obj, .. } => {
-                obj.does_break()
+                obj.always_diverges(hir)
+            }
+            Expr::IfElse { cond, then_do, else_do, .. } => {
+                cond.always_diverges(hir) || (then_do.always_diverges(hir) && else_do.always_diverges(hir))
             }
         }
     }
@@ -248,11 +272,11 @@ pub enum Stmt<'ir> {
     Expr { expr: Expr<'ir>, loc: Location<'ir> }
 }
 
-impl MayBreak for Stmt<'_> {
-    fn does_break(&self) -> bool {
+impl Stmt<'_> {
+    pub fn always_diverges(&self, hir: &HIR) -> bool {
         match self {
-            Stmt::Decl { value, .. } => value.does_break(),
-            Stmt::Expr { expr, .. } => expr.does_break(),
+            Stmt::Decl { value, .. } => value.always_diverges(hir),
+            Stmt::Expr { expr, .. } => expr.always_diverges(hir),
             Stmt::Return { .. } => true
         }
     }

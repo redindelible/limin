@@ -5,7 +5,7 @@ use slotmap::{SecondaryMap, SlotMap};
 use crate::parsing::ast;
 use crate::util::map_join;
 use crate::error::Message;
-use crate::lowering::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, Stmt, MayBreak, TypeParameter, TypeParamKey, Block};
+use crate::lowering::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, Stmt, TypeParameter, TypeParamKey, Block};
 use crate::lowering::type_check::type_check_state::NamespaceKey;
 use crate::source::{HasLoc, Location};
 
@@ -673,7 +673,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
             let stmts: Vec<_> = stmts.iter().map(|stmt| child.resolve_stmt(stmt)).collect();
             stmts
         };
-        let always_breaks = stmts.iter().any(|stmt| stmt.does_break());
+        let always_breaks = stmts.iter().any(|stmt| stmt.always_diverges(&self.checker.hir));
 
         let trailing_expr = match trailing_expr {
             Some(e) => {
@@ -872,10 +872,42 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                 }
 
                 Expr::GetAttr { obj: Box::new(obj), attr: attr.clone(), loc: *loc }
-
             },
             ast::Expr::GenericCall { .. } => todo!(),
-            ast::Expr::BinOp { .. } => todo!()
+            ast::Expr::BinOp { .. } => todo!(),
+            ast::Expr::IfElse { cond, then_do, else_do, loc } => {
+                let cond = Box::new(self.resolve_expr(cond, Some(Type::Boolean)));
+
+                let then_do = Box::new(self.resolve_expr(then_do, yield_type.clone()));
+                let else_do = Box::new(self.resolve_expr(else_do, yield_type.clone()));
+
+                let expr_yield_type: Type;
+                if then_do.always_diverges(&self.checker.hir) && else_do.always_diverges(&self.checker.hir) {
+                    expr_yield_type = Type::Never;
+                } else if let Some(yield_type) = yield_type {
+                    expr_yield_type = yield_type;
+                } else {
+                    let then_ty = self.checker.hir.type_of_expr(&then_do);
+                    let else_ty = self.checker.hir.type_of_expr(&else_do);
+
+                    if then_ty.is_error() || else_ty.is_error() {
+                        return Expr::Errored { loc: *loc };
+                    }
+
+                    if self.checker.hir.is_subtype(&then_ty, &else_ty) {
+                        expr_yield_type = else_ty;
+                    } else if self.checker.hir.is_subtype(&else_ty, &then_ty) {
+                        expr_yield_type = then_ty;
+                    } else {
+                        self.push_error(TypeCheckError::IncompatibleTypes { expected: self.display_type(&then_ty), got: self.display_type(&else_ty), loc: *loc });
+                        return Expr::Errored { loc: *loc };
+                    }
+                }
+
+                // todo support subtyping correctly
+
+                Expr::IfElse { cond, then_do, else_do, yield_type: expr_yield_type, loc: *loc }
+            }
         }
     }
 

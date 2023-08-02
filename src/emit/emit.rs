@@ -299,7 +299,7 @@ impl LLVMEmitter {
             builder.store(param_store_loc, param_ref.clone().to_value());
         }
 
-        self.emit_block(&mut builder, &func.block, lir, &frames_info);
+        self.emit_instructions(&mut builder, &func.block.instructions, lir, &frames_info);
     }
 
     fn load_and_store(&self, builder: &mut llvm::Builder, from: &ilir::Location, to: &ilir::Location, info: &FramesInfo) {
@@ -309,10 +309,10 @@ impl LLVMEmitter {
         builder.store(local, value);
     }
 
-    fn emit_block(&mut self, builder: &mut llvm::Builder, block: &ilir::Block, lir: &lir::LIR, frames_info: &FramesInfo) {
+    fn emit_instructions(&mut self, builder: &mut llvm::Builder, instructions: &[ilir::Instruction], lir: &lir::LIR, frames_info: &FramesInfo) {
         use crate::emit::ilir::Instruction;
 
-        for instr in &block.instructions {
+        for instr in instructions {
             match instr {
                 Instruction::DeclareLocal { ty, local, value } => {
                     let loc = frames_info.get_location_ptr(builder, value);
@@ -357,12 +357,15 @@ impl LLVMEmitter {
                 Instruction::ReturnVoid => {
                     builder.ret_void();
                 }
-                Instruction::BlockValue { block, value, store } => {
-                    self.emit_block(builder, block, lir, frames_info);
-                    self.load_and_store(builder, value, store, frames_info);
+                Instruction::BlockValue { block, store } => {
+                    self.emit_instructions(builder, &block.instructions, lir, frames_info);
+                    self.load_and_store(builder, &block.yield_loc, store, frames_info);
                 }
                 Instruction::BlockVoid { block } => {
-                    self.emit_block(builder, block, lir, frames_info);
+                    self.emit_instructions(builder, &block.instructions, lir, frames_info);
+                }
+                Instruction::BlockDiverge { block } => {
+                    self.emit_instructions(builder, &block.instructions, lir, frames_info);
                 }
                 Instruction::CreateTuple { values, store } => {
                     let tys: Vec<llvm::TypeRef> = values.iter().map(|v| self.emit_type(frames_info.get_ty(v), lir)).collect();
@@ -454,6 +457,75 @@ impl LLVMEmitter {
                 }
                 Instruction::CallVoid { .. } => {
                     todo!()
+                }
+                Instruction::IfElseValue { cond, then_do, else_do, store } => {
+                    debug_assert!(!then_do.diverges() || !else_do.diverges());
+
+                    let true_block = builder.new_block(None);
+                    let false_block = builder.new_block(None);
+                    let after_block = builder.new_block(None);
+
+                    let cond_ptr = frames_info.get_location_ptr(builder, cond);
+                    let cond = builder.load(None, llvm::Types::int(1), cond_ptr).to_value();
+
+                    builder.cbranch(cond, &true_block, &false_block);
+
+                    builder.goto_block(true_block);
+                    self.emit_instructions(builder, then_do.instructions(), lir, frames_info);
+                    if let ilir::BlockValueOrDiverge::Value(b) = &then_do {
+                        self.load_and_store(builder, &b.yield_loc, store, frames_info);
+                        builder.branch(&after_block);
+                    }
+
+                    builder.goto_block(false_block);
+                    self.emit_instructions(builder, else_do.instructions(), lir, frames_info);
+                    if let ilir::BlockValueOrDiverge::Value(b) = &else_do {
+                        self.load_and_store(builder, &b.yield_loc, store, frames_info);
+                        builder.branch(&after_block);
+                    }
+
+                    builder.goto_block(after_block);
+                }
+                Instruction::IfElseVoid { cond, then_do, else_do } => {
+                    debug_assert!(!then_do.diverges() || !else_do.diverges());
+
+                    let true_block = builder.new_block(None);
+                    let false_block = builder.new_block(None);
+                    let after_block = builder.new_block(None);
+
+                    let cond_ptr = frames_info.get_location_ptr(builder, cond);
+                    let cond = builder.load(None, llvm::Types::int(1), cond_ptr).to_value();
+
+                    builder.cbranch(cond, &true_block, &false_block);
+
+                    builder.goto_block(true_block);
+                    self.emit_instructions(builder, then_do.instructions(), lir, frames_info);
+                    if !then_do.diverges() {
+                        builder.branch(&after_block);
+                    }
+
+                    builder.goto_block(false_block);
+                    self.emit_instructions(builder, else_do.instructions(), lir, frames_info);
+                    if !else_do.diverges() {
+                        builder.branch(&after_block);
+                    }
+
+                    builder.goto_block(after_block);
+                }
+                Instruction::IfElseDiverge { cond, then_do, else_do } => {
+                    let true_block = builder.new_block(None);
+                    let false_block = builder.new_block(None);
+
+                    let cond_ptr = frames_info.get_location_ptr(builder, cond);
+                    let cond = builder.load(None, llvm::Types::int(1), cond_ptr).to_value();
+
+                    builder.cbranch(cond, &true_block, &false_block);
+
+                    builder.goto_block(true_block);
+                    self.emit_instructions(builder, &then_do.instructions, lir, frames_info);
+
+                    builder.goto_block(false_block);
+                    self.emit_instructions(builder, &else_do.instructions, lir, frames_info);
                 }
                 Instruction::StatePoint { id } => {
                     let frame_ty = frames_info.frame_types[*id as usize].clone();

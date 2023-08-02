@@ -196,6 +196,14 @@ impl Monomorphize {
                 let callee = mir::Expr::LoadFunction(self.queue_function(*callee, &generic, hir));
                 mir::Expr::Call(Box::new(callee), arguments.iter().map(|arg| self.lower_expr(arg, map, hir)).collect())
             },
+            hir::Expr::IfElse { cond, then_do, else_do, yield_type, .. } => {
+                mir::Expr::IfElse {
+                    cond: Box::new(self.lower_expr(cond, map, hir)),
+                    then_do: Box::new(self.lower_expr(then_do, map, hir)),
+                    else_do: Box::new(self.lower_expr(else_do, map, hir)),
+                    yield_type: self.lower_type(yield_type, map, hir)
+                }
+            }
             // hir::Expr::LogicBinOp { .. } => todo!(),
             hir::Expr::Errored { .. } => panic!("Should not be able to reach here if there is an error"),
         }

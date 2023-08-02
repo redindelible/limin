@@ -21,7 +21,7 @@ pub struct Function {
     pub(super) name: String,
     pub(super) parameters: Vec<FunctionParameter>,
     pub(super) ret: Option<Type>,
-    pub(super) block: Block,
+    pub(super) block: BlockDiverge,
 }
 
 impl Function {
@@ -59,8 +59,9 @@ pub enum Instruction {
     Return,
     ReturnVoid,
     Pop,
-    BlockValue(Block),
-    BlockVoid(Block),
+    BlockValue(BlockValue),
+    BlockVoid(BlockVoid),
+    BlockDiverge(BlockDiverge),
     CreateTuple(usize),
     GetElement(usize),
     Splat,
@@ -68,30 +69,110 @@ pub enum Instruction {
     GetField(StructID, String),
     Call(usize),
     CallVoid(usize),
+    IfElseValue { then_do: BlockValueOrDiverge, else_do: BlockValueOrDiverge, ty: Type },
+    IfElseVoid { then_do: BlockVoidOrDiverge, else_do: BlockVoidOrDiverge },
+    IfElseDiverge { then_do: BlockDiverge, else_do: BlockDiverge },
 
     StatePoint,
     Unreachable
 }
 
 #[derive(Debug)]
-pub struct Block {
-    pub(super) instructions: Vec<Instruction>,
-    pub(super) yield_type: Option<Type>,
-    pub(super) diverges: bool
+pub enum BlockValueOrDiverge {
+    Value(BlockValue),
+    Diverge(BlockDiverge)
 }
 
-impl Block {
-    pub fn new(instructions: Vec<Instruction>, yield_ty: Option<Type>, diverges: bool) -> Block {
-        if diverges {
-            assert!(yield_ty.is_none());
+impl BlockValueOrDiverge {
+    pub fn instructions(&self) -> &[Instruction] {
+        match self {
+            BlockValueOrDiverge::Value(b) => &b.instructions,
+            BlockValueOrDiverge::Diverge(b) => &b.instructions
         }
-        Block { instructions, yield_type: yield_ty, diverges }
     }
 
-    pub fn yield_type(&self) -> Option<Type> {
-        self.yield_type.clone()
+    pub fn diverges(&self) -> bool {
+        match self {
+            BlockValueOrDiverge::Value(_) => false,
+            BlockValueOrDiverge::Diverge(_) => true
+        }
     }
 }
+
+impl From<BlockValue> for BlockValueOrDiverge {
+    fn from(value: BlockValue) -> Self {
+        BlockValueOrDiverge::Value(value)
+    }
+}
+
+impl From<BlockDiverge> for BlockValueOrDiverge {
+    fn from(value: BlockDiverge) -> Self {
+        BlockValueOrDiverge::Diverge(value)
+    }
+}
+
+#[derive(Debug)]
+pub enum BlockVoidOrDiverge {
+    Void(BlockVoid),
+    Diverge(BlockDiverge)
+}
+
+impl BlockVoidOrDiverge {
+    pub fn instructions(&self) -> &[Instruction] {
+        match self {
+            BlockVoidOrDiverge::Void(b) => &b.instructions,
+            BlockVoidOrDiverge::Diverge(b) => &b.instructions
+        }
+    }
+
+    pub fn diverges(&self) -> bool {
+        match self {
+            BlockVoidOrDiverge::Void(_) => false,
+            BlockVoidOrDiverge::Diverge(_) => true
+        }
+    }
+}
+
+impl From<BlockVoid> for BlockVoidOrDiverge {
+    fn from(value: BlockVoid) -> Self {
+        BlockVoidOrDiverge::Void(value)
+    }
+}
+
+impl From<BlockDiverge> for BlockVoidOrDiverge {
+    fn from(value: BlockDiverge) -> Self {
+        BlockVoidOrDiverge::Diverge(value)
+    }
+}
+
+#[derive(Debug)]
+pub struct BlockValue {
+    pub(super) instructions: Vec<Instruction>,
+    pub(super) yield_type: Type
+}
+
+#[derive(Debug)]
+pub struct BlockVoid {
+    pub(super) instructions: Vec<Instruction>
+}
+
+#[derive(Debug)]
+pub struct BlockDiverge {
+    pub(super) instructions: Vec<Instruction>,
+}
+
+// impl Block {
+//     pub fn new(instructions: Vec<Instruction>, yield_ty: Option<Type>, diverges: bool) -> Block {
+//         if diverges {
+//             assert!(yield_ty.is_none());
+//         }
+//         Block { instructions, yield_type: yield_ty, diverges }
+//     }
+//
+//     pub fn yield_type(&self) -> Option<Type> {
+//         self.yield_type.clone()
+//     }
+// }
 
 #[derive(Eq, PartialEq, Clone, Hash, Debug)]
 pub enum Type {

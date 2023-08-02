@@ -1,24 +1,15 @@
 
-struct Foo {
-    foo: i32;
-}
 
 struct Bar {
     bar: bool;
 }
 
-struct FooBar {
-    foo: Foo;
-    bar: Bar;
-}
-
-fn identity<T>(a: T) -> T {
-    return a;
-}
-
 fn main() -> i32 {
-    let foo := new Foo { foo: 32 };
-    let bar := new Bar { bar: false };
-    let foobar := new FooBar { foo: foo, bar: bar };
-    return identity(foobar).foo.foo;
+    let bar := new Bar { bar: true };
+    let baz := if bar.bar {
+        return 20;
+    } else {
+        return 30;
+    };
+    return baz;
 }

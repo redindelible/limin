@@ -595,7 +595,8 @@ pub struct BlockToken(FunctionRef, BasicBlockRef);
 
 pub struct Builder {
     func: FunctionRef,
-    mangle: RefCell<u32>,
+    mangle_register: RefCell<u32>,
+    mangle_block: RefCell<u64>,
     curr: BasicBlockRef
 }
 
@@ -603,50 +604,72 @@ impl Builder {
     pub fn new(func: &FunctionRef) -> Builder {
         let entry = func.0.add_block("entry");
         Builder {
-            func: func.clone(), mangle: RefCell::new(0), curr: entry
+            func: func.clone(), mangle_register: RefCell::new(0), mangle_block: RefCell::new(0), curr: entry
         }
     }
 
     pub fn build<F: FnOnce(&mut Builder)>(&mut self, tok: BlockToken, f: F) {
-        let mut builder = Builder { mangle: self.mangle.clone(), func: tok.0, curr: tok.1 };
+        let mut builder = Builder { mangle_register: self.mangle_register.clone(), mangle_block: self.mangle_block.clone(), func: tok.0, curr: tok.1 };
         f(&mut builder);
-        *self.mangle.borrow_mut() = builder.mangle.into_inner();
+        *self.mangle_register.borrow_mut() = builder.mangle_register.into_inner();
+        *self.mangle_block.borrow_mut() = builder.mangle_block.into_inner();
     }
 
-    pub fn new_block<N: Into<String>>(&self, name: Option<N>) -> BlockToken {
-        let name = name.map(Into::into).unwrap_or_else(|| format!("block_{}", self.next()));
+    pub fn new_block(&self, name: Option<String>) -> BlockToken {
+        let name = name.map(Into::into).unwrap_or_else(|| format!("block_{}", self.next_block()));
         let block_ref = self.func.0.add_block(name);
         BlockToken(self.func.clone(), block_ref)
     }
 
-    fn next(&self) -> String {
-        let num = *self.mangle.borrow();
-        *self.mangle.borrow_mut() += 1;
+    pub fn goto_block(&mut self, block: BlockToken) {
+        self.curr = block.1;
+    }
+
+    fn next_register(&self) -> String {
+        let num = *self.mangle_register.borrow();
+        *self.mangle_register.borrow_mut() += 1;
+        format!("{}", num)
+    }
+
+    fn next_block(&self) -> String {
+        let num = *self.mangle_block.borrow();
+        *self.mangle_block.borrow_mut() += 1;
         format!("{}", num)
     }
 
     pub fn ret(&self, val: ValueRef) {
+        assert!(self.curr.terminator.borrow().is_none());
         *self.curr.terminator.borrow_mut() = Some(Terminator::Return(val))
     }
 
     pub fn ret_void(&self) {
+        assert!(self.curr.terminator.borrow().is_none());
         *self.curr.terminator.borrow_mut() = Some(Terminator::ReturnVoid)
     }
 
     pub fn branch(&self, target: &BlockToken) {
         assert!(Rc::ptr_eq(&self.func.0, &target.0.0));
+        assert!(self.curr.terminator.borrow().is_none());
         *self.curr.terminator.borrow_mut() = Some(Terminator::Branch(target.1.clone()));
     }
 
+    pub fn cbranch(&self, cond: ValueRef, if_true: &BlockToken, if_false: &BlockToken) {
+        assert!(Rc::ptr_eq(&self.func.0, &if_true.0.0));
+        assert!(Rc::ptr_eq(&self.func.0, &if_false.0.0));
+
+        assert!(self.curr.terminator.borrow().is_none());
+        *self.curr.terminator.borrow_mut() = Some(Terminator::CondBranch(cond, if_true.1.clone(), if_false.1.clone()));
+    }
+
     pub fn alloca(&self, name: Option<String>, ty: TypeRef) -> InstrRef {
-        let name = name.map(Into::into).unwrap_or_else(|| self.next());
+        let name = name.map(Into::into).unwrap_or_else(|| self.next_register());
         let instr_ref = InstrRef::new(Instruction::Alloca { name, ty });
         self.curr.instructions.borrow_mut().push(instr_ref.clone());
         instr_ref
     }
 
     pub fn call(&self, name: Option<String>, cc: CallingConvention, ret: TypeRef, func: &ValueRef, args: Vec<ValueRef>) -> InstrRef {
-        let name = name.unwrap_or_else(|| self.next());
+        let name = name.unwrap_or_else(|| self.next_register());
         let instr_ref = InstrRef::new(Instruction::Call { name, cc, ret, func: Rc::clone(func), args});
         self.curr.instructions.borrow_mut().push(instr_ref.clone());
         instr_ref
@@ -658,7 +681,7 @@ impl Builder {
     }
 
     pub fn gep(&self, name: Option<String>, ty: TypeRef, base: ValueRef, indices: Vec<GEPIndex>) -> InstrRef {
-        let name = name.unwrap_or_else(|| self.next());
+        let name = name.unwrap_or_else(|| self.next_register());
         let instr_ref = InstrRef::new(Instruction::GetElementPointer { name, ty, base, indices });
         self.curr.instructions.borrow_mut().push(instr_ref.clone());
         instr_ref
@@ -672,7 +695,7 @@ impl Builder {
     // }
 
     pub fn load(&self, name: Option<String>, ty: TypeRef, ptr: ValueRef) -> InstrRef {
-        let name = name.unwrap_or_else(|| self.next());
+        let name = name.unwrap_or_else(|| self.next_register());
         let instr_ref = InstrRef::new(Instruction::Load { name, ty, ptr });
         self.curr.instructions.borrow_mut().push(instr_ref.clone());
         instr_ref
@@ -686,7 +709,7 @@ impl Builder {
 
     pub fn extractvalue(&self, name: Option<String>, base: &ValueRef, indices: Vec<u32>) -> InstrRef {
         assert!(matches!(base.ty().as_ref(), Type::NamedStruct(_) | Type::Struct(_)), "Actual Type: {:?}", base.ty());
-        let name = name.unwrap_or_else(|| self.next());
+        let name = name.unwrap_or_else(|| self.next_register());
         let instr_ref = InstrRef::new(Instruction::ExtractValue { name, base: Rc::clone(base), indices });
         self.curr.instructions.borrow_mut().push(instr_ref.clone());
         instr_ref
@@ -694,7 +717,7 @@ impl Builder {
 
     pub fn insertvalue(&self, name: Option<String>, base: &ValueRef, value: ValueRef, indices: Vec<u32>) -> InstrRef {
         assert!(matches!(base.ty().as_ref(), Type::Struct(_)), "Actual Type: {:?}", base.ty());
-        let name = name.unwrap_or_else(|| self.next());
+        let name = name.unwrap_or_else(|| self.next_register());
         let instr_ref = InstrRef::new(Instruction::InsertValue { name, base: Rc::clone(base), value, indices });
         self.curr.instructions.borrow_mut().push(instr_ref.clone());
         instr_ref

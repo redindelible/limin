@@ -23,6 +23,8 @@ pub enum TokenType {
     Let,
     Return,
     Struct,
+    If,
+    Else,
     New,
     True,
     False,
@@ -53,6 +55,8 @@ const KEYWORDS: phf::Map<&str, TokenType> = phf_map! {
     "new" => TokenType::New,
     "true" => TokenType::True,
     "false" => TokenType::False,
+    "if" => TokenType::If,
+    "else" => TokenType::Else
 };
 
 impl TokenType {
@@ -80,6 +84,8 @@ impl TokenType {
             TokenType::New => "'new'",
             TokenType::True => "'true'",
             TokenType::False => "'false'",
+            TokenType::If => "'if'",
+            TokenType::Else => "'else'",
             TokenType::Unrecognized => "unrecognized characters"
         }
     }

@@ -25,7 +25,7 @@ pub struct Function {
     pub(super) name: String,
     pub(super) parameters: Vec<FunctionParameter>,
     pub(super) ret: Option<Type>,
-    pub(super) block: Block,
+    pub(super) block: BlockWithDiverge,
     pub(super) frames: Vec<FrameInfo>,
     pub(super) locations: HashMap<Location, LocationInfo>
 }
@@ -58,8 +58,9 @@ pub enum Instruction {
     LoadNull { store: Location },
     Return { value: Location },
     ReturnVoid,
-    BlockValue { block: Block, value: Location, store: Location },
-    BlockVoid { block: Block },
+    BlockValue { block: BlockWithValue, store: Location },
+    BlockVoid { block: BlockWithNoValue },
+    BlockDiverge { block: BlockWithDiverge },
     CreateTuple { values: Vec<Location>, store: Location },
     GetElement { value: Location, idx: usize, store: Location },
     Splat { value: Location, stores: Vec<Location> },
@@ -67,27 +68,71 @@ pub enum Instruction {
     GetField { value: Location, id: StructID, field: usize, store: Location },
     Call { callee: Location, arguments: Vec<Location>, store: Location },
     CallVoid { callee: Location, arguments: Vec<Location> },
+    IfElseValue { cond: Location, then_do: BlockValueOrDiverge, else_do: BlockValueOrDiverge, store: Location },
+    IfElseVoid { cond: Location, then_do: BlockNoValueOrDiverge, else_do: BlockNoValueOrDiverge },
+    IfElseDiverge { cond: Location, then_do: BlockWithDiverge, else_do: BlockWithDiverge },
 
     StatePoint { id: u32 },
     Unreachable
 }
 
 #[derive(Debug)]
-pub struct Block {
-    pub(super) instructions: Vec<Instruction>,
-    pub(super) yield_type: Option<Type>,
-    pub(super) diverges: bool
+pub enum BlockValueOrDiverge {
+    Value(BlockWithValue),
+    Diverge(BlockWithDiverge)
 }
 
-impl Block {
-    pub fn new(instructions: Vec<Instruction>, yield_ty: Option<Type>, diverges: bool) -> Block {
-        if diverges {
-            assert!(yield_ty.is_none());
+impl BlockValueOrDiverge {
+    pub fn instructions(&self) -> &[Instruction] {
+        match self {
+            BlockValueOrDiverge::Value(b) => &b.instructions,
+            BlockValueOrDiverge::Diverge(b) => &b.instructions
         }
-        Block { instructions, yield_type: yield_ty, diverges }
     }
 
-    pub fn yield_type(&self) -> Option<Type> {
-        self.yield_type.clone()
+    pub fn diverges(&self) -> bool {
+        match self {
+            BlockValueOrDiverge::Value(_) => false,
+            BlockValueOrDiverge::Diverge(_) => true
+        }
     }
+}
+
+#[derive(Debug)]
+pub enum BlockNoValueOrDiverge {
+    NoValue(BlockWithNoValue),
+    Diverge(BlockWithDiverge)
+}
+
+impl BlockNoValueOrDiverge {
+    pub fn instructions(&self) -> &[Instruction] {
+        match self {
+            BlockNoValueOrDiverge::NoValue(b) => &b.instructions,
+            BlockNoValueOrDiverge::Diverge(b) => &b.instructions
+        }
+    }
+
+    pub fn diverges(&self) -> bool {
+        match self {
+            BlockNoValueOrDiverge::NoValue(_) => false,
+            BlockNoValueOrDiverge::Diverge(_) => true
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct BlockWithValue {
+    pub(super) instructions: Vec<Instruction>,
+    pub(super) yield_type: Type,
+    pub(super) yield_loc: Location
+}
+
+#[derive(Debug)]
+pub struct BlockWithNoValue {
+    pub(super) instructions: Vec<Instruction>
+}
+
+#[derive(Debug)]
+pub struct BlockWithDiverge {
+    pub(super) instructions: Vec<Instruction>,
 }

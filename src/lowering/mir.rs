@@ -42,6 +42,7 @@ impl MIR {
                 ret.as_ref().clone()
             },
             Expr::New(struct_key, _) => Type::Struct(*struct_key),
+            Expr::IfElse { yield_type, .. } => yield_type.clone()
         }
     }
 
@@ -161,7 +162,42 @@ pub enum Expr {
     GetAttr(StructKey, Box<Expr>, String),
     Call(Box<Expr>, Vec<Expr>),
     New(StructKey, IndexMap<String, Expr>),
-    Block(BlockKey)
+    Block(BlockKey),
+    IfElse { cond: Box<Expr>, then_do: Box<Expr>, else_do: Box<Expr>, yield_type: Type }
+}
+
+impl Expr {
+    pub fn always_diverges(&self, mir: &MIR) -> bool {
+        match self {
+            Expr::Unit => false,
+            Expr::Never => true,
+            Expr::Integer(_) => false,
+            Expr::Boolean(_) => false,
+            Expr::Parameter(_, _) => false,
+            Expr::LoadLocal(_) => false,
+            Expr::LoadFunction(_) => false,
+            Expr::GetAttr(_, obj, _) => {
+                obj.always_diverges(mir)
+            }
+            Expr::Call(callee, args) => {
+                if callee.always_diverges(mir) || args.iter().any(|arg| arg.always_diverges(mir)) {
+                    return true;
+                }
+
+                let Type::Function(_, ret) = mir.type_of(callee) else { panic!() };
+
+                mir.is_never(&ret)
+            }
+            Expr::New(_, fields) => fields.values().any(|field| field.always_diverges(mir)),
+            Expr::Block(block) => {
+                let block = &mir.blocks[*block];
+                block.stmts.iter().any(|stmt| stmt.always_diverges(mir)) || block.ret.always_diverges(mir)
+            }
+            Expr::IfElse { cond, then_do, else_do, .. } => {
+                cond.always_diverges(mir) || (then_do.always_diverges(mir) && else_do.always_diverges(mir))
+            },
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -169,4 +205,14 @@ pub enum Stmt {
     Expr(Box<Expr>),
     Decl(LocalKey, Type, Box<Expr>),
     Ret(Box<Expr>)
+}
+
+impl Stmt {
+    pub fn always_diverges(&self, mir: &MIR) -> bool {
+        match self {
+            Stmt::Expr(e) => e.always_diverges(mir),
+            Stmt::Decl(_, _, value) => value.always_diverges(mir),
+            Stmt::Ret(_) => true,
+        }
+    }
 }

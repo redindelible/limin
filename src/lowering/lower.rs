@@ -69,8 +69,19 @@ impl Lowering {
                         self.parameters_mapping.insert((function_key, i), local);
                     }
                 }
-                builder.build(|builder| {
-                    self.lower_block(builder, function_body.body, &mir, true)
+                builder.build(|mut builder| {
+                    let block_key = function_body.body;
+
+                    self.lower_block(&mut builder, block_key, &mir);
+                    let block = &mir.blocks[block_key];
+                    if mir.is_never(&block.ret_type) {
+                        // hopefully something already returned
+                    } else if mir.is_zero_sized(&block.ret_type) {
+                        builder.return_void();
+                    } else {
+                        builder.return_value(self.lower_type(&mir, &block.ret_type).unwrap());
+                    }
+                    builder.yield_diverges()
                 })
             });
         }
@@ -80,25 +91,25 @@ impl Lowering {
         builder.finish()
     }
 
-    fn lower_block(&mut self, mut builder: BlockBuilder, block_key: mir::BlockKey, mir: &mir::MIR, return_value: bool) -> lir::Block {
+    fn lower_block(&mut self, builder: &mut BlockBuilder, block_key: mir::BlockKey, mir: &mir::MIR) {
         let block = &mir.blocks[block_key];
         for stmt in &block.stmts {
             match stmt {
                 mir::Stmt::Expr(expr) => {
-                    let ty = self.lower_expr(&mut builder, expr, mir);
+                    let ty = self.lower_expr(builder, expr, mir);
                     if let Some(ty) = ty {
                         builder.pop(ty);
                     }
                 }
                 mir::Stmt::Decl(local, ty, value) => {
-                    self.lower_expr(&mut builder, value, mir);
+                    self.lower_expr(builder, value, mir);
                     if let Some(ty) = self.lower_type(mir, ty) {
                         let id = builder.declare_variable(ty);
                         self.locals_mapping.insert(*local, id);
                     }
                 }
                 mir::Stmt::Ret(value) => {
-                    let ty = self.lower_expr(&mut builder, value, mir);
+                    let ty = self.lower_expr(builder, value, mir);
                     if let Some(ty) = ty {
                         builder.return_value(ty);
                     } else {
@@ -107,25 +118,7 @@ impl Lowering {
                 }
             }
         }
-        self.lower_expr(&mut builder, &block.ret, mir);
-        if return_value {
-            if mir.is_never(&block.ret_type) {
-                // hopefully something already returned
-            } else if mir.is_zero_sized(&block.ret_type) {
-                builder.return_void();
-            } else {
-                builder.return_value(self.lower_type(mir, &block.ret_type).unwrap());
-            }
-            builder.yield_diverges()
-        } else {
-            if mir.is_never(&block.ret_type) {
-                builder.yield_diverges()
-            } else if mir.is_zero_sized(&block.ret_type) {
-                builder.yield_none()
-            } else {
-                builder.yield_value(self.lower_type(mir, &block.ret_type).unwrap())
-            }
-        }
+        self.lower_expr(builder, &block.ret, mir);
     }
 
     fn lower_expr(&mut self, builder: &mut BlockBuilder, expr: &mir::Expr, mir: &mir::MIR) -> Option<lir::Type> {
@@ -222,22 +215,81 @@ impl Lowering {
             mir::Expr::Block(block_key) => {
                 let block = &mir.blocks[*block_key];
                 if mir.is_never(&block.ret_type) {
-                    builder.block_void(|builder| {
-                        self.lower_block(builder, *block_key, mir, false)
+                    let child = builder.build(|mut builder| {
+                        self.lower_block(&mut builder, *block_key, mir);
+                        builder.yield_diverges()
                     });
+                    builder.block_diverge(child);
                     builder.unreachable();
                     None
                 } else if mir.is_zero_sized(&block.ret_type) {
-                    builder.block_void(|builder| {
-                        self.lower_block(builder, *block_key, mir, false)
+                    let child = builder.build(|mut builder| {
+                        self.lower_block(&mut builder, *block_key, mir);
+                        builder.yield_none()
                     });
+                    builder.block_void(child);
                     None
                 } else {
                     let ty = self.lower_type(mir, &block.ret_type).unwrap();
-                    builder.block_value(ty.clone(), |builder| {
-                        self.lower_block(builder, *block_key, mir, false)
+                    let child = builder.build(|mut builder| {
+                        self.lower_block(&mut builder, *block_key, mir);
+                        builder.yield_value(ty.clone())
                     });
+                    builder.block_value(child);
                     Some(ty)
+                }
+            },
+            mir::Expr::IfElse { cond, then_do, else_do, yield_type } => {
+                self.lower_expr(builder, cond, mir).unwrap();
+                if mir.is_never(yield_type) {
+                    let then_do = builder.build(|mut builder| {
+                        self.lower_expr(&mut builder, then_do, mir);
+                        builder.yield_diverges()
+                    });
+                    let else_do = builder.build(|mut builder| {
+                        self.lower_expr(&mut builder, else_do, mir);
+                        builder.yield_diverges()
+                    });
+                    builder.if_else_diverge(then_do, else_do);
+                    None
+                } else if let Some(ty) = self.lower_type(mir, yield_type) {
+                    let then_do = builder.build(|mut builder| {
+                        self.lower_expr(&mut builder, then_do, mir);
+                        if then_do.always_diverges(mir) {
+                            builder.yield_diverges().into()
+                        } else {
+                            builder.yield_value(ty.clone()).into()
+                        }
+                    });
+                    let else_do = builder.build(|mut builder| {
+                        self.lower_expr(&mut builder, else_do, mir);
+                        if else_do.always_diverges(mir) {
+                            builder.yield_diverges().into()
+                        } else {
+                            builder.yield_value(ty.clone()).into()
+                        }
+                    });
+                    builder.if_else_value(ty.clone(), then_do, else_do);
+                    Some(ty)
+                } else {
+                    let then_do = builder.build(|mut builder| {
+                        self.lower_expr(&mut builder, then_do, mir);
+                        if then_do.always_diverges(mir) {
+                            builder.yield_diverges().into()
+                        } else {
+                            builder.yield_none().into()
+                        }
+                    });
+                    let else_do = builder.build(|mut builder| {
+                        self.lower_expr(&mut builder, else_do, mir);
+                        if else_do.always_diverges(mir) {
+                            builder.yield_diverges().into()
+                        } else {
+                            builder.yield_none().into()
+                        }
+                    });
+                    builder.if_else_void(then_do, else_do);
+                    None
                 }
             }
         }

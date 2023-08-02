@@ -120,7 +120,8 @@ pub enum Expr<'a> {
     Integer { number: u64, loc: Location<'a> },
     Bool { value: bool, loc: Location<'a> },
     Block(Block<'a>),
-    New { struct_: String, type_args: Option<Vec<Box<Type<'a>>>>, fields: Vec<Box<NewArgument<'a>>>, loc: Location<'a> }
+    New { struct_: String, type_args: Option<Vec<Box<Type<'a>>>>, fields: Vec<Box<NewArgument<'a>>>, loc: Location<'a> },
+    IfElse { cond: Box<Expr<'a>>, then_do: Box<Expr<'a>>, else_do: Box<Expr<'a>>, loc: Location<'a> }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -142,6 +143,7 @@ impl<'a> HasLoc<'a> for Expr<'a> {
             Expr::Block(Block{ loc, .. }) => *loc,
             Expr::New { loc, .. } => *loc,
             Expr::Bool { loc, .. } => *loc,
+            Expr::IfElse { loc, .. } => *loc,
         }
     }
 }

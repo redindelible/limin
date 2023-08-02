@@ -262,7 +262,21 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> ParseResult<Expr<'a>> {
-        Ok(self.parse_comparison()?)
+        self.parse_if_else()
+    }
+
+    fn parse_if_else(&mut self) -> ParseResult<Expr<'a>> {
+        if self.curr().typ == TokenType::If {
+            let start = self.advance();
+            let cond = Box::new(self.parse_expr()?);
+            let then_do = Box::new(self.parse_expr()?);
+            self.expect(TokenType::Else)?;
+            let else_do = Box::new(self.parse_expr()?);
+            let loc = start.loc + else_do.loc();
+            Ok(Expr::IfElse { cond, then_do, else_do, loc })
+        } else {
+            self.parse_comparison()
+        }
     }
 
     fn parse_comparison(&mut self) -> ParseResult<Expr<'a>> {

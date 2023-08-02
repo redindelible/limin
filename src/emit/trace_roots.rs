@@ -118,7 +118,7 @@ impl RootTracer {
             })
         }
 
-        let (block, _) = self.trace_block(&func.block, lir);
+        let block = self.trace_block_diverge(&func.block, lir);
 
         ilir::Function {
             name: func.name.clone(),
@@ -130,16 +130,84 @@ impl RootTracer {
         }
     }
 
-    fn trace_block(&mut self, block: &lir::Block, lir: &lir::LIR) -> (ilir::Block, Option<ilir::Location>) {
+    fn trace_block_value_or_diverge(&mut self, block: &lir::BlockValueOrDiverge, lir: &lir::LIR) -> ilir::BlockValueOrDiverge {
+        let starting = self.tracer.top();
+
+        let instructions = self.trace_instructions(block.instructions(), lir);
+
+        match block {
+            lir::BlockValueOrDiverge::Diverge(_) => {
+                self.tracer.pop_to(starting);
+                ilir::BlockValueOrDiverge::Diverge(ilir::BlockWithDiverge {
+                    instructions
+                })
+            }
+            lir::BlockValueOrDiverge::Value(block) => {
+                let yield_loc = self.pop();
+                self.tracer.pop_to(starting);
+                ilir::BlockValueOrDiverge::Value(ilir::BlockWithValue {
+                    instructions,
+                    yield_type: block.yield_type.clone(),
+                    yield_loc
+                })
+            }
+        }
+    }
+
+    fn trace_block_diverge(&mut self, block: &lir::BlockDiverge, lir: &lir::LIR) -> ilir::BlockWithDiverge {
+        let starting = self.tracer.top();
+        let instructions = self.trace_instructions(&block.instructions, lir);
+        self.tracer.pop_to(starting);
+        ilir::BlockWithDiverge {
+            instructions
+        }
+    }
+
+    fn trace_block_void(&mut self, block: &lir::BlockVoid, lir: &lir::LIR) -> ilir::BlockWithNoValue {
+        let starting = self.tracer.top();
+        let instructions = self.trace_instructions(&block.instructions, lir);
+        self.tracer.pop_to(starting);
+        ilir::BlockWithNoValue {
+            instructions
+        }
+    }
+
+    fn trace_block_value(&mut self, block: &lir::BlockValue, lir: &lir::LIR) -> ilir::BlockWithValue {
+        let starting = self.tracer.top();
+        let instructions = self.trace_instructions(&block.instructions, lir);
+        let yield_loc = self.pop();
+        self.tracer.pop_to(starting);
+        ilir::BlockWithValue {
+            instructions,
+            yield_type: block.yield_type.clone(),
+            yield_loc
+        }
+    }
+
+    fn trace_block_no_value_or_diverge(&mut self, block: &lir::BlockVoidOrDiverge, lir: &lir::LIR) -> ilir::BlockNoValueOrDiverge {
+        let starting = self.tracer.top();
+
+        let instructions = self.trace_instructions(block.instructions(), lir);
+
+        if block.diverges() {
+            self.tracer.pop_to(starting);
+            ilir::BlockNoValueOrDiverge::Diverge(ilir::BlockWithDiverge {
+                instructions
+            })
+        } else {
+            self.tracer.pop_to(starting);
+            ilir::BlockNoValueOrDiverge::NoValue(ilir::BlockWithNoValue {
+                instructions
+            })
+        }
+    }
+
+    fn trace_instructions(&mut self, lir_instructions: &[lir::Instruction], lir: &lir::LIR) -> Vec<ilir::Instruction> {
         use crate::emit::lir::Instruction;
 
         let mut instructions: Vec<ilir::Instruction> = Vec::new();
 
-        let starting = self.tracer.top();
-
-        // println!("{:#?}", &block.instructions);
-
-        for instr in &block.instructions {
+        for instr in lir_instructions {
             match instr {
                 Instruction::DeclareLocal(id) => {
                     let value_key = self.tracer.pop();
@@ -199,15 +267,20 @@ impl RootTracer {
                     self.tracer.pop();
                 }
                 Instruction::BlockValue(child) => {
-                    let (block, Some(value)) = self.trace_block(child, lir) else { panic!() };
+                    let block = self.trace_block_value(child, lir);
                     instructions.push(ilir::Instruction::BlockValue {
-                        block, value,
-                        store: self.push(child.yield_type.as_ref().unwrap().clone())
+                        block, store: self.push(child.yield_type.clone())
                     })
                 }
                 Instruction::BlockVoid(child) => {
-                    let (block, _) = self.trace_block(child, lir);
+                    let block = self.trace_block_void(child, lir);
                     instructions.push(ilir::Instruction::BlockVoid {
+                        block
+                    });
+                }
+                Instruction::BlockDiverge(child) => {
+                    let block = self.trace_block_diverge(child, lir);
+                    instructions.push(ilir::Instruction::BlockDiverge {
                         block
                     });
                 }
@@ -328,26 +401,30 @@ impl RootTracer {
 
                     instructions.push(ilir::Instruction::StatePoint { id });
                 }
+                Instruction::IfElseValue { then_do, else_do, ty } => {
+                    let cond = self.pop();
+                    let then_do = self.trace_block_value_or_diverge(then_do, lir);
+                    let else_do = self.trace_block_value_or_diverge(else_do, lir);
+                    let store = self.push(ty.clone());
+                    instructions.push(ilir::Instruction::IfElseValue { cond, then_do, else_do, store });
+                }
+                Instruction::IfElseVoid { then_do, else_do } => {
+                    let cond = self.pop();
+                    let then_do = self.trace_block_no_value_or_diverge(then_do, lir);
+                    let else_do = self.trace_block_no_value_or_diverge(else_do, lir);
+                    instructions.push(ilir::Instruction::IfElseVoid { cond, then_do, else_do });
+                }
+                Instruction::IfElseDiverge { then_do, else_do } => {
+                    let cond = self.pop();
+                    let then_do = self.trace_block_diverge(then_do, lir);
+                    let else_do = self.trace_block_diverge(else_do, lir);
+                    instructions.push(ilir::Instruction::IfElseDiverge { cond, then_do, else_do });
+                }
+
                 Instruction::Unreachable => {}
             }
         };
 
-        let block = ilir::Block {
-            instructions,
-            yield_type: block.yield_type.clone(),
-            diverges: block.diverges
-        };
-
-        match &block.yield_type {
-            Some(_) => {
-                let yield_loc = self.pop();
-                self.tracer.pop_to(starting);
-                (block, Some(yield_loc))
-            }
-            None => {
-                self.tracer.pop_to(starting);
-                (block, None)
-            }
-        }
+        instructions
     }
 }

@@ -114,7 +114,7 @@ impl FunctionBuilder {
         self.ret = None;
     }
 
-    pub fn build<F>(self, f: F) -> lir::Function where F: FnOnce(BlockBuilder) -> lir::Block {
+    pub fn build<F>(self, f: F) -> lir::Function where F: FnOnce(BlockBuilder) -> lir::BlockDiverge {
         let FunctionBuilder { id, name, ret, parameters, mut counter, .. } = self;
 
         let block = {
@@ -153,6 +153,10 @@ impl<'a> BlockBuilder<'a> {
             stack_types: Vec::new(),
             locals: HashMap::new()
         }
+    }
+
+    pub fn build<T>(&mut self, f: impl FnOnce(BlockBuilder) -> T) -> T {
+        f(BlockBuilder::new(self.counter))
     }
 
     fn push_type(&mut self, ty: lir::Type) {
@@ -272,50 +276,57 @@ impl<'a> BlockBuilder<'a> {
         self.instructions.push(lir::Instruction::Unreachable);
     }
 
-    pub fn block_value<F: FnOnce(BlockBuilder) -> lir::Block>(&mut self, ty: lir::Type, f: F) {
-        let builder = BlockBuilder::new(self.counter);
-        let block = f(builder);
-        assert_eq!(&ty, block.yield_type.as_ref().unwrap());
+    pub fn block_value(&mut self, block: lir::BlockValue) {
+        let yield_ty = block.yield_type.clone();
         self.instructions.push(lir::Instruction::BlockValue(block));
+        self.push_type(yield_ty);
+    }
+
+    pub fn block_void(&mut self, block: lir::BlockVoid) {
+        self.instructions.push(lir::Instruction::BlockVoid(block));
+    }
+
+    pub fn block_diverge(&mut self, block: lir::BlockDiverge) {
+        self.instructions.push(lir::Instruction::BlockDiverge(block));
+    }
+
+    pub fn if_else_value(&mut self, ty: lir::Type, then_do: lir::BlockValueOrDiverge, else_do: lir::BlockValueOrDiverge) {
+        self.instructions.push(lir::Instruction::IfElseValue { then_do, else_do, ty: ty.clone() });
         self.push_type(ty);
     }
 
-    pub fn block_void<F: FnOnce(BlockBuilder) -> lir::Block>(&mut self, f: F) {
-        let builder = BlockBuilder::new(self.counter);
-        let block = f(builder);
-        assert!(block.yield_type.is_none());
-        self.instructions.push(lir::Instruction::BlockValue(block));
+    pub fn if_else_void(&mut self, then_do: lir::BlockVoidOrDiverge, else_do: lir::BlockVoidOrDiverge) {
+        self.instructions.push(lir::Instruction::IfElseVoid { then_do, else_do });
     }
 
-    pub fn yield_none(self) -> lir::Block {
+    pub fn if_else_diverge(&mut self, then_do: lir::BlockDiverge, else_do: lir::BlockDiverge) {
+        self.instructions.push(lir::Instruction::IfElseDiverge { then_do, else_do });
+    }
+
+    pub fn yield_none(self) -> lir::BlockVoid {
         let BlockBuilder { instructions, .. } = self;
 
-        lir::Block {
-            instructions,
-            yield_type: None,
-            diverges: false
+        lir::BlockVoid {
+            instructions
         }
     }
 
-    pub fn yield_diverges(self) -> lir::Block {
+    pub fn yield_diverges(self) -> lir::BlockDiverge {
         let BlockBuilder { instructions, .. } = self;
 
-        lir::Block {
-            instructions,
-            yield_type: None,
-            diverges: true
+        lir::BlockDiverge {
+            instructions
         }
     }
 
-    pub fn yield_value(mut self, ty: lir::Type) -> lir::Block {
+    pub fn yield_value(mut self, ty: lir::Type) -> lir::BlockValue {
         self.pop_type(&ty);
 
         let BlockBuilder { instructions, .. } = self;
 
-        lir::Block {
+        lir::BlockValue {
             instructions,
-            yield_type: Some(ty),
-            diverges: false
+            yield_type: ty
         }
     }
 }
