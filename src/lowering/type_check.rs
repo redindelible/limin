@@ -70,6 +70,7 @@ pub enum TypeCheckError<'a> {
     CouldNotResolveName(String, Location<'a>),
     CouldNotResolveType(String, Location<'a>),
     IncompatibleTypes { expected: DisplayType<'a>, got: DisplayType<'a>, loc: Location<'a> },
+    CannotUseNever { loc: Location<'a> },
     ExpectedFunction { got: DisplayType<'a>, loc: Location<'a> },
     MismatchedArguments { expected: usize, got: usize, loc: Location<'a> },
     MismatchedTypeArguments { expected: usize, got: usize, loc: Location<'a> },
@@ -110,6 +111,10 @@ impl<'a> Message for TypeCheckError<'a> {
             }
             TypeCheckError::IncompatibleTypes { expected, got, loc } => {
                 eprintln!("Error: Incompatible types. Expected '{}' but got '{}'.", expected.render(), got.render());
+                Self::show_location(loc);
+            }
+            TypeCheckError::CannotUseNever { loc } => {
+                eprintln!("Error: Values of type '!' cannot exist.");
                 Self::show_location(loc);
             }
             TypeCheckError::ExpectedFunction { got, loc } => {
@@ -701,6 +706,15 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
         Block { stmts, trailing_expr, declared, loc: *loc }
     }
 
+    fn check_is_never(&mut self, expr: &Expr<'a>, loc: Location<'a>) -> bool {
+        if self.checker.hir.type_of_expr(expr).is_never(&self.checker.hir) {
+            self.push_error(TypeCheckError::CannotUseNever { loc });
+            return true;
+        } else {
+            return false;
+        }
+    }
+
     fn resolve_expr(&mut self, expr: &ast::Expr<'a>, yield_type: ExpectedType) -> Expr<'a> {
         match expr {
             ast::Expr::Integer { number, loc } => {
@@ -741,6 +755,10 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
             }
             ast::Expr::Call { callee, arguments, loc } => {
                 let resolved_callee = self.resolve_expr(callee, None);
+                if self.check_is_never(&resolved_callee, callee.loc()) {
+                    return Expr::Errored { loc: *loc };
+                };
+
                 let callee_ty = self.checker.hir.type_of_expr(&resolved_callee);
                 match &callee_ty {
                     Type::Function { params, ret } => {
@@ -754,6 +772,9 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                         let mut resolved_arguments = Vec::new();
                         for (param, arg) in params.iter().zip(arguments.iter()) {
                             let resolved_arg = self.resolve_expr(arg, Some(param.clone()));
+                            if self.check_is_never(&resolved_arg, arg.loc()) {
+                                return Expr::Errored { loc: *loc };
+                            };
                             resolved_arguments.push(resolved_arg);
                         }
                         Expr::Call { callee: Box::new(resolved_callee), arguments: resolved_arguments, loc: *loc }
@@ -773,6 +794,9 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                         let mut resolved_arguments = Vec::new();
                         for (param, arg) in params.iter().zip(arguments.iter()) {
                             let resolved_arg = self.resolve_expr(arg, Some(param.subs(&map)));
+                            if self.check_is_never(&resolved_callee, arg.loc()) {
+                                return Expr::Errored { loc: *loc };
+                            };
                             resolved_arguments.push(resolved_arg);
                         }
 
@@ -825,6 +849,9 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                     }
                     let expected_type = expected_fields[&field.field_name].typ.subs(&map);
                     let resolved = Box::new(self.resolve_expr(&field.argument, Some(expected_type)));
+                    if self.check_is_never(&resolved, field.argument.loc()) {
+                        return Expr::Errored { loc: *loc };
+                    };
                     resolved_fields.insert(field.field_name.clone(), resolved);
                     expected_fields.remove(&field.field_name);
                 };
@@ -848,9 +875,12 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                 Expr::New { struct_: struct_key, variant, fields: resolved_fields, loc: *loc }
             }
             ast::Expr::GetAttr { obj, attr, loc } => {
-                let obj = self.resolve_expr(obj, None);
+                let resolved_obj = self.resolve_expr(obj, None);
+                if self.check_is_never(&resolved_obj, obj.loc()) {
+                    return Expr::Errored { loc: *loc };
+                };
 
-                let ty = self.checker.hir.type_of_expr(&obj);
+                let ty = self.checker.hir.type_of_expr(&resolved_obj);
 
                 let Type::Struct { struct_, variant } = ty else {
                     self.push_error(TypeCheckError::ExpectedStruct { got: self.display_type(&ty), loc: *loc });
@@ -871,24 +901,33 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                     return Expr::Errored { loc: *loc };
                 }
 
-                Expr::GetAttr { obj: Box::new(obj), attr: attr.clone(), loc: *loc }
+                Expr::GetAttr { obj: Box::new(resolved_obj), attr: attr.clone(), loc: *loc }
             },
             ast::Expr::GenericCall { .. } => todo!(),
             ast::Expr::BinOp { .. } => todo!(),
             ast::Expr::IfElse { cond, then_do, else_do, loc } => {
-                let cond = Box::new(self.resolve_expr(cond, Some(Type::Boolean)));
+                let resolved_cond = Box::new(self.resolve_expr(cond, Some(Type::Boolean)));
+                if self.check_is_never(&resolved_cond, cond.loc()) {
+                    return Expr::Errored { loc: *loc };
+                };
 
-                let then_do = Box::new(self.resolve_expr(then_do, yield_type.clone()));
-                let else_do = Box::new(self.resolve_expr(else_do, yield_type.clone()));
+                let resolved_then_do = Box::new(self.resolve_expr(then_do, yield_type.clone()));
+                if self.check_is_never(&resolved_then_do, then_do.loc()) {
+                    return Expr::Errored { loc: *loc };
+                };
+                let resolved_else_do = Box::new(self.resolve_expr(else_do, yield_type.clone()));
+                if self.check_is_never(&resolved_else_do, else_do.loc()) {
+                    return Expr::Errored { loc: *loc };
+                };
 
                 let expr_yield_type: Type;
-                if then_do.always_diverges(&self.checker.hir) && else_do.always_diverges(&self.checker.hir) {
+                if resolved_then_do.always_diverges(&self.checker.hir) && resolved_else_do.always_diverges(&self.checker.hir) {
                     expr_yield_type = Type::Never;
                 } else if let Some(yield_type) = yield_type {
                     expr_yield_type = yield_type;
                 } else {
-                    let then_ty = self.checker.hir.type_of_expr(&then_do);
-                    let else_ty = self.checker.hir.type_of_expr(&else_do);
+                    let then_ty = self.checker.hir.type_of_expr(&resolved_then_do);
+                    let else_ty = self.checker.hir.type_of_expr(&resolved_else_do);
 
                     if then_ty.is_error() || else_ty.is_error() {
                         return Expr::Errored { loc: *loc };
@@ -906,7 +945,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
 
                 // todo support subtyping correctly
 
-                Expr::IfElse { cond, then_do, else_do, yield_type: expr_yield_type, loc: *loc }
+                Expr::IfElse { cond: resolved_cond, then_do: resolved_then_do, else_do: resolved_else_do, yield_type: expr_yield_type, loc: *loc }
             }
         }
     }
@@ -917,14 +956,16 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                 match typ {
                     Some(t) => {
                         let typ = self.resolve_type(t);
-                        let value = self.resolve_expr(value, Some(typ.clone()));
+                        let resolved_value = self.resolve_expr(value, Some(typ.clone()));
+                        self.check_is_never(&resolved_value, value.loc());
                         let decl = self.add_name(name.clone(), NameInfo::Local { typ, loc: *loc});
-                        Stmt::Decl { decl, value, loc: *loc }
+                        Stmt::Decl { decl, value: resolved_value, loc: *loc }
                     },
                     None => {
-                        let value = self.resolve_expr(value, None);
-                        let decl = self.add_name(name.clone(), NameInfo::Local { typ: self.type_of(&value), loc: *loc});
-                        Stmt::Decl { decl, value, loc: *loc }
+                        let resolved_value = self.resolve_expr(value, None);
+                        self.check_is_never(&resolved_value, value.loc());
+                        let decl = self.add_name(name.clone(), NameInfo::Local { typ: self.type_of(&resolved_value), loc: *loc});
+                        Stmt::Decl { decl, value: resolved_value, loc: *loc }
                     }
                 }
             },
@@ -933,7 +974,9 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
             },
             ast::Stmt::Return { value, loc} => {
                 let expected_return = self.checker.hir.function_prototypes[self.func].ret.clone();
-                Stmt::Return { value: self.resolve_expr(value, Some(expected_return)), loc: *loc }
+                let resolved_value = self.resolve_expr(value, Some(expected_return));
+                self.check_is_never(&resolved_value, value.loc());
+                Stmt::Return { value: resolved_value, loc: *loc }
                 // let value = self.resolve_expr(value, None);
                 // self.check(&self.checker.hir.type_of_expr(&value), Some(expected_return), loc);
                 // Stmt::Return { value, loc: *loc }

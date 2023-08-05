@@ -146,7 +146,8 @@ impl<'s> HIR<'s> {
 
     pub fn is_subtype(&self, this: &Type, of: &Type) -> bool {
         match (this, of) {
-            (Type::Errored, _) | (_, Type::Errored) => panic!("found errored type {:?} {:?}", this, of),
+            // (Type::Errored, _) | (_, Type::Errored) => panic!("found errored type {:?} {:?}", this, of),
+            (Type::Errored, _) | (_, Type::Errored) => true,
             (Type::Never, _) => true,
             (Type::Unit, Type::Unit) => true,
             (Type::Boolean, Type::Boolean) => true,

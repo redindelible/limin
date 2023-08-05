@@ -6,10 +6,6 @@ struct Bar {
 
 fn main() -> i32 {
     let bar := new Bar { bar: true };
-    let baz := if bar.bar {
-        return 20;
-    } else {
-        return 30;
-    };
+    let baz := 32;
     return baz;
 }
