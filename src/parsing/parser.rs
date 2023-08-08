@@ -243,8 +243,8 @@ impl<'a> Parser<'a> {
     fn parse_decl(&mut self) -> ParseResult<Stmt<'a>> {
         let start = self.expect(TokenType::Let)?;
         let name = self.expect(TokenType::Identifier)?.text.to_owned();
-        self.expect(TokenType::Colon)?;
-        let typ = if self.curr().typ != TokenType::Equal {
+        let typ = if self.curr().typ == TokenType::Colon {
+            self.expect(TokenType::Colon)?;
             Some(Box::new(self.parse_type()?))
         } else {
             None

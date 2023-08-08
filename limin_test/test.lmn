@@ -5,7 +5,7 @@ struct Bar {
 }
 
 fn main() -> i32 {
-    let bar := new Bar { bar: 20 };
+    let bar = new Bar { bar: 20 };
 
     let closure : (Bar) -> () -> i32 = |b| || b.bar;
     return closure(bar)();
