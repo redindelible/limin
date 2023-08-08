@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use slotmap::{SecondaryMap, SlotMap};
 use crate::lowering::{hir, mir};
 use crate::util::map_join;
@@ -34,9 +34,11 @@ struct Monomorphize {
     structs: SecondaryMap<hir::StructKey, StructInfo>,
     functions: SecondaryMap<hir::FunctionKey, FunctionInfo>,
 
-    resolve_queue: RefCell<VecDeque<QueuedResolve>>,
+    locals_map: HashMap<hir::NameKey, mir::LocalKey>,
 
-    locals_map: HashMap<hir::NameKey, mir::LocalKey>
+    resolve_queue: RefCell<VecDeque<QueuedResolve>>,
+    current_level: usize,
+    used_blocks: Vec<IndexSet<mir::BlockKey>>
 }
 
 struct FunctionInfo {
@@ -60,7 +62,9 @@ impl Monomorphize {
             functions: SecondaryMap::new(),
             structs: SecondaryMap::new(),
             resolve_queue: RefCell::new(VecDeque::new()),
-            locals_map: HashMap::new()
+            locals_map: HashMap::new(),
+            current_level: 0,
+            used_blocks: Vec::new()
         }
     }
 
@@ -90,7 +94,7 @@ impl Monomorphize {
             function_prototypes: self.function_prototypes,
             function_bodies: self.function_bodies,
             locals: self.locals,
-            blocks: self.blocks
+            blocks: self.blocks,
         }
     }
 
@@ -107,29 +111,31 @@ impl Monomorphize {
     }
 
     fn resolve_function(&mut self, hir_func: hir::FunctionKey, mir_func: mir::FunctionKey, generic_map: HashMap<u64, mir::Type>, hir: &hir::HIR) {
+        self.current_level = 0;
+        self.used_blocks = vec![IndexSet::new()];
         let func = &hir.function_bodies[hir_func];
 
         let body = self.lower_block(&func.body, &generic_map, hir);
 
-        for (i, param) in hir.function_prototypes[hir_func].params.iter().enumerate() {
-            let ty = self.lower_type(&param.typ, &generic_map, hir);
-            let stmt = mir::Stmt::Decl(self.locals_map[&param.decl], ty, Box::new(mir::Expr::Parameter(mir_func, i)));
-            self.blocks[body].stmts.insert(0, stmt);
+        let mut params = Vec::new();
+        for param in &hir.function_prototypes[hir_func].params {
+            params.push(self.locals_map[&param.decl]);
         }
 
-        self.function_bodies.insert(mir_func, mir::FunctionBody { body });
+        self.function_bodies.insert(mir_func, mir::FunctionBody { params, body });
     }
 
     fn lower_block(&mut self, block: &hir::Block, map: &HashMap<u64, mir::Type>, hir: &hir::HIR) -> mir::BlockKey {
         let hir::Block { stmts, trailing_expr, declared, .. } = block;
-        let block_key = self.blocks.insert(mir::Block { stmts: vec![], ret: Box::new(mir::Expr::Unit), ret_type: mir::Type::Unit, locals: vec![]});
+        let block_key = self.blocks.insert(mir::Block { stmts: vec![], ret: Box::new(mir::Expr::Unit), ret_type: mir::Type::Unit, locals: vec![], level: self.current_level });
 
         let mut locals = vec![];
         for (local_name, local_name_key) in declared {
             let local_info = mir::LocalInfo {
                 name: local_name.clone(),
                 typ: self.lower_type(&hir.type_of_name(*local_name_key), map, hir),
-                block: block_key
+                block: block_key,
+                is_closed: false
             };
             let key = self.locals.insert(local_info);
             self.locals_map.insert(*local_name_key, key);
@@ -146,7 +152,7 @@ impl Monomorphize {
             (Box::new(mir::Expr::Never), mir::Type::Never)
         };
 
-        let block = mir::Block { stmts, ret, locals, ret_type };
+        let block = mir::Block { stmts, ret, locals, ret_type, level: self.current_level };
         self.blocks[block_key] = block;
 
         block_key
@@ -160,7 +166,12 @@ impl Monomorphize {
             hir::Expr::Block(block) => mir::Expr::Block(self.lower_block(block, map, hir)),
             hir::Expr::Name { decl, .. } => {
                 match &hir.names[*decl] {
-                    hir::NameInfo::Local { .. } => {
+                    hir::NameInfo::Local { level, .. } => {
+                        if *level < self.current_level {
+                            self.locals[self.locals_map[decl]].is_closed = true;
+                        }
+                        let block = self.locals[self.locals_map[decl]].block;
+                        self.used_blocks.last_mut().unwrap().insert(block);
                         mir::Expr::LoadLocal(self.locals_map[decl])
                     }
                     hir::NameInfo::Function { func } => {
@@ -203,6 +214,29 @@ impl Monomorphize {
                     else_do: Box::new(self.lower_expr(else_do, map, hir)),
                     yield_type: self.lower_type(yield_type, map, hir)
                 }
+            }
+            hir::Expr::Closure { parameters, ret_type, body, .. } => {
+                self.current_level += 1;
+                self.used_blocks.push(IndexSet::new());
+
+                let body = self.lower_block(body, map, hir);
+
+                let used = self.used_blocks.pop().unwrap();
+                self.current_level -= 1;
+                self.used_blocks.last_mut().unwrap().extend(&used);
+
+                let parameters: Vec<mir::ClosureParameter> = parameters.iter().map(|p| {
+                    let typ = self.lower_type(&p.typ, map, hir);
+                    mir::ClosureParameter { name: p.name.clone(), typ, key: self.locals_map[&p.key]}
+                }).collect();
+
+                let ret_type = self.lower_type(ret_type, map, hir);
+
+                let closed_blocks: Vec<mir::BlockKey> = used.into_iter().filter(|block| {
+                    self.blocks[*block].level <= self.current_level
+                }).collect();
+
+                mir::Expr::Closure { parameters, ret_type, body, closed_blocks }
             }
             // hir::Expr::LogicBinOp { .. } => todo!(),
             hir::Expr::Errored { .. } => panic!("Should not be able to reach here if there is an error"),

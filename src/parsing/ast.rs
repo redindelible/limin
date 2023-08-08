@@ -55,8 +55,8 @@ pub enum TopLevel<'a> {
 #[derive(Debug, Eq, PartialEq)]
 pub struct Function<'a>  {
     pub name: String,
-    pub type_parameters: Vec<Box<TypeParameter<'a>>>,
-    pub parameters: Vec<Box<Parameter<'a>>>,
+    pub type_parameters: Vec<TypeParameter<'a>>,
+    pub parameters: Vec<Parameter<'a>>,
     pub return_type: Option<Box<Type<'a>>>,
     pub body: Block<'a>,
     pub loc: Location<'a>,
@@ -72,7 +72,7 @@ pub struct TypeParameter<'a> {
 #[derive(Debug, Eq, PartialEq)]
 pub struct Struct<'a> {
     pub name: String,
-    pub type_params: Vec<Box<TypeParameter<'a>>>,
+    pub type_params: Vec<TypeParameter<'a>>,
     pub items: Vec<StructItem<'a>>,
     pub loc: Location<'a>
 }
@@ -115,13 +115,14 @@ pub enum Expr<'a> {
     Name { name: String, loc: Location<'a> },
     GetAttr { obj: Box<Expr<'a>>, attr: String, loc: Location<'a> },
     BinOp { left: Box<Expr<'a>>, op: BinOp, right: Box<Expr<'a>>, loc: Location<'a> },
-    Call { callee: Box<Expr<'a>>, arguments: Vec<Box<Expr<'a>>>, loc: Location<'a> },
-    GenericCall { callee: Box<Expr<'a>>, generic_arguments: Vec<Box<Type<'a>>>, arguments: Vec<Box<Expr<'a>>>, loc: Location<'a> },
+    Call { callee: Box<Expr<'a>>, arguments: Vec<Expr<'a>>, loc: Location<'a> },
+    GenericCall { callee: Box<Expr<'a>>, generic_arguments: Vec<Type<'a>>, arguments: Vec<Expr<'a>>, loc: Location<'a> },
     Integer { number: u64, loc: Location<'a> },
     Bool { value: bool, loc: Location<'a> },
     Block(Block<'a>),
-    New { struct_: String, type_args: Option<Vec<Box<Type<'a>>>>, fields: Vec<Box<NewArgument<'a>>>, loc: Location<'a> },
-    IfElse { cond: Box<Expr<'a>>, then_do: Box<Expr<'a>>, else_do: Box<Expr<'a>>, loc: Location<'a> }
+    New { struct_: String, type_args: Option<Vec<Type<'a>>>, fields: Vec<NewArgument<'a>>, loc: Location<'a> },
+    IfElse { cond: Box<Expr<'a>>, then_do: Box<Expr<'a>>, else_do: Box<Expr<'a>>, loc: Location<'a> },
+    Closure { parameters: Vec<ClosureParameter<'a>>, body: Box<Expr<'a>>, loc: Location<'a> }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -129,6 +130,13 @@ pub struct NewArgument<'a> {
     pub field_name: String,
     pub name_loc: Location<'a>,
     pub argument: Box<Expr<'a>>
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct ClosureParameter<'a> {
+    pub name: String,
+    pub typ: Option<Type<'a>>,
+    pub loc: Location<'a>
 }
 
 impl<'a> HasLoc<'a> for Expr<'a> {
@@ -144,6 +152,7 @@ impl<'a> HasLoc<'a> for Expr<'a> {
             Expr::New { loc, .. } => *loc,
             Expr::Bool { loc, .. } => *loc,
             Expr::IfElse { loc, .. } => *loc,
+            Expr::Closure { loc, .. } => *loc,
         }
     }
 }
@@ -151,8 +160,8 @@ impl<'a> HasLoc<'a> for Expr<'a> {
 #[derive(Debug, Eq, PartialEq)]
 pub enum Type<'a> {
     Name { name: String, loc: Location<'a> },
-    Function { parameters: Vec<Box<Type<'a>>>, ret: Box<Type<'a>>, loc: Location<'a> },
-    Generic { name: String, type_args: Vec<Box<Type<'a>>>, loc: Location<'a> }
+    Function { parameters: Vec<Type<'a>>, ret: Box<Type<'a>>, loc: Location<'a> },
+    Generic { name: String, type_args: Vec<Type<'a>>, loc: Location<'a> }
 }
 
 impl<'s> HasLoc<'s> for Type<'s> {

@@ -5,7 +5,7 @@ use slotmap::{SecondaryMap, SlotMap};
 use crate::parsing::ast;
 use crate::util::map_join;
 use crate::error::Message;
-use crate::lowering::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, Stmt, TypeParameter, TypeParamKey, Block};
+use crate::lowering::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, Stmt, TypeParameter, TypeParamKey, Block, ClosureParameter};
 use crate::lowering::type_check::type_check_state::NamespaceKey;
 use crate::source::{HasLoc, Location};
 
@@ -72,6 +72,8 @@ pub enum TypeCheckError<'a> {
     IncompatibleTypes { expected: DisplayType<'a>, got: DisplayType<'a>, loc: Location<'a> },
     CannotUseNever { loc: Location<'a> },
     ExpectedFunction { got: DisplayType<'a>, loc: Location<'a> },
+    UnexpectedClosure { expected: DisplayType<'a>, loc: Location<'a> },
+    ClosureWithWrongParameters { expected: DisplayType<'a>, got: usize, loc: Location<'a> },
     MismatchedArguments { expected: usize, got: usize, loc: Location<'a> },
     MismatchedTypeArguments { expected: usize, got: usize, loc: Location<'a> },
     RequiredTypeArguments { got: String, loc: Location<'a>, note_loc: Location<'a> },
@@ -79,7 +81,8 @@ pub enum TypeCheckError<'a> {
     ExpectedStruct { got: DisplayType<'a>, loc: Location<'a> },
     NoSuchFieldName { field: String, typ: String, loc: Location<'a> },
     MissingFields { fields: Vec<String>, typ: String, loc: Location<'a> },
-    CouldNotInferParameter(String, Location<'a>),
+    CouldNotInferTypeParameter(String, Location<'a>),
+    CouldNotInferParameters(Location<'a>),
     NoMainFunction,
     MultipleMainFunctions(Location<'a>, Location<'a>),
     MainMustHaveNoArguments(Location<'a>),
@@ -121,6 +124,14 @@ impl<'a> Message for TypeCheckError<'a> {
                 eprintln!("Error: Expected a function to call, but got '{}'.", got.render());
                 Self::show_location(loc);
             }
+            TypeCheckError::UnexpectedClosure { expected, loc } => {
+                eprintln!("Error: Expected a value of type '{}', but got a closure.", expected.render());
+                Self::show_location(loc);
+            }
+            TypeCheckError::ClosureWithWrongParameters { expected, got, loc } => {
+                eprintln!("Error: Expected a closure of type '{}', but the closure only has {} parameters.", expected.render(), got);
+                Self::show_location(loc);
+            }
             TypeCheckError::MismatchedArguments { expected, got, loc } => {
                 eprintln!("Error: Expected {expected} arguments, got {got} arguments.");
                 Self::show_location(loc);
@@ -155,8 +166,12 @@ impl<'a> Message for TypeCheckError<'a> {
                 eprintln!("Error: Fields {} were not supplied to initialize '{}'.", rendered_fields.join(", "), typ);
                 Self::show_location(loc);
             }
-            TypeCheckError::CouldNotInferParameter(name, loc) => {
+            TypeCheckError::CouldNotInferTypeParameter(name, loc) => {
                 eprintln!("Error: Could not infer the type of '{}'.", name);
+                Self::show_location(loc);
+            }
+            TypeCheckError::CouldNotInferParameters(loc) => {
+                eprintln!("Error: Could not infer the type of the parameters of the closure.");
                 Self::show_location(loc);
             }
             TypeCheckError::MainMustHaveNoArguments(loc) => {
@@ -351,7 +366,6 @@ fn collect_structs(initial: Initial) -> CollectedStructs {
     CollectedStructs { checker, file_namespaces, files, root }
 }
 
-
 fn resolve_type<'a>(checker: &TypeCheck<'a>, ns: NamespaceKey, typ: &ast::Type<'a>) -> Type {
     match typ {
         ast::Type::Name { name, loc } => {
@@ -468,7 +482,7 @@ fn collect_functions(collected: CollectedFields) -> CollectedFunctions {
             let mut params = Vec::new();
             for param in &func.parameters {
                 let typ = resolve_type(&checker, func_ns, &param.typ);
-                let decl = checker.add_name(func_ns, param.name.clone(), NameInfo::Local { typ: typ.clone(), loc: param.loc });
+                let decl = checker.add_name(func_ns, param.name.clone(), NameInfo::Local { typ: typ.clone(), loc: param.loc, level: 0 });
                 params.push(Parameter { name: param.name.clone(), typ, loc: param.loc, decl });
             }
             let ret = func.return_type.as_ref().map_or(Type::Unit, |t| resolve_type(&checker, func_ns, t));
@@ -523,7 +537,7 @@ fn collect_function_bodies(collected: CollectedFunctions) -> Result<HIR, Vec<Typ
             let ret = func.ret.clone();
 
             let mut core = ResolveContextCore::new();
-            let mut resolver = ResolveContext::create(&mut checker, func_key, func_ns, &mut core);
+            let mut resolver = ResolveContext::create_for_function(&mut checker, Some(ret.clone()), func_ns, &mut core);
 
             let body = resolver.resolve_block(&ast_func.body, Some(ret), Some(func_ns));
             checker.hir.function_bodies.insert(func_key, FunctionBody { body });
@@ -550,15 +564,20 @@ impl ResolveContextCore {
 
 struct ResolveContext<'a, 'b> where 'a: 'b {
     checker: &'b mut TypeCheck<'a>,
-    func: FunctionKey,
+    expected_return: Option<Type>,
     namespace: NamespaceKey,
-    core: &'b mut ResolveContextCore
+    core: &'b mut ResolveContextCore,
+    level: usize,
+
+    return_types: Vec<Type>
 }
 
 impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
-    fn create(checker: &'b mut TypeCheck<'a>, func: FunctionKey, namespace: NamespaceKey, core: &'b mut ResolveContextCore) -> ResolveContext<'a, 'b> {
+    fn create_for_function(checker: &'b mut TypeCheck<'a>, expected_return: Option<Type>, namespace: NamespaceKey, core: &'b mut ResolveContextCore) -> ResolveContext<'a, 'b> {
         ResolveContext {
-            checker, func, namespace, core
+            checker, expected_return, namespace, core,
+            level: 0,
+            return_types: vec![]
         }
     }
 
@@ -671,9 +690,11 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
         let stmts = {
             let mut child = ResolveContext {
                 namespace: block_ns,
-                func: self.func,
+                expected_return: self.expected_return.clone(),
                 checker: self.checker,
-                core: self.core
+                core: self.core,
+                level: 0,
+                return_types: vec![]
             };
             let stmts: Vec<_> = stmts.iter().map(|stmt| child.resolve_stmt(stmt)).collect();
             stmts
@@ -684,9 +705,11 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
             Some(e) => {
                 let mut child = ResolveContext {
                     namespace: block_ns,
-                    func: self.func,
+                    expected_return: self.expected_return.clone(),
                     checker: self.checker,
-                    core: self.core
+                    core: self.core,
+                    level: 0,
+                    return_types: vec![]
                 };
                 Some(Box::new(child.resolve_expr(e, yield_type)))
             },
@@ -813,7 +836,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                             if let Some(typ) = &self.core.generic_stack[id] {
                                 generic_tuple.push(typ.clone());
                             } else {
-                                self.push_error(TypeCheckError::CouldNotInferParameter(type_param.name.clone(), *loc));
+                                self.push_error(TypeCheckError::CouldNotInferTypeParameter(type_param.name.clone(), *loc));
                             }
                         };
                         if generic_tuple.len() != map.len() {
@@ -868,7 +891,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                     if let Some(typ) = &self.core.generic_stack[id] {
                         variant.push(typ.clone());
                     } else {
-                        self.push_error(TypeCheckError::CouldNotInferParameter(type_param.name.clone(), *loc));
+                        self.push_error(TypeCheckError::CouldNotInferTypeParameter(type_param.name.clone(), *loc));
                     }
                 }
 
@@ -947,6 +970,75 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
 
                 Expr::IfElse { cond: resolved_cond, then_do: resolved_then_do, else_do: resolved_else_do, yield_type: expr_yield_type, loc: *loc }
             }
+            ast::Expr::Closure { parameters, body, loc } => {
+                let closure_ns = self.checker.add_namespace(Some(self.namespace));
+
+                let expected_return;
+                let mut parameter_types: Vec<Type> = vec![];
+
+                if let Some(ty) = yield_type {
+                    let Type::Function { params, ret } = &ty else {
+                        self.push_error(TypeCheckError::UnexpectedClosure { expected: self.display_type(&ty), loc: *loc });
+                        return Expr::Errored { loc: *loc };
+                    };
+                    expected_return = Some(ret.as_ref().clone());
+
+                    if parameters.len() != params.len() {
+                        self.push_error(TypeCheckError::ClosureWithWrongParameters { expected: self.display_type(&ty), got: parameters.len(), loc: *loc});
+                        return Expr::Errored { loc: *loc };
+                    }
+
+                    for (param, expected_type) in parameters.iter().zip(params) {
+                        if let Some(ty) = &param.typ {
+                            parameter_types.push(self.resolve_type(ty));
+                        } else {
+                            parameter_types.push(expected_type.clone());
+                        }
+                    }
+                } else {
+                    for param in parameters {
+                        if let Some(ty) = &param.typ {
+                            parameter_types.push(self.resolve_type(ty));
+                        } else {
+                            self.push_error(TypeCheckError::CouldNotInferParameters(*loc));
+                            return Expr::Errored { loc: *loc };
+                        }
+                    }
+                    expected_return = None;
+                }
+
+                let mut child = ResolveContext {
+                    namespace: closure_ns,
+                    expected_return: expected_return.clone(),
+                    checker: self.checker,
+                    core: self.core,
+                    level: self.level + 1,
+                    return_types: vec![]
+                };
+
+                let mut resolved_parameters = vec![];
+                for (parameter, parameter_type) in parameters.iter().zip(parameter_types) {
+                    let key = child.add_name(parameter.name.clone(), NameInfo::Local { typ: parameter_type.clone(), loc: parameter.loc, level: child.level });
+                    resolved_parameters.push(ClosureParameter { name: parameter.name.clone(), key, typ: parameter_type, loc: parameter.loc });
+                }
+
+                let resolved_body = child.resolve_expr(body, expected_return.clone());
+
+                let ret_type: Type;
+                if let Some(return_type) = expected_return {
+                    ret_type = return_type;
+                } else {
+                    if !child.return_types.is_empty() {
+                        panic!();
+                    }
+                    ret_type = self.checker.hir.type_of_expr(&resolved_body)
+                }
+
+                let declared = self.checker.namespaces[closure_ns].get_names();
+                let body = Block { stmts: vec![], trailing_expr: Some(Box::new(resolved_body)), declared, loc: body.loc() };
+
+                Expr::Closure { parameters: resolved_parameters, body, ret_type, loc: *loc }
+            }
         }
     }
 
@@ -958,13 +1050,13 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                         let typ = self.resolve_type(t);
                         let resolved_value = self.resolve_expr(value, Some(typ.clone()));
                         self.check_is_never(&resolved_value, value.loc());
-                        let decl = self.add_name(name.clone(), NameInfo::Local { typ, loc: *loc});
+                        let decl = self.add_name(name.clone(), NameInfo::Local { typ, loc: *loc, level: self.level });
                         Stmt::Decl { decl, value: resolved_value, loc: *loc }
                     },
                     None => {
                         let resolved_value = self.resolve_expr(value, None);
                         self.check_is_never(&resolved_value, value.loc());
-                        let decl = self.add_name(name.clone(), NameInfo::Local { typ: self.type_of(&resolved_value), loc: *loc});
+                        let decl = self.add_name(name.clone(), NameInfo::Local { typ: self.type_of(&resolved_value), loc: *loc, level: self.level });
                         Stmt::Decl { decl, value: resolved_value, loc: *loc }
                     }
                 }
@@ -973,8 +1065,11 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                 Stmt::Expr { expr: self.resolve_expr(expr, None), loc: *loc }
             },
             ast::Stmt::Return { value, loc} => {
-                let expected_return = self.checker.hir.function_prototypes[self.func].ret.clone();
-                let resolved_value = self.resolve_expr(value, Some(expected_return));
+                let expected_return = self.expected_return.clone();
+                let resolved_value = self.resolve_expr(value, expected_return);
+
+                self.return_types.push(self.checker.hir.type_of_expr(&resolved_value));
+
                 self.check_is_never(&resolved_value, value.loc());
                 Stmt::Return { value: resolved_value, loc: *loc }
                 // let value = self.resolve_expr(value, None);

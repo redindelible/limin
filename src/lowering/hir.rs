@@ -13,7 +13,13 @@ new_key_type! {
 
 pub enum NameInfo<'ir> {
     Function { func: FunctionKey },
-    Local { typ: Type, loc: Location<'ir> }
+    Local {
+        typ: Type,
+        loc: Location<'ir>,
+
+        /// The "closure level", so the actual function will be 0 and nested closures will be one higher than their parent.
+        level: usize
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -140,6 +146,10 @@ impl<'s> HIR<'s> {
             },
             Expr::IfElse { yield_type, .. } => {
                 yield_type.clone()
+            },
+            Expr::Closure { parameters, ret_type, .. } => {
+                let params = parameters.iter().map(|p| p.typ.clone()).collect();
+                Type::Function { params, ret: Box::new(ret_type.clone()) }
             }
         }
     }
@@ -233,13 +243,23 @@ pub enum Expr<'ir> {
     GenericCall { generic: Vec<Type>, callee: FunctionKey, arguments: Vec<Expr<'ir>>, loc: Location<'ir>},
     Errored { loc: Location<'ir> },
     New { struct_: StructKey, variant: Vec<Type>, fields: IndexMap<String, Box<Expr<'ir>>>, loc: Location<'ir> },
-    IfElse { cond: Box<Expr<'ir>>, then_do: Box<Expr<'ir>>, else_do: Box<Expr<'ir>>, yield_type: Type, loc: Location<'ir> }
+    IfElse { cond: Box<Expr<'ir>>, then_do: Box<Expr<'ir>>, else_do: Box<Expr<'ir>>, yield_type: Type, loc: Location<'ir> },
+    Closure { parameters: Vec<ClosureParameter<'ir>>, body: Block<'ir>, ret_type: Type, loc: Location<'ir> }
+}
+
+#[derive(Debug)]
+pub struct ClosureParameter<'ir> {
+    pub name: String,
+    pub key: NameKey,
+    pub typ: Type,
+    pub loc: Location<'ir>
 }
 
 impl Expr<'_> {
     pub fn always_diverges(&self, hir: &HIR) -> bool {
         match self {
             Expr::Name { .. } | Expr::Integer { .. } | Expr::Unit { .. } | Expr::Errored { .. } | Expr::Bool { .. } => false,
+            Expr::Closure { .. } => false,
             Expr::Block( Block { stmts, trailing_expr, .. } ) => {
                 stmts.iter().any(|stmt| stmt.always_diverges(hir)) || trailing_expr.as_ref().map_or(false, |e| e.always_diverges(hir))
             },

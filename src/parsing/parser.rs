@@ -127,12 +127,12 @@ impl<'a> Parser<'a> {
         self.curr().typ == first && !self.peek().leading_ws && self.peek().typ == second
     }
 
-    fn delimited_parse<T>(&mut self, left: TokenType, right: TokenType, mut each: impl FnMut(&mut Self) -> ParseResult<T>) -> ParseResult<(Vec<Box<T>>, Location<'a>)> {
+    fn delimited_parse<T>(&mut self, left: TokenType, right: TokenType, mut each: impl FnMut(&mut Self) -> ParseResult<T>) -> ParseResult<(Vec<T>, Location<'a>)> {
         let start = self.expect(left)?;
         let mut items = Vec::new();
         while self.curr().typ != right {
             let argument = each(self)?;
-            items.push(Box::new(argument)); // todo why does this box
+            items.push(argument);
             if self.curr().typ == TokenType::Comma {
                 self.advance();
             } else {
@@ -262,10 +262,10 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> ParseResult<Expr<'a>> {
-        self.parse_if_else()
+        self.parse_top_expr()
     }
 
-    fn parse_if_else(&mut self) -> ParseResult<Expr<'a>> {
+    fn parse_top_expr(&mut self) -> ParseResult<Expr<'a>> {
         if self.curr().typ == TokenType::If {
             let start = self.advance();
             let cond = Box::new(self.parse_expr()?);
@@ -274,9 +274,27 @@ impl<'a> Parser<'a> {
             let else_do = Box::new(self.parse_expr()?);
             let loc = start.loc + else_do.loc();
             Ok(Expr::IfElse { cond, then_do, else_do, loc })
+        } else if self.curr().typ == TokenType::Bar {
+            let (parameters, start) = self.delimited_parse(TokenType::Bar, TokenType::Bar, Self::parse_closure_parameter)?;
+            let body = Box::new(self.parse_expr()?);
+            let loc = start + body.loc();
+            Ok(Expr::Closure { parameters, body, loc})
         } else {
             self.parse_comparison()
         }
+    }
+
+    fn parse_closure_parameter(&mut self) -> ParseResult<ClosureParameter<'a>> {
+        let name = self.expect(TokenType::Identifier)?;
+        let (typ, loc) = if self.curr().typ == TokenType::Colon {
+            self.advance();
+            let typ = self.parse_type()?;
+            let loc = name.loc + typ.loc();
+            (Some(typ), loc)
+        } else {
+            (None, name.loc)
+        };
+        Ok(ClosureParameter { name: name.text.into(), typ, loc })
     }
 
     fn parse_comparison(&mut self) -> ParseResult<Expr<'a>> {

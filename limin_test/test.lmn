@@ -1,11 +1,12 @@
 
 
 struct Bar {
-    bar: bool;
+    bar: i32;
 }
 
 fn main() -> i32 {
-    let bar := new Bar { bar: true };
-    let baz := 32;
-    return baz;
+    let bar := new Bar { bar: 20 };
+
+    let closure : (i32) -> i32 = |n| n;
+    return closure(bar.bar);
 }

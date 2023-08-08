@@ -319,6 +319,12 @@ impl RootTracer {
                         stores
                     });
                 }
+                Instruction::CreateZeroInitStruct(struct_id) => {
+                    instructions.push(ilir::Instruction::CreateZeroInitStruct {
+                        id: *struct_id,
+                        store: self.push(lir::Type::StructRef(*struct_id))
+                    })
+                }
                 Instruction::CreateStruct(struct_id, field_arguments) => {
                     let fields_in_order = &lir.structs[struct_id].fields;
 
@@ -333,13 +339,25 @@ impl RootTracer {
                     });
                 }
                 Instruction::GetField(struct_id, field_name) => {
-                    let value = self.pop();
+                    let obj = self.pop();
                     let (idx, found) = lir.structs[struct_id].fields.iter().enumerate().find(|(_, field)| &field.name == field_name).unwrap();
                     instructions.push(ilir::Instruction::GetField {
                         id: *struct_id,
-                        value,
+                        obj,
                         field: idx,
                         store: self.push(found.ty.clone())
+                    });
+                }
+                Instruction::SetField(struct_id, field_name) => {
+                    let value = self.pop();
+                    let obj = self.pop();
+                    let (idx, _) = lir.structs[struct_id].fields.iter().enumerate().find(|(_, field)| &field.name == field_name).unwrap();
+                    instructions.push(ilir::Instruction::SetField {
+                        obj,
+                        id: *struct_id,
+                        field: idx,
+                        value,
+                        store: self.push(lir::Type::StructRef(*struct_id))
                     });
                 }
                 Instruction::Call(num_args) => {

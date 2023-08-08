@@ -404,6 +404,16 @@ impl LLVMEmitter {
                         builder.store(store, value);
                     }
                 }
+                Instruction::CreateZeroInitStruct { id, store } => {
+                    let type_info = self.struct_mapping[id].type_info.clone().to_value();
+                    let frame_ptr = frames_info.frame_ptr.clone();
+                    let obj_ptr = builder.call(None, CCC, llvm::Types::ptr(), &self.create_obj_fn, vec![
+                        type_info,
+                        frame_ptr
+                    ]).to_value();
+                    let store = frames_info.get_location_ptr(builder, store);
+                    builder.store(store, obj_ptr);
+                }
                 Instruction::CreateStruct { id, fields, store } => {
                     let type_info = self.struct_mapping[id].type_info.clone().to_value();
                     let frame_ptr = frames_info.frame_ptr.clone();
@@ -423,8 +433,8 @@ impl LLVMEmitter {
                     let store = frames_info.get_location_ptr(builder, store);
                     builder.store(store, obj_ptr);
                 }
-                Instruction::GetField { value, id, field, store } => {
-                    let obj_loc = frames_info.get_location_ptr(builder, value);
+                Instruction::GetField { obj, id, field, store } => {
+                    let obj_loc = frames_info.get_location_ptr(builder, obj);
                     let obj = builder.load(None, llvm::Types::ptr(), obj_loc).to_value();
                     let field_ptr = builder.gep(None, self.struct_mapping[id].type_ref.as_type_ref(), obj, vec![
                         GEPIndex::ConstantIndex(0),
@@ -433,6 +443,22 @@ impl LLVMEmitter {
                     let field = builder.load(None, self.emit_type(frames_info.get_ty(store), lir), field_ptr).to_value();
                     let store = frames_info.get_location_ptr(builder, store);
                     builder.store(store, field);
+                }
+                Instruction::SetField { obj, id, field, value, store } => {
+                    let obj_loc = frames_info.get_location_ptr(builder, obj);
+                    let obj = builder.load(None, llvm::Types::ptr(), obj_loc).to_value();
+                    let field_ptr = builder.gep(None, self.struct_mapping[id].type_ref.as_type_ref(), obj.clone(), vec![
+                        GEPIndex::ConstantIndex(0),
+                        GEPIndex::ConstantIndex(*field as u32 + STRUCT_HEADER_COUNT),
+                    ]).to_value();
+
+                    let value_loc = frames_info.get_location_ptr(builder, value);
+                    let value = builder.load(None, self.emit_type(frames_info.get_ty(value), lir), value_loc).to_value();
+
+                    builder.store(field_ptr, value);
+
+                    let store = frames_info.get_location_ptr(builder, store);
+                    builder.store(store, obj);
                 }
                 Instruction::Call { callee, arguments, store } => {
                     let lir::Type::Function(_, ret) = frames_info.get_ty(callee) else { panic!() };

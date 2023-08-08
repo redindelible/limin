@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 
 // A trace function should move all objects inside to the gray set
 typedef void (*ObjTraceFn)(void*);
@@ -47,6 +48,7 @@ void limin_mark_object(struct ObjectHeader* obj) {
 
 void* limin_create_object(struct TypeInfo* type, struct Frame* frame) {
     struct ObjectHeader* obj = malloc(sizeof(struct ObjectHeader) + type->size);
+    memset(obj, 0, sizeof(struct ObjectHeader) + type->size);
     obj->info = type;
     obj->mark = 2;
     obj->next = gc_state.gray;

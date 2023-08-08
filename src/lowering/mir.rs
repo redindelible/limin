@@ -29,7 +29,7 @@ impl MIR {
             Expr::Unit => Type::Unit,
             Expr::Integer(_) => Type::Integer(32),
             Expr::Boolean(_) => Type::Boolean,
-            Expr::Parameter(func, index) => self.function_prototypes[*func].params[*index].1.clone(),
+            // Expr::Parameter(func, index) => self.function_prototypes[*func].params[*index].1.clone(),
             Expr::LoadLocal(local) => self.locals[*local].typ.clone(),
             // Expr::StoreLocal(_, value) => self.type_of(value),
             Expr::LoadFunction(func) => self.function_prototypes[*func].sig(),
@@ -42,7 +42,11 @@ impl MIR {
                 ret.as_ref().clone()
             },
             Expr::New(struct_key, _) => Type::Struct(*struct_key),
-            Expr::IfElse { yield_type, .. } => yield_type.clone()
+            Expr::IfElse { yield_type, .. } => yield_type.clone(),
+            Expr::Closure { parameters, ret_type, .. } => Type::Function(
+                parameters.iter().map(|p| p.typ.clone()).collect(),
+                Box::new(ret_type.clone())
+            ),
         }
     }
 
@@ -119,6 +123,7 @@ impl FunctionPrototype {
 }
 
 pub struct FunctionBody {
+    pub params: Vec<LocalKey>,
     pub body: BlockKey
 }
 
@@ -139,14 +144,16 @@ pub struct Block {
     pub ret: Box<Expr>,
 
     pub ret_type: Type,
-    pub locals: Vec<LocalKey>
+    pub locals: Vec<LocalKey>,
+    pub level: usize,
 }
 
 #[derive(Clone)]
 pub struct LocalInfo {
     pub name: String,
     pub typ: Type,
-    pub block: BlockKey
+    pub block: BlockKey,
+    pub is_closed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -155,7 +162,7 @@ pub enum Expr {
     Never,
     Integer(u64),
     Boolean(bool),
-    Parameter(FunctionKey, usize),
+    // Parameter(FunctionKey, usize),
     LoadLocal(LocalKey),
     LoadFunction(FunctionKey),
     // StoreLocal(LocalKey, Box<Expr>),
@@ -163,7 +170,15 @@ pub enum Expr {
     Call(Box<Expr>, Vec<Expr>),
     New(StructKey, IndexMap<String, Expr>),
     Block(BlockKey),
-    IfElse { cond: Box<Expr>, then_do: Box<Expr>, else_do: Box<Expr>, yield_type: Type }
+    IfElse { cond: Box<Expr>, then_do: Box<Expr>, else_do: Box<Expr>, yield_type: Type },
+    Closure { parameters: Vec<ClosureParameter>, ret_type: Type, body: BlockKey, closed_blocks: Vec<BlockKey> }
+}
+
+#[derive(Debug, Clone)]
+pub struct ClosureParameter {
+    pub name: String,
+    pub key: LocalKey,
+    pub typ: Type
 }
 
 impl Expr {
@@ -173,7 +188,7 @@ impl Expr {
             Expr::Never => true,
             Expr::Integer(_) => false,
             Expr::Boolean(_) => false,
-            Expr::Parameter(_, _) => false,
+            // Expr::Parameter(_, _) => false,
             Expr::LoadLocal(_) => false,
             Expr::LoadFunction(_) => false,
             Expr::GetAttr(_, obj, _) => {
@@ -196,6 +211,7 @@ impl Expr {
             Expr::IfElse { cond, then_do, else_do, .. } => {
                 cond.always_diverges(mir) || (then_do.always_diverges(mir) && else_do.always_diverges(mir))
             },
+            Expr::Closure { .. } => false
         }
     }
 }

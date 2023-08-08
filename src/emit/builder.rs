@@ -38,12 +38,14 @@ impl LIRBuilder {
         id
     }
 
-    pub fn define_function<F>(&mut self, id: lir::FunctionID, name: String, f: F) where F: FnOnce(FunctionBuilder) -> lir::Function {
-        let builder = FunctionBuilder { id, name, ret: None, parameters: Vec::new(), counter: Counter::new(0) };
+    pub fn define_function<F>(&mut self, id: lir::FunctionID, name: String, f: F) -> lir::Type where F: FnOnce(FunctionBuilder) -> lir::Function {
+        let builder = FunctionBuilder { lir_builder: self, id, name, ret: None, parameters: Vec::new(), counter: Counter::new(0) };
         let func = f(builder);
+        let sig = func.signature();
         if self.functions.get_mut(&id).unwrap().replace(func).is_some() {
             panic!("function already defined")
         };
+        sig
     }
 
     pub fn declare_struct(&mut self) -> lir::StructID {
@@ -90,7 +92,9 @@ impl StructBuilder {
     }
 }
 
-pub struct FunctionBuilder {
+pub struct FunctionBuilder<'a> {
+    lir_builder: &'a mut LIRBuilder,
+
     id: lir::FunctionID,
     name: String,
     ret: Option<lir::Type>,
@@ -99,7 +103,7 @@ pub struct FunctionBuilder {
     counter: Counter,
 }
 
-impl FunctionBuilder {
+impl FunctionBuilder<'_> {
     pub fn parameter(&mut self, name: String, ty: lir::Type) -> lir::LocalID {
         let local = lir::LocalID(self.counter.next());
         self.parameters.push(lir::FunctionParameter { local, name, ty });
@@ -115,10 +119,10 @@ impl FunctionBuilder {
     }
 
     pub fn build<F>(self, f: F) -> lir::Function where F: FnOnce(BlockBuilder) -> lir::BlockDiverge {
-        let FunctionBuilder { id, name, ret, parameters, mut counter, .. } = self;
+        let FunctionBuilder { lir_builder, id, name, ret, parameters, mut counter } = self;
 
         let block = {
-            let mut block_builder: BlockBuilder = BlockBuilder::new(&mut counter);
+            let mut block_builder: BlockBuilder = BlockBuilder::new(lir_builder, &mut counter);
             for param in &parameters {
                 block_builder.locals.insert(param.local, param.ty.clone());
             }
@@ -137,6 +141,7 @@ impl FunctionBuilder {
 
 
 pub struct BlockBuilder<'a> {
+    pub lir_builder: &'a mut LIRBuilder,
     counter: &'a mut Counter,
 
     instructions: Vec<lir::Instruction>,
@@ -146,8 +151,9 @@ pub struct BlockBuilder<'a> {
 }
 
 impl<'a> BlockBuilder<'a> {
-    fn new(counter: &'a mut Counter) -> BlockBuilder<'a> {
+    fn new(builder: &'a mut LIRBuilder, counter: &'a mut Counter) -> BlockBuilder<'a> {
         BlockBuilder {
+            lir_builder: builder,
             counter,
             instructions: Vec::new(),
             stack_types: Vec::new(),
@@ -156,7 +162,7 @@ impl<'a> BlockBuilder<'a> {
     }
 
     pub fn build<T>(&mut self, f: impl FnOnce(BlockBuilder) -> T) -> T {
-        f(BlockBuilder::new(self.counter))
+        f(BlockBuilder::new(self.lir_builder, self.counter))
     }
 
     fn push_type(&mut self, ty: lir::Type) {
@@ -168,6 +174,22 @@ impl<'a> BlockBuilder<'a> {
         if &ty != eq_ty {
             panic!("Expected {:?}, got {:?}", eq_ty, ty);
         }
+    }
+
+    pub fn upcast_ref(&mut self, from_type: lir::Type) {
+        if !matches!(&from_type, lir::Type::StructRef(_)) {
+            panic!();
+        }
+        self.pop_type(&from_type);
+        self.push_type(lir::Type::AnyRef);
+    }
+
+    pub fn downcast_ref(&mut self, to_type: lir::Type) {
+        if !matches!(&to_type, lir::Type::StructRef(_)) {
+            panic!();
+        }
+        self.pop_type(&lir::Type::AnyRef);
+        self.push_type(to_type);
     }
 
     pub fn declare_variable(&mut self, ty: lir::Type) -> lir::LocalID {
@@ -221,6 +243,11 @@ impl<'a> BlockBuilder<'a> {
         }
     }
 
+    pub fn create_zero_init_struct(&mut self, struct_: lir::StructID) {
+        self.push_type(lir::Type::StructRef(struct_));
+        self.instructions.push(lir::Instruction::CreateZeroInitStruct(struct_));
+    }
+
     pub fn create_struct(&mut self, struct_: lir::StructID, fields: Vec<(String, lir::Type)>) {
         let mut field_names = Vec::new();
         for (name, ty) in fields.into_iter().rev() {
@@ -235,6 +262,14 @@ impl<'a> BlockBuilder<'a> {
         self.pop_type(&lir::Type::StructRef(struct_));
         self.push_type(field.1);
         self.instructions.push(lir::Instruction::GetField(struct_, field.0));
+    }
+
+    pub fn set_field(&mut self, struct_: lir::StructID, field: (String, lir::Type)) {
+        let (field_name, field_type) = field;
+        self.pop_type(&field_type);
+        self.pop_type(&lir::Type::StructRef(struct_));
+        self.instructions.push(lir::Instruction::SetField(struct_, field_name));
+        self.push_type(lir::Type::StructRef(struct_));
     }
 
     pub fn call(&mut self, params: &[lir::Type], ret: lir::Type) {
