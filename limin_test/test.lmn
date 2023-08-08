@@ -7,6 +7,6 @@ struct Bar {
 fn main() -> i32 {
     let bar := new Bar { bar: 20 };
 
-    let closure : (i32) -> i32 = |n| n;
-    return closure(bar.bar);
+    let closure : (Bar) -> () -> i32 = |b| || b.bar;
+    return closure(bar)();
 }

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use crate::emit::{builder::{LIRBuilder, BlockBuilder}, lir};
-use crate::emit::lir::StructID;
+use crate::emit::lir::{LocalID, StructID};
 use crate::lowering::mir;
 
 pub fn lower(mir: mir::MIR) -> lir::LIR {
@@ -61,17 +61,33 @@ impl Lowering {
                 }
                 builder.parameter("$closure".into(), lir::Type::AnyRef);
 
+                let mut parameter_locals: HashMap<mir::LocalKey, LocalID> = HashMap::new();
                 for (i, (param_name, param_type)) in function_proto.params.iter().enumerate() {
                     if let Some(lowered) = self.lower_type(&mir, param_type) {
                         let local = builder.parameter(param_name.clone(), lowered);
-
-                        fn_lowering.locals_mapping.insert(function_body.params[i], local);
+                        parameter_locals.insert(function_body.params[i], local);
                     }
                 }
+
                 builder.build(|mut builder| {
                     let block_key = function_body.body;
+                    fn_lowering.lower_block(&mut builder, block_key, &mir, |fn_lowering, builder| {
+                        for (i, (_, param_type)) in function_proto.params.iter().enumerate() {
+                            if let Some(lowered) = self.lower_type(&mir, param_type) {
+                                let key = function_body.params[i];
+                                let info = &mir.locals[key];
+                                let local = parameter_locals[&key];
 
-                    fn_lowering.lower_block(&mut builder, block_key, &mir);
+                                if info.is_closed {
+                                    builder.load_variable(fn_lowering.block_captures[&info.block].obj);
+                                    builder.load_variable(local);
+                                    builder.set_field(fn_lowering.block_captures[&info.block].capture_ty, (fn_lowering.block_captures[&info.block].captures[&key].clone(), lowered));
+                                } else {
+                                    fn_lowering.locals_mapping.insert(function_body.params[i], local);
+                                }
+                            }
+                        }
+                    });
                     let block = &mir.blocks[block_key];
                     if mir.is_never(&block.ret_type) {
                         // hopefully something already returned
@@ -158,10 +174,11 @@ impl<'a> FunctionLowering<'a> {
         }
     }
 
-    fn lower_block(&mut self, builder: &mut BlockBuilder, block_key: mir::BlockKey, mir: &mir::MIR) {
+    fn lower_block(&mut self, builder: &mut BlockBuilder, block_key: mir::BlockKey, mir: &mir::MIR, after_captures: impl FnOnce(&mut Self, &mut BlockBuilder)) {
         if mir.blocks[block_key].locals.iter().any(|local| mir.locals[*local].is_closed) {
             let capture_ty = builder.lir_builder.declare_struct();
             let name = format!("{}_capture_{}", &self.fn_name, self.capture_count);
+            self.capture_count += 1;
 
             let mut captures: HashMap<mir::LocalKey, String> = HashMap::new();
 
@@ -184,6 +201,8 @@ impl<'a> FunctionLowering<'a> {
 
             self.block_captures.insert(block_key, CaptureInfo { obj: capture, capture_ty, captures });
         };
+
+        after_captures(self, builder);
 
         let block = &mir.blocks[block_key];
 
@@ -324,7 +343,7 @@ impl<'a> FunctionLowering<'a> {
                 let block = &mir.blocks[*block_key];
                 if mir.is_never(&block.ret_type) {
                     let child = builder.build(|mut builder| {
-                        self.lower_block(&mut builder, *block_key, mir);
+                        self.lower_block(&mut builder, *block_key, mir, |_, _| ());
                         builder.yield_diverges()
                     });
                     builder.block_diverge(child);
@@ -332,7 +351,7 @@ impl<'a> FunctionLowering<'a> {
                     None
                 } else if mir.is_zero_sized(&block.ret_type) {
                     let child = builder.build(|mut builder| {
-                        self.lower_block(&mut builder, *block_key, mir);
+                        self.lower_block(&mut builder, *block_key, mir, |_, _| ());
                         builder.yield_none()
                     });
                     builder.block_void(child);
@@ -340,7 +359,7 @@ impl<'a> FunctionLowering<'a> {
                 } else {
                     let ty = self.lower_type(mir, &block.ret_type).unwrap();
                     let child = builder.build(|mut builder| {
-                        self.lower_block(&mut builder, *block_key, mir);
+                        self.lower_block(&mut builder, *block_key, mir, |_, _| ());
                         builder.yield_value(ty.clone())
                     });
                     builder.block_value(child);
@@ -422,10 +441,11 @@ impl<'a> FunctionLowering<'a> {
 
                     let closure = builder.parameter("$closure".into(), lir::Type::AnyRef);
 
+                    let mut parameter_locals: HashMap<mir::LocalKey, lir::LocalID> = HashMap::new();
                     for param in parameters.iter() {
                         if let Some(lowered) = self.lower_type(&mir, &param.typ) {
                             let local = builder.parameter(param.name.clone(), lowered);
-                            closure_lowering.locals_mapping.insert(param.key, local);
+                            parameter_locals.insert(param.key, local);
                         }
                     }
 
@@ -443,7 +463,22 @@ impl<'a> FunctionLowering<'a> {
                             });
                         }
 
-                        closure_lowering.lower_block(&mut builder, *body, mir);
+                        closure_lowering.lower_block(&mut builder, *body, mir, |closure_lowering, builder| {
+                            for (i, param) in parameters.iter().enumerate() {
+                                if let Some(lowered) = self.lower_type(&mir, &param.typ) {
+                                    let info = &mir.locals[param.key];
+                                    let local = parameter_locals[&param.key];
+
+                                    if info.is_closed {
+                                        builder.load_variable(closure_lowering.block_captures[&info.block].obj);
+                                        builder.load_variable(local);
+                                        builder.set_field(closure_lowering.block_captures[&info.block].capture_ty, (closure_lowering.block_captures[&info.block].captures[&param.key].clone(), lowered));
+                                    } else {
+                                        closure_lowering.locals_mapping.insert(param.key, local);
+                                    }
+                                }
+                            }
+                        });
                         let block = &mir.blocks[*body];
                         if mir.is_never(&block.ret_type) {
                             // hopefully something already returned
@@ -455,6 +490,8 @@ impl<'a> FunctionLowering<'a> {
                         builder.yield_diverges()
                     })
                 });
+
+                self.closure_count += 1;
 
                 builder.load_function(closure_fn, sig.clone());
 
