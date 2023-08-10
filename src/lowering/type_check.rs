@@ -1161,16 +1161,16 @@ mod test {
     use std::collections::HashMap;
     use std::path::Path;
     use crate::parsing::ast;
-    use crate::hir::{FunctionKey, HIR, StructKey, Type};
+    use crate::lowering::hir::{FunctionKey, HIR, StructKey, Type};
+    use crate::lowering::type_check::{collect_fields, collect_function_bodies, collect_functions, collect_structs, initialize, resolve_types};
     use crate::source::Source;
-    use crate::type_check::{collect_fields, collect_function_bodies, collect_functions, collect_structs, initialize, resolve_types};
 
     fn source(name: &str, text: &str) -> Source {
         Source::from_text(name, text.to_owned())
     }
 
     fn parse_one(s: &Source) -> ast::AST {
-        let file = crate::parser::parse_file(s).unwrap();
+        let file = crate::parsing::parse_file(s).unwrap();
         let mut map = HashMap::new();
         map.insert(file.path.clone(), file);
         ast::AST { name: "".into(), files: map }

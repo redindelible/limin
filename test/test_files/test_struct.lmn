@@ -12,10 +12,9 @@ struct FooBar {
     bar: Bar;
 }
 
-
 fn main() -> i32 {
-    let foo := new Foo { foo: 32 };
-    let bar := new Bar { bar: false };
-    let foobar := new FooBar { foo: foo, bar: bar };
+    let foo = new Foo { foo: 32 };
+    let bar = new Bar { bar: false };
+    let foobar = new FooBar { foo: foo, bar: bar };
     return foobar.foo.foo;
 }

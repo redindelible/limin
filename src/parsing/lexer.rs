@@ -229,7 +229,7 @@ impl<'a> Lexer<'a> {
 
 #[cfg(test)]
 mod test {
-    use crate::lexer::{Lexer, Token, TokenType};
+    use crate::parsing::lexer::{Lexer, Token, TokenType};
     use crate::source::{Location, Source};
     use TokenType::*;
 

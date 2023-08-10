@@ -482,7 +482,7 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod test {
     use crate::parsing::ast::{BinOp, Expr, Function, TopLevel, Type};
-    use crate::parser::{parse_file, Parser};
+    use crate::parsing::parser::{parse_file, Parser};
     use crate::source::Source;
 
     fn source(name: &str, text: &str) -> Source {
@@ -508,7 +508,7 @@ mod test {
         let Expr::Name { name, ..} = callee.as_ref() else { panic!() };
         assert_eq!(name, "hello");
         assert_eq!(arguments.len(), 1);
-        let Expr::Name { name, .. } = arguments[0].as_ref() else { panic!() };
+        let Expr::Name { name, .. } = &arguments[0] else { panic!() };
         assert_eq!(name, "ad");
     }
 
@@ -535,13 +535,13 @@ mod test {
         let Expr::Name { name, ..} = callee.as_ref() else { panic!() };
         assert_eq!(name, "hello");
         assert_eq!(generic_arguments.len(), 1);
-        let Type::Name { name, ..} = generic_arguments[0].as_ref() else { panic!() };
+        let Type::Name { name, ..} = &generic_arguments[0] else { panic!() };
         assert_eq!(name, "ad");
 
         assert_eq!(arguments.len(), 2);
-        let Expr::Name { name, .. } = arguments[0].as_ref() else { panic!() };
+        let Expr::Name { name, .. } = &arguments[0] else { panic!() };
         assert_eq!(name, "a");
-        let Expr::Name { name, .. } = arguments[1].as_ref() else { panic!() };
+        let Expr::Name { name, .. } = &arguments[1] else { panic!() };
         assert_eq!(name, "b");
     }
 
