@@ -98,8 +98,39 @@ impl Monomorphize {
         }
     }
 
+    fn type_of(&self, expr: &mir::Expr) -> mir::Type {
+        match expr {
+            mir::Expr::Unit => mir::Type::Unit,
+            mir::Expr::Never => mir::Type::Never,
+            mir::Expr::Integer(_) => mir::Type::Integer(32),
+            mir::Expr::Boolean(_) => mir::Type::Boolean,
+            mir::Expr::LoadLocal(key) => self.locals[*key].typ.clone(),
+            mir::Expr::LoadFunction(key) => self.function_prototypes[*key].sig(),
+            mir::Expr::GetAttr(key, _, field) => self.struct_bodies[*key].fields[field].clone(),
+            mir::Expr::Call(fn_type, _, _) => fn_type.ret.as_ref().clone(),
+            mir::Expr::New(key, _) => mir::Type::Struct(*key),
+            mir::Expr::Block(block) => self.blocks[*block].ret_type.clone(),
+            mir::Expr::IfElse { yield_type, .. } => yield_type.clone(),
+            mir::Expr::Closure { fn_type, .. } => mir::Type::Function(fn_type.clone()),
+            mir::Expr::Cast { cast_type, .. } => {
+                match cast_type {
+                    mir::CastType::StructToSuper { to, .. } => mir::Type::Struct(*to)
+                }
+            }
+        }
+    }
+
     fn resolve_struct(&mut self, hir_struct: hir::StructKey, mir_struct: mir::StructKey, generic_map: HashMap<u64, mir::Type>, hir: &hir::HIR) {
         let struct_ = &hir.structs[hir_struct];
+
+        let super_struct: Option<mir::StructKey>;
+        if let Some((super_key, super_type_args, _)) = &struct_.super_struct {
+            let type_args: Vec<mir::Type> = super_type_args.iter().map(|t| self.lower_type(t, &generic_map, hir)).collect();
+            let key = self.queue_struct(*super_key, &type_args, hir);
+            super_struct = Some(key);
+        } else {
+            super_struct = None;
+        }
 
         let mut fields = IndexMap::new();
         for field in struct_.fields.values() {
@@ -107,7 +138,7 @@ impl Monomorphize {
             fields.insert(field.name.clone(), typ);
         }
 
-        self.struct_bodies.insert(mir_struct, mir::StructBody { fields });
+        self.struct_bodies.insert(mir_struct, mir::StructBody { super_struct, fields });
     }
 
     fn resolve_function(&mut self, hir_func: hir::FunctionKey, mir_func: mir::FunctionKey, generic_map: HashMap<u64, mir::Type>, hir: &hir::HIR) {
@@ -119,7 +150,7 @@ impl Monomorphize {
 
         let mut params = Vec::new();
         for param in &hir.function_prototypes[hir_func].params {
-            params.push(self.locals_map[&param.decl]);
+            params.push((param.name.clone(), self.locals_map[&param.decl]));
         }
 
         self.function_bodies.insert(mir_func, mir::FunctionBody { params, body });
@@ -186,10 +217,12 @@ impl Monomorphize {
                 mir::Expr::GetAttr(struct_, Box::new(self.lower_expr(obj, map, hir)), attr.clone())
             },
             hir::Expr::Call { callee, arguments, .. } => {
-                mir::Expr::Call(
-                    Box::new(self.lower_expr(callee, map, hir)),
-                    arguments.iter().map(|arg| self.lower_expr(arg, map, hir)).collect()
-                )
+                let callee = self.lower_expr(callee, map, hir);
+                let arguments = arguments.iter().map(|arg| self.lower_expr(arg, map, hir)).collect();
+
+                let mir::Type::Function(fn_type) = self.type_of(&callee) else { panic!() };
+
+                mir::Expr::Call(fn_type, Box::new(callee), arguments)
             },
             hir::Expr::New { struct_, variant, fields: hir_fields, .. } => {
                 let variant: Vec<_> = variant.iter().map(|t| self.lower_type(t, map, hir)).collect();
@@ -203,9 +236,11 @@ impl Monomorphize {
                 mir::Expr::New(key, fields)
             }
             hir::Expr::GenericCall { callee, generic, arguments, .. } => {
-                let generic: Vec<_> = generic.iter().map(|t| self.lower_type(t, map, hir)).collect();
-                let callee = mir::Expr::LoadFunction(self.queue_function(*callee, &generic, hir));
-                mir::Expr::Call(Box::new(callee), arguments.iter().map(|arg| self.lower_expr(arg, map, hir)).collect())
+                let generic: Vec<mir::Type> = generic.iter().map(|t| self.lower_type(t, map, hir)).collect();
+                let key = self.queue_function(*callee, &generic, hir);
+                let callee = mir::Expr::LoadFunction(key);
+                let fn_type = self.function_prototypes[key].fn_type.clone();
+                mir::Expr::Call(fn_type, Box::new(callee), arguments.iter().map(|arg| self.lower_expr(arg, map, hir)).collect())
             },
             hir::Expr::IfElse { cond, then_do, else_do, yield_type, .. } => {
                 mir::Expr::IfElse {
@@ -232,11 +267,29 @@ impl Monomorphize {
 
                 let ret_type = self.lower_type(ret_type, map, hir);
 
+                let fn_type = mir::FunctionType {
+                    params: parameters.iter().map(|p| p.typ.clone()).collect(),
+                    ret: Box::new(ret_type.clone())
+                };
+
                 let closed_blocks: Vec<mir::BlockKey> = used.into_iter().filter(|block| {
                     self.blocks[*block].level <= self.current_level
                 }).collect();
 
-                mir::Expr::Closure { parameters, ret_type, body, closed_blocks }
+                mir::Expr::Closure { parameters, fn_type, body, closed_blocks }
+            }
+            hir::Expr::Cast(expr, to_type) => {
+                let expr = self.lower_expr(expr, map, hir);
+                let from_type = self.type_of(&expr);
+                let to_type = self.lower_type(to_type, map, hir);
+
+                match (from_type, to_type) {
+                    (a, b) if a == b => expr,
+                    (mir::Type::Struct(a), mir::Type::Struct(b)) => {
+                        mir::Expr::Cast { expr: Box::new(expr), cast_type: mir::CastType::StructToSuper { from: a, to: b } }
+                    },
+                    _ => panic!()
+                }
             }
             // hir::Expr::LogicBinOp { .. } => todo!(),
             hir::Expr::Errored { .. } => panic!("Should not be able to reach here if there is an error"),
@@ -319,17 +372,15 @@ impl Monomorphize {
 
         let mut params = Vec::new();
         for param in proto.params.clone() {
-            let name = param.name;
             let typ = self.lower_type(&param.typ, &generic_map, hir);
-            params.push((name, typ))
+            params.push(typ);
         }
-
-        let ret = self.lower_type(&proto.ret, &generic_map, hir);
+        let ret = Box::new(self.lower_type(&proto.ret, &generic_map, hir));
+        let fn_type = mir::FunctionType { params, ret };
 
         let key = self.function_prototypes.insert(mir::FunctionPrototype {
             name,
-            params,
-            ret
+            fn_type
         });
         self.functions[func].variants.insert(variant.to_vec(), key);
         self.resolve_queue.borrow_mut().push_back(QueuedResolve::Function { hir_key: func, mir_key: key, map: generic_map });
@@ -350,8 +401,9 @@ impl Monomorphize {
                 mir::Type::Struct(self.queue_struct(*struct_, &variant, hir))
             },
             hir::Type::Function { params, ret } => {
-                let params: Vec<_> = params.iter().map(|t| self.lower_type(t, map, hir)).collect();
-                mir::Type::Function(params, Box::new(self.lower_type(ret, map, hir)))
+                let params: Vec<mir::Type> = params.iter().map(|t| self.lower_type(t, map, hir)).collect();
+                let ret = Box::new(self.lower_type(ret, map, hir));
+                mir::Type::Function(mir::FunctionType { params, ret })
             },
             hir::Type::GenericFunction { .. } => unreachable!(),
             hir::Type::TypeParameterInstance { .. } => unreachable!(),
@@ -366,7 +418,7 @@ impl Monomorphize {
             mir::Type::Boolean => "bool".into(),
             mir::Type::Integer(bits) => format!("i{bits}"),
             mir::Type::Struct(struct_) => self.struct_prototypes[*struct_].name.clone(),
-            mir::Type::Function(params, ret) => format!(
+            mir::Type::Function(mir::FunctionType { params, ret }) => format!(
                 "({}) -> {}",
                 map_join(params, |p| self.name_of(p)),
                 self.name_of(ret)

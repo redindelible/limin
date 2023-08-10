@@ -73,6 +73,7 @@ pub struct TypeParameter<'a> {
 pub struct Struct<'a> {
     pub name: String,
     pub type_params: Vec<TypeParameter<'a>>,
+    pub super_struct: Option<(String, Location<'a>)>,
     pub items: Vec<StructItem<'a>>,
     pub loc: Location<'a>
 }

@@ -192,6 +192,11 @@ impl<'a> BlockBuilder<'a> {
         self.push_type(to_type);
     }
 
+    pub fn cast_ref(&mut self, from_type: lir::StructID, to_type: lir::StructID) {
+        self.pop_type(&lir::Type::StructRef(from_type));
+        self.push_type(lir::Type::StructRef(to_type));
+    }
+
     pub fn declare_variable(&mut self, ty: lir::Type) -> lir::LocalID {
         self.pop_type(&ty);
         let id = lir::LocalID(self.counter.next());

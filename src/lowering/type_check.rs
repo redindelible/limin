@@ -1,12 +1,12 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use indexmap::IndexMap;
-use slotmap::{SecondaryMap, SlotMap};
+use slotmap::{new_key_type, SecondaryMap, SlotMap};
 use crate::parsing::ast;
 use crate::util::map_join;
 use crate::error::Message;
-use crate::lowering::hir::{HIR, NameKey, NameInfo, Struct, StructKey, Type, StructField, FunctionKey, Parameter, FunctionPrototype, FunctionBody, Expr, Stmt, TypeParameter, TypeParamKey, Block, ClosureParameter};
-use crate::lowering::type_check::type_check_state::NamespaceKey;
+use crate::lowering::hir::*;
 use crate::source::{HasLoc, Location};
 
 pub fn resolve_types(ast: ast::AST) -> Result<HIR, Vec<TypeCheckError>> {
@@ -193,112 +193,100 @@ impl<'a> Message for TypeCheckError<'a> {
     }
 }
 
-mod type_check_state {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-    use slotmap::{new_key_type, SlotMap};
-    use crate::lowering::hir::*;
-    pub use crate::lowering::type_check::TypeCheckError;
+new_key_type! {
+    pub struct NamespaceKey;
+}
 
-    new_key_type! {
-        pub struct NamespaceKey;
-    }
+struct Namespace {
+    pub parent: Option<NamespaceKey>,
+    pub names: HashMap<String, NameKey>,
+    pub types: HashMap<String, Type>,
+    pub structs: HashMap<String, StructKey>,
+    pub namespaces: HashMap<String, NamespaceKey>,
+}
 
-    pub struct Namespace {
-        pub parent: Option<NamespaceKey>,
-        pub names: HashMap<String, NameKey>,
-        pub types: HashMap<String, Type>,
-        pub structs: HashMap<String, StructKey>,
-        pub namespaces: HashMap<String, NamespaceKey>,
-        _private: (),
-    }
-
-    impl Namespace {
-        fn new(parent: Option<NamespaceKey>) -> Namespace {
-            Namespace {
-                parent,
-                names: HashMap::new(),
-                types: HashMap::new(),
-                structs: HashMap::new(),
-                namespaces: HashMap::new(),
-                _private: ()
-            }
-        }
-
-        pub fn get_names(&self) -> HashMap<String, NameKey> {
-            self.names.clone()
+impl Namespace {
+    fn new(parent: Option<NamespaceKey>) -> Namespace {
+        Namespace {
+            parent,
+            names: HashMap::new(),
+            types: HashMap::new(),
+            structs: HashMap::new(),
+            namespaces: HashMap::new(),
         }
     }
 
-    pub struct TypeCheck<'a> {
-        pub namespaces: SlotMap<NamespaceKey, Namespace>,
-        pub errors: RefCell<Vec<TypeCheckError<'a>>>,
-        pub hir: HIR<'a>,
-        pub type_param_counter: u64
-    }
-
-    impl<'a> TypeCheck<'a> {
-        pub fn new(name: String) -> TypeCheck<'a> {
-            TypeCheck { namespaces: SlotMap::with_key(), hir: HIR::new(name), errors: Default::default(), type_param_counter: 0 }
-        }
-
-        pub fn add_type_param(&mut self) -> u64 {
-            let count = self.type_param_counter;
-            self.type_param_counter += 1;
-            count
-        }
-
-        pub fn add_type(&mut self, ns: NamespaceKey, name: String, typ: Type) {
-            self.namespaces[ns].types.insert(name, typ);
-        }
-
-        pub fn add_name(&mut self, ns: NamespaceKey, name: String, info: NameInfo<'a>) -> NameKey {
-            let key = self.hir.names.insert(info);
-            self.namespaces[ns].names.insert(name, key);
-            key
-        }
-
-        pub fn add_namespace(&mut self, parent: Option<NamespaceKey>) -> NamespaceKey {
-            self.namespaces.insert(Namespace::new(parent))
-        }
-
-        pub fn add_struct(&mut self, ns: NamespaceKey, struct_: Struct<'a>) -> StructKey {
-            let name = struct_.name.clone();
-            let key = self.hir.structs.insert(struct_);
-            self.namespaces[ns].structs.insert(name, key);
-            key
-        }
-
-        pub fn get_struct_key(&self, file: NamespaceKey, name: &str) -> StructKey {
-            self.namespaces[file].structs[name]
-        }
-
-        pub fn get_function_key(&self, file: NamespaceKey, name: &str) -> FunctionKey {
-            match self.hir.names[self.namespaces[file].names[name]] {
-                NameInfo::Function { func } => func,
-                _ => panic!("not a function")
-            }
-        }
-
-        pub fn type_of_expr(&self, expr: &Expr<'a>) -> Type {
-            self.hir.type_of_expr(expr)
-        }
-
-        pub fn push_error(&self, err: TypeCheckError<'a>) {
-            self.errors.borrow_mut().push(err);
-        }
-
-        pub fn finalize(self) -> Result<HIR<'a>, Vec<TypeCheckError<'a>>> {
-            if self.errors.borrow().is_empty() {
-                Ok(self.hir)
-            } else {
-                Err(self.errors.into_inner())
-            }
-        }
+    pub fn get_names(&self) -> HashMap<String, NameKey> {
+        self.names.clone()
     }
 }
 
-use self::type_check_state::TypeCheck;
+struct TypeCheck<'a> {
+    namespaces: SlotMap<NamespaceKey, Namespace>,
+    errors: RefCell<Vec<TypeCheckError<'a>>>,
+    hir: HIR<'a>,
+    type_param_counter: u64
+}
+
+impl<'a> TypeCheck<'a> {
+    pub fn new(name: String) -> TypeCheck<'a> {
+        TypeCheck { namespaces: SlotMap::with_key(), hir: HIR::new(name), errors: Default::default(), type_param_counter: 0 }
+    }
+
+    pub fn add_type_param(&mut self) -> u64 {
+        let count = self.type_param_counter;
+        self.type_param_counter += 1;
+        count
+    }
+
+    pub fn add_type(&mut self, ns: NamespaceKey, name: String, typ: Type) {
+        self.namespaces[ns].types.insert(name, typ);
+    }
+
+    pub fn add_name(&mut self, ns: NamespaceKey, name: String, info: NameInfo<'a>) -> NameKey {
+        let key = self.hir.names.insert(info);
+        self.namespaces[ns].names.insert(name, key);
+        key
+    }
+
+    pub fn add_namespace(&mut self, parent: Option<NamespaceKey>) -> NamespaceKey {
+        self.namespaces.insert(Namespace::new(parent))
+    }
+
+    pub fn add_struct(&mut self, ns: NamespaceKey, struct_: Struct<'a>) -> StructKey {
+        let name = struct_.name.clone();
+        let key = self.hir.structs.insert(struct_);
+        self.namespaces[ns].structs.insert(name, key);
+        key
+    }
+
+    pub fn get_struct_key(&self, file: NamespaceKey, name: &str) -> StructKey {
+        self.namespaces[file].structs[name]
+    }
+
+    pub fn get_function_key(&self, file: NamespaceKey, name: &str) -> FunctionKey {
+        match self.hir.names[self.namespaces[file].names[name]] {
+            NameInfo::Function { func } => func,
+            _ => panic!("not a function")
+        }
+    }
+
+    pub fn type_of_expr(&self, expr: &Expr<'a>) -> Type {
+        self.hir.type_of_expr(expr)
+    }
+
+    pub fn push_error(&self, err: TypeCheckError<'a>) {
+        self.errors.borrow_mut().push(err);
+    }
+
+    pub fn finalize(self) -> Result<HIR<'a>, Vec<TypeCheckError<'a>>> {
+        if self.errors.borrow().is_empty() {
+            Ok(self.hir)
+        } else {
+            Err(self.errors.into_inner())
+        }
+    }
+}
 
 
 struct Initial<'a> {
@@ -359,7 +347,7 @@ fn collect_structs(initial: Initial) -> CollectedStructs {
                 checker.push_error(TypeCheckError::StructDuplicated(name.clone(), *loc, checker.hir.structs[prev_key].loc));
             }
 
-            checker.add_struct(file_ns, Struct { name: name.clone(), type_params: Vec::new(), fields: IndexMap::new(), loc: *loc });
+            checker.add_struct(file_ns, Struct { name: name.clone(), type_params: Vec::new(), super_struct: None, fields: IndexMap::new(), loc: *loc });
         }
     }
 
@@ -426,8 +414,16 @@ fn collect_fields(collected: CollectedStructs) -> CollectedFields {
 
     for (file_path, file) in &files {
         let file_ns = file_namespaces[file_path];
-        for ast::Struct { name, type_params, items, .. } in file.iter_structs() {
+        for ast::Struct { name, type_params, items, super_struct, .. } in file.iter_structs() {
             let key = checker.get_struct_key(file_ns, name);
+
+            if let Some((super_name, loc)) = super_struct {
+                if let Some(super_key) = checker.namespaces[file_ns].structs.get(super_name) {
+                    checker.hir.structs[key].super_struct = Some((*super_key, vec![], *loc));
+                } else {
+                    checker.push_error(TypeCheckError::CouldNotResolveName(super_name.clone(), *loc));
+                }
+            }
 
             let struct_ns = checker.add_namespace(Some(file_ns));
 
@@ -646,40 +642,140 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
         }
     }
 
-    fn check(&mut self, got_type: &Type, expected: ExpectedType, loc: &Location<'a>) -> bool {
-        match expected {
-            Some(Type::Errored) => false,
-            Some(Type::TypeParameterInstance { id, .. }) => {
-                let inferred_type = (&self.core.generic_stack[id]).as_ref();
-                if let Some(typ) = inferred_type {
-                    return self.check(got_type, Some(typ.clone()), loc);
-                } else {
-                    self.core.generic_stack[id] = Some(got_type.clone());
-                    return true
-                }
-            }
-            None => true,
-            Some(t) => {
-                if let Type::TypeParameterInstance { id, .. } = got_type {
-                    let inferred_type = self.core.generic_stack[*id].clone();
-                    if let Some(typ) = inferred_type {
-                        return self.check(&typ, Some(t), loc);
+    fn cast_to_maybe_type(&self, to_type: Option<Type>, resolved_expr: Expr<'a>) -> Expr<'a> {
+        if let Some(ty) = to_type {
+            self.cast_to_type(resolved_expr, &ty)
+        } else {
+            resolved_expr
+        }
+    }
+
+    fn cast_to_type(&self, resolved_expr: Expr<'a>, to_type: &Type) -> Expr<'a> {
+        let actual_type = self.type_of(&resolved_expr);
+
+        let incompatible_types = || {
+            self.push_error(TypeCheckError::IncompatibleTypes {
+                expected: self.display_type(to_type),
+                got: self.display_type(&actual_type),
+                loc: resolved_expr.loc()
+            });
+            Expr::Errored { loc: resolved_expr.loc() }
+        };
+        if &actual_type == to_type {
+            resolved_expr
+        } else {
+            match (&actual_type, to_type) {
+                (Type::Errored, _) | (_, Type::Errored) => {
+                    return Expr::Errored { loc: resolved_expr.loc() };
+                },
+                (Type::Never, to_ty) => Expr::Cast(Box::new(resolved_expr), to_ty.clone()),
+                (Type::Integer { bits: a }, Type::Integer { bits: b}) => {
+                    if a <= b {
+                        return Expr::Cast(Box::new(resolved_expr), Type::Integer { bits: *b });
                     } else {
-                        return false;
+                        return incompatible_types();
                     }
+                },
+                (Type::Struct { struct_: a, variant: a_var}, Type::Struct { struct_: b, variant: b_var}) => {
+                    let mut curr_struct = (a, a_var);
+                    while curr_struct != (b, b_var) {
+                        if let Some((super_key, super_var, _)) = &self.checker.hir.structs[*curr_struct.0].super_struct {
+                            curr_struct = (super_key, super_var);
+                        } else {
+                            return incompatible_types();
+                        }
+                    }
+
+                    return Expr::Cast(Box::new(resolved_expr), Type::Struct { struct_: *curr_struct.0, variant: curr_struct.1.clone()});
+                },
+                (Type::Function { params: a_params, ret: a_ret }, Type::Function { params: b_params, ret: b_ret }) => {
+                    todo!()
+                },
+                (Type::TypeParameter { id: a, .. }, Type::TypeParameter { id: b, .. }) => {
+                    todo!()
+                },
+                (_, _) => {
+                    return incompatible_types();
                 }
-                let is_compat = self.checker.hir.is_subtype(got_type, &t);
-                if !is_compat {
-                    self.push_error(TypeCheckError::IncompatibleTypes{
-                        expected: self.display_type(&t),
-                        got: self.display_type(got_type),
-                        loc: *loc
-                    })
-                }
-                is_compat
             }
         }
     }
+
+    fn can_cast_to_maybe_type(&self, from_type: &Type, to_type: Option<&Type>) -> bool {
+        to_type.map_or(true, |ty| self.can_cast_to_type(from_type, ty))
+    }
+
+    fn can_cast_to_type(&self, from_type: &Type, to_type: &Type) -> bool {
+        if from_type == to_type {
+            true
+        } else {
+            match (from_type, to_type) {
+                (Type::Errored, _) | (_, Type::Errored) => {
+                    return true;
+                },
+                (Type::Never, _) => true,
+                (Type::Integer { bits: a }, Type::Integer { bits: b}) => {
+                    return a <= b;
+                },
+                (Type::Struct { struct_: a, variant: a_var}, Type::Struct { struct_: b, variant: b_var}) => {
+                    let mut curr_struct = (a, a_var);
+                    while curr_struct != (b, b_var) {
+                        if let Some((super_key, super_var, _)) = &self.checker.hir.structs[*curr_struct.0].super_struct {
+                            curr_struct = (super_key, super_var);
+                        } else {
+                            return false;
+                        }
+                    }
+
+                    return true;
+                },
+                (Type::Function { params: a_params, ret: a_ret }, Type::Function { params: b_params, ret: b_ret }) => {
+                    todo!()
+                },
+                (Type::TypeParameter { id: a, .. }, Type::TypeParameter { id: b, .. }) => {
+                    todo!()
+                },
+                (_, _) => {
+                    return false;
+                }
+            }
+        }
+    }
+
+    // fn check(&mut self, got_type: &Type, expected: ExpectedType, loc: &Location<'a>) -> bool {
+    //     match expected {
+    //         Some(Type::Errored) => false,
+    //         Some(Type::TypeParameterInstance { id, .. }) => {
+    //             let inferred_type = (&self.core.generic_stack[id]).as_ref();
+    //             if let Some(typ) = inferred_type {
+    //                 return self.check(got_type, Some(typ.clone()), loc);
+    //             } else {
+    //                 self.core.generic_stack[id] = Some(got_type.clone());
+    //                 return true
+    //             }
+    //         }
+    //         None => true,
+    //         Some(t) => {
+    //             if let Type::TypeParameterInstance { id, .. } = got_type {
+    //                 let inferred_type = self.core.generic_stack[*id].clone();
+    //                 if let Some(typ) = inferred_type {
+    //                     return self.check(&typ, Some(t), loc);
+    //                 } else {
+    //                     return false;
+    //                 }
+    //             }
+    //             let is_compat = self.checker.hir.is_subtype(got_type, &t);
+    //             if !is_compat {
+    //                 self.push_error(TypeCheckError::IncompatibleTypes{
+    //                     expected: self.display_type(&t),
+    //                     got: self.display_type(got_type),
+    //                     loc: *loc
+    //                 })
+    //             }
+    //             is_compat
+    //         }
+    //     }
+    // }
 
     fn resolve_block(&mut self, block: &ast::Block<'a>, yield_type: ExpectedType, with_ns: Option<NamespaceKey>) -> Block<'a> {
         let ast::Block { stmts, trailing_expr, loc } = block;
@@ -717,10 +813,10 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                 if always_breaks {
                     None
                 } else {
-                    if !self.check(&Type::Unit, yield_type, loc) {
-                        Some(Box::new(Expr::Errored { loc: *loc }))
-                    } else {
+                    if yield_type.is_none() || yield_type.is_some_and(|ty| matches!(ty, Type::Unit)) {
                         Some(Box::new(Expr::Unit { loc: *loc }))
+                    } else {
+                        Some(Box::new(Expr::Errored { loc: *loc }))
                     }
                 }
             }
@@ -729,9 +825,9 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
         Block { stmts, trailing_expr, declared, loc: *loc }
     }
 
-    fn check_is_never(&mut self, expr: &Expr<'a>, loc: Location<'a>) -> bool {
+    fn is_never(&self, expr: &Expr<'a>) -> bool {
         if self.checker.hir.type_of_expr(expr).is_never(&self.checker.hir) {
-            self.push_error(TypeCheckError::CannotUseNever { loc });
+            self.push_error(TypeCheckError::CannotUseNever { loc: expr.loc() });
             return true;
         } else {
             return false;
@@ -739,22 +835,13 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
     }
 
     fn resolve_expr(&mut self, expr: &ast::Expr<'a>, yield_type: ExpectedType) -> Expr<'a> {
-        match expr {
+        let to_type = yield_type.clone();
+        let resolved_expr = match expr {
             ast::Expr::Integer { number, loc } => {
-                let compat = self.check(&Type::Integer { bits: 32 }, yield_type, loc);
-                if compat {
-                    Expr::Integer { num: *number, loc: *loc }
-                } else {
-                    Expr::Errored { loc: *loc }
-                }
+                Expr::Integer { num: *number, loc: *loc }
             }
             ast::Expr::Bool { value, loc} => {
-                let compat = self.check(&Type::Boolean, yield_type, loc);
-                if compat {
-                    Expr::Bool { value: *value, loc: *loc }
-                } else {
-                    Expr::Errored { loc: *loc }
-                }
+                Expr::Bool { value: *value, loc: *loc }
             }
             ast::Expr::Name { name, loc } => {
                 let resolved = self.resolve_name(name);
@@ -765,29 +852,20 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                         return Expr::Errored { loc: *loc };
                     }
                 };
-                let typ = self.checker.hir.type_of_name(decl);
-                let compat = self.check(&typ, yield_type, loc);
-                if compat {
-                    Expr::Name { decl, loc: *loc }
-                } else {
-                    Expr::Errored { loc: *loc }
-                }
+                Expr::Name { decl, loc: *loc }
             },
             ast::Expr::Block(block) => {
                 Expr::Block(self.resolve_block(block, yield_type, None))
             }
             ast::Expr::Call { callee, arguments, loc } => {
                 let resolved_callee = self.resolve_expr(callee, None);
-                if self.check_is_never(&resolved_callee, callee.loc()) {
+                if self.is_never(&resolved_callee) {
                     return Expr::Errored { loc: *loc };
                 };
 
-                let callee_ty = self.checker.hir.type_of_expr(&resolved_callee);
+                let callee_ty = self.type_of(&resolved_callee);
                 match &callee_ty {
-                    Type::Function { params, ret } => {
-                        if !self.check(ret, yield_type, loc) {
-                            return Expr::Errored { loc: *loc };
-                        }
+                    Type::Function { params, .. } => {
                         if params.len() != arguments.len() {
                             self.push_error(TypeCheckError::MismatchedArguments { expected: params.len(), got: arguments.len(), loc: *loc });
                             return Expr::Errored { loc: *loc };
@@ -795,7 +873,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                         let mut resolved_arguments = Vec::new();
                         for (param, arg) in params.iter().zip(arguments.iter()) {
                             let resolved_arg = self.resolve_expr(arg, Some(param.clone()));
-                            if self.check_is_never(&resolved_arg, arg.loc()) {
+                            if self.is_never(&resolved_arg) {
                                 return Expr::Errored { loc: *loc };
                             };
                             resolved_arguments.push(resolved_arg);
@@ -817,14 +895,13 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                         let mut resolved_arguments = Vec::new();
                         for (param, arg) in params.iter().zip(arguments.iter()) {
                             let resolved_arg = self.resolve_expr(arg, Some(param.subs(&map)));
-                            if self.check_is_never(&resolved_callee, arg.loc()) {
+                            if self.is_never(&resolved_callee) {
                                 return Expr::Errored { loc: *loc };
                             };
                             resolved_arguments.push(resolved_arg);
                         }
 
-                        if !self.check(&ret.subs(&map), yield_type, loc) {
-                            println!("displaying error");
+                        if !self.can_cast_to_maybe_type(&ret.subs(&map), yield_type.as_ref()) {
                             return Expr::Errored { loc: *loc };
                         }
 
@@ -863,23 +940,24 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                     map.insert(type_param.id, Type::TypeParameterInstance { name: type_param.name.clone(), id: type_param_key });
                 }
 
-                let mut expected_fields = self.checker.hir.structs[struct_key].fields.clone();
+                let mut expected_fields = self.checker.hir.structs[struct_key].all_fields(&self.checker.hir);
                 let mut resolved_fields = IndexMap::new();
                 for field in fields {
-                    if !expected_fields.contains_key(&field.field_name) {
-                        self.push_error(TypeCheckError::NoSuchFieldName { field: field.field_name.clone(), typ: struct_.clone(), loc: field.name_loc });
+                    let name = field.field_name.clone();
+                    if !expected_fields.contains_key(&name) {
+                        self.push_error(TypeCheckError::NoSuchFieldName { field: name.clone(), typ: struct_.clone(), loc: field.name_loc });
                         return Expr::Errored { loc: *loc };
                     }
-                    let expected_type = expected_fields[&field.field_name].typ.subs(&map);
+                    let expected_type = expected_fields[&name].subs(&map);
                     let resolved = Box::new(self.resolve_expr(&field.argument, Some(expected_type)));
-                    if self.check_is_never(&resolved, field.argument.loc()) {
+                    if self.is_never(&resolved) {
                         return Expr::Errored { loc: *loc };
                     };
-                    resolved_fields.insert(field.field_name.clone(), resolved);
-                    expected_fields.remove(&field.field_name);
+                    expected_fields.remove(&name);
+                    resolved_fields.insert(name, resolved);
                 };
                 if !expected_fields.is_empty() {
-                    self.push_error(TypeCheckError::MissingFields { fields: expected_fields.drain(..).map(|p| p.0).collect(), typ: struct_.clone(), loc: *loc });
+                    self.push_error(TypeCheckError::MissingFields { fields: expected_fields.into_iter().map(|p| p.0).collect(), typ: struct_.clone(), loc: *loc });
                     return Expr::Errored { loc: *loc };
                 }
 
@@ -899,7 +977,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
             }
             ast::Expr::GetAttr { obj, attr, loc } => {
                 let resolved_obj = self.resolve_expr(obj, None);
-                if self.check_is_never(&resolved_obj, obj.loc()) {
+                if self.is_never(&resolved_obj) {
                     return Expr::Errored { loc: *loc };
                 };
 
@@ -915,14 +993,10 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                     map.insert(type_param.id, type_arg.clone());
                 }
 
-                let Some(field) = self.checker.hir.structs[struct_].fields.get(attr) else {
+                let Some(_) = self.checker.hir.structs[struct_].all_fields(&self.checker.hir).get(attr).cloned() else {
                     self.push_error(TypeCheckError::NoSuchFieldName { typ: self.checker.hir.structs[struct_].name.clone(), field: attr.clone(), loc: *loc });
                     return Expr::Errored { loc: *loc };
                 };
-
-                if !self.check(&field.typ.subs(&map), yield_type, loc) {
-                    return Expr::Errored { loc: *loc };
-                }
 
                 Expr::GetAttr { obj: Box::new(resolved_obj), attr: attr.clone(), loc: *loc }
             },
@@ -930,16 +1004,16 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
             ast::Expr::BinOp { .. } => todo!(),
             ast::Expr::IfElse { cond, then_do, else_do, loc } => {
                 let resolved_cond = Box::new(self.resolve_expr(cond, Some(Type::Boolean)));
-                if self.check_is_never(&resolved_cond, cond.loc()) {
+                if self.is_never(&resolved_cond) {
                     return Expr::Errored { loc: *loc };
                 };
 
                 let resolved_then_do = Box::new(self.resolve_expr(then_do, yield_type.clone()));
-                if self.check_is_never(&resolved_then_do, then_do.loc()) {
+                if self.is_never(&resolved_then_do) {
                     return Expr::Errored { loc: *loc };
                 };
                 let resolved_else_do = Box::new(self.resolve_expr(else_do, yield_type.clone()));
-                if self.check_is_never(&resolved_else_do, else_do.loc()) {
+                if self.is_never(&resolved_else_do) {
                     return Expr::Errored { loc: *loc };
                 };
 
@@ -956,17 +1030,15 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                         return Expr::Errored { loc: *loc };
                     }
 
-                    if self.checker.hir.is_subtype(&then_ty, &else_ty) {
+                    if self.can_cast_to_type(&then_ty, &else_ty) {
                         expr_yield_type = else_ty;
-                    } else if self.checker.hir.is_subtype(&else_ty, &then_ty) {
+                    } else if self.can_cast_to_type(&else_ty, &then_ty) {
                         expr_yield_type = then_ty;
                     } else {
                         self.push_error(TypeCheckError::IncompatibleTypes { expected: self.display_type(&then_ty), got: self.display_type(&else_ty), loc: *loc });
                         return Expr::Errored { loc: *loc };
                     }
                 }
-
-                // todo support subtyping correctly
 
                 Expr::IfElse { cond: resolved_cond, then_do: resolved_then_do, else_do: resolved_else_do, yield_type: expr_yield_type, loc: *loc }
             }
@@ -1039,7 +1111,9 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
 
                 Expr::Closure { parameters: resolved_parameters, body, ret_type, loc: *loc }
             }
-        }
+        };
+
+        self.cast_to_maybe_type(to_type, resolved_expr)
     }
 
     fn resolve_stmt(&mut self, stmt: &ast::Stmt<'a>) -> Stmt<'a> {
@@ -1049,13 +1123,13 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                     Some(t) => {
                         let typ = self.resolve_type(t);
                         let resolved_value = self.resolve_expr(value, Some(typ.clone()));
-                        self.check_is_never(&resolved_value, value.loc());
+                        self.is_never(&resolved_value);
                         let decl = self.add_name(name.clone(), NameInfo::Local { typ, loc: *loc, level: self.level });
                         Stmt::Decl { decl, value: resolved_value, loc: *loc }
                     },
                     None => {
                         let resolved_value = self.resolve_expr(value, None);
-                        self.check_is_never(&resolved_value, value.loc());
+                        self.is_never(&resolved_value);
                         let decl = self.add_name(name.clone(), NameInfo::Local { typ: self.type_of(&resolved_value), loc: *loc, level: self.level });
                         Stmt::Decl { decl, value: resolved_value, loc: *loc }
                     }
@@ -1070,7 +1144,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
 
                 self.return_types.push(self.checker.hir.type_of_expr(&resolved_value));
 
-                self.check_is_never(&resolved_value, value.loc());
+                self.is_never(&resolved_value);
                 Stmt::Return { value: resolved_value, loc: *loc }
                 // let value = self.resolve_expr(value, None);
                 // self.check(&self.checker.hir.type_of_expr(&value), Some(expected_return), loc);

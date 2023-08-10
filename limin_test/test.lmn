@@ -1,12 +1,17 @@
 
 
-struct Bar {
+struct Foo {
+    foo: i32;
+}
+
+struct Bar(Foo) {
     bar: i32;
 }
 
 fn main() -> i32 {
-    let bar = new Bar { bar: 20 };
+    let b = new Bar { foo: 32, bar: 20 };
 
-    let closure : (Bar) -> () -> i32 = |b| || b.bar;
-    return closure(bar)();
+    let f: Foo = b;
+
+    return f.foo;
 }

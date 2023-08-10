@@ -29,7 +29,6 @@ impl MIR {
             Expr::Unit => Type::Unit,
             Expr::Integer(_) => Type::Integer(32),
             Expr::Boolean(_) => Type::Boolean,
-            // Expr::Parameter(func, index) => self.function_prototypes[*func].params[*index].1.clone(),
             Expr::LoadLocal(local) => self.locals[*local].typ.clone(),
             // Expr::StoreLocal(_, value) => self.type_of(value),
             Expr::LoadFunction(func) => self.function_prototypes[*func].sig(),
@@ -37,16 +36,15 @@ impl MIR {
             Expr::GetAttr(struct_, _, attr) => {
                 self.struct_bodies[*struct_].fields[attr].clone()
             }
-            Expr::Call(callee, _) => {
-                let Type::Function(_, ret) = self.type_of(callee) else { panic!(); };
-                ret.as_ref().clone()
-            },
+            Expr::Call(fn_type, _, _) => fn_type.ret.as_ref().clone(),
             Expr::New(struct_key, _) => Type::Struct(*struct_key),
             Expr::IfElse { yield_type, .. } => yield_type.clone(),
-            Expr::Closure { parameters, ret_type, .. } => Type::Function(
-                parameters.iter().map(|p| p.typ.clone()).collect(),
-                Box::new(ret_type.clone())
-            ),
+            Expr::Closure { fn_type, .. } => Type::Function(fn_type.clone()),
+            Expr::Cast { expr, cast_type } => {
+                match cast_type {
+                    CastType::StructToSuper { to, .. } => Type::Struct(*to)
+                }
+            }
         }
     }
 
@@ -70,7 +68,7 @@ impl MIR {
                 visited.pop();
                 result
             }
-            Type::Function(_, _) => false,
+            Type::Function(_) => false,
         }
     }
 
@@ -91,8 +89,8 @@ impl MIR {
                 visited.pop();
                 result
             }
-            Type::Function(params, _) => {
-                params.iter().any(|ty| self.is_never_helper(ty, visited))
+            Type::Function(fn_type) => {
+                fn_type.params.iter().any(|ty| self.is_never_helper(ty, visited))
             }
 
             Type::Unit => false,
@@ -107,23 +105,34 @@ pub struct StructPrototype {
 }
 
 pub struct StructBody {
+    pub super_struct: Option<StructKey>,
     pub fields: IndexMap<String, Type>
+}
+
+impl StructBody {
+    pub fn all_fields<'a>(&'a self, mir: &'a MIR) -> IndexMap<&'a String, &'a Type> {
+        let mut fields = IndexMap::new();
+        if let Some(super_) = &self.super_struct {
+            fields.extend(mir.struct_bodies[*super_].all_fields(mir));
+        }
+        fields.extend(self.fields.iter());
+        fields
+    }
 }
 
 pub struct FunctionPrototype {
     pub name: String,
-    pub params: Vec<(String, Type)>,
-    pub ret: Type
+    pub fn_type: FunctionType,
 }
 
 impl FunctionPrototype {
     pub fn sig(&self) -> Type {
-        Type::Function(self.params.iter().map(|(_, t)| t.clone()).collect(), Box::new(self.ret.clone()))
+        Type::Function(self.fn_type.clone())
     }
 }
 
 pub struct FunctionBody {
-    pub params: Vec<LocalKey>,
+    pub params: Vec<(String, LocalKey)>,
     pub body: BlockKey
 }
 
@@ -135,7 +144,13 @@ pub enum Type {
     Boolean,
     Integer(u8),
     Struct(StructKey),
-    Function(Vec<Type>, Box<Type>)
+    Function(FunctionType)
+}
+
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+pub struct FunctionType {
+    pub params: Vec<Type>,
+    pub ret: Box<Type>
 }
 
 #[derive(Clone)]
@@ -162,16 +177,22 @@ pub enum Expr {
     Never,
     Integer(u64),
     Boolean(bool),
-    // Parameter(FunctionKey, usize),
     LoadLocal(LocalKey),
     LoadFunction(FunctionKey),
     // StoreLocal(LocalKey, Box<Expr>),
     GetAttr(StructKey, Box<Expr>, String),
-    Call(Box<Expr>, Vec<Expr>),
+    Call(FunctionType, Box<Expr>, Vec<Expr>),
     New(StructKey, IndexMap<String, Expr>),
     Block(BlockKey),
     IfElse { cond: Box<Expr>, then_do: Box<Expr>, else_do: Box<Expr>, yield_type: Type },
-    Closure { parameters: Vec<ClosureParameter>, ret_type: Type, body: BlockKey, closed_blocks: Vec<BlockKey> }
+    Closure { parameters: Vec<ClosureParameter>, fn_type: FunctionType, body: BlockKey, closed_blocks: Vec<BlockKey> },
+
+    Cast { expr: Box<Expr>, cast_type: CastType }
+}
+
+#[derive(Debug, Clone)]
+pub enum CastType {
+    StructToSuper { from: StructKey, to: StructKey }
 }
 
 #[derive(Debug, Clone)]
@@ -194,14 +215,12 @@ impl Expr {
             Expr::GetAttr(_, obj, _) => {
                 obj.always_diverges(mir)
             }
-            Expr::Call(callee, args) => {
+            Expr::Call(fn_type, callee, args) => {
                 if callee.always_diverges(mir) || args.iter().any(|arg| arg.always_diverges(mir)) {
                     return true;
                 }
 
-                let Type::Function(_, ret) = mir.type_of(callee) else { panic!() };
-
-                mir.is_never(&ret)
+                mir.is_never(&fn_type.ret)
             }
             Expr::New(_, fields) => fields.values().any(|field| field.always_diverges(mir)),
             Expr::Block(block) => {
@@ -211,7 +230,8 @@ impl Expr {
             Expr::IfElse { cond, then_do, else_do, .. } => {
                 cond.always_diverges(mir) || (then_do.always_diverges(mir) && else_do.always_diverges(mir))
             },
-            Expr::Closure { .. } => false
+            Expr::Closure { .. } => false,
+            Expr::Cast { expr, .. } => expr.always_diverges(mir)
         }
     }
 }

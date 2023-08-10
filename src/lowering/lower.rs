@@ -33,7 +33,7 @@ impl Lowering {
             let struct_body = &mir.struct_bodies[struct_key];
             let id = self.struct_mapping[&struct_key];
             builder.define_struct(id, struct_proto.name.clone(), |builder| {
-                for (field_name, field_type) in &struct_body.fields {
+                for (field_name, field_type) in struct_body.all_fields(&mir) {
                     if let Some(lowered) = self.lower_type(&mir, field_type) {
                         builder.field(field_name.clone(), lowered);
                     }
@@ -52,9 +52,9 @@ impl Lowering {
             builder.define_function(id, function_proto.name.clone(), |mut builder| {
                 let mut fn_lowering = FunctionLowering::new(&self, &function_proto.name);
 
-                if mir.is_never(&function_proto.ret) {
+                if mir.is_never(&function_proto.fn_type.ret) {
                     builder.return_void();
-                } else if let Some(lowered) = self.lower_type(&mir, &function_proto.ret) {
+                } else if let Some(lowered) = self.lower_type(&mir, &function_proto.fn_type.ret) {
                     builder.return_type(lowered);
                 } else {
                     builder.return_void();
@@ -62,19 +62,19 @@ impl Lowering {
                 builder.parameter("$closure".into(), lir::Type::AnyRef);
 
                 let mut parameter_locals: HashMap<mir::LocalKey, LocalID> = HashMap::new();
-                for (i, (param_name, param_type)) in function_proto.params.iter().enumerate() {
+                for (i, param_type) in function_proto.fn_type.params.iter().enumerate() {
                     if let Some(lowered) = self.lower_type(&mir, param_type) {
-                        let local = builder.parameter(param_name.clone(), lowered);
-                        parameter_locals.insert(function_body.params[i], local);
+                        let local = builder.parameter(function_body.params[i].0.clone(), lowered);
+                        parameter_locals.insert(function_body.params[i].1, local);
                     }
                 }
 
                 builder.build(|mut builder| {
                     let block_key = function_body.body;
                     fn_lowering.lower_block(&mut builder, block_key, &mir, |fn_lowering, builder| {
-                        for (i, (_, param_type)) in function_proto.params.iter().enumerate() {
+                        for (i, param_type) in function_proto.fn_type.params.iter().enumerate() {
                             if let Some(lowered) = self.lower_type(&mir, param_type) {
-                                let key = function_body.params[i];
+                                let key = function_body.params[i].1;
                                 let info = &mir.locals[key];
                                 let local = parameter_locals[&key];
 
@@ -83,7 +83,7 @@ impl Lowering {
                                     builder.load_variable(local);
                                     builder.set_field(fn_lowering.block_captures[&info.block].capture_ty, (fn_lowering.block_captures[&info.block].captures[&key].clone(), lowered));
                                 } else {
-                                    fn_lowering.locals_mapping.insert(function_body.params[i], local);
+                                    fn_lowering.locals_mapping.insert(function_body.params[i].1, local);
                                 }
                             }
                         }
@@ -126,8 +126,8 @@ impl Lowering {
                     Some(lir::Type::StructRef(self.struct_mapping[key]))
                 }
             },
-            mir::Type::Function(params, ret) => {
-                let (lowered_params, lowered_ret) = self.lower_fn_type(mir, params, ret);
+            mir::Type::Function(fn_type) => {
+                let (lowered_params, lowered_ret) = self.lower_fn_type(mir, fn_type);
                 Some(lir::Type::Tuple(vec![
                     lir::Type::Function(lowered_params, lowered_ret.map(Box::new)),
                     lir::Type::AnyRef
@@ -136,7 +136,9 @@ impl Lowering {
         }
     }
 
-    fn lower_fn_type(&self, mir: &mir::MIR, params: &[mir::Type], ret: &mir::Type) -> (Vec<lir::Type>, Option<lir::Type>) {
+    fn lower_fn_type(&self, mir: &mir::MIR, fn_type: &mir::FunctionType) -> (Vec<lir::Type>, Option<lir::Type>) {
+        let mir::FunctionType { params, ret } = fn_type;
+
         let mut lowered_params = vec![lir::Type::AnyRef];
         lowered_params.extend(params.iter().filter_map(|ty| self.lower_type(mir, ty)));
         let lowered_ret = self.lower_type(mir, ret);
@@ -299,7 +301,7 @@ impl<'a> FunctionLowering<'a> {
                 }
             }
             mir::Expr::GetAttr(struct_key, obj, field) => {
-                let field_ty = &mir.struct_bodies[*struct_key].fields[field];
+                let field_ty = &mir.struct_bodies[*struct_key].all_fields(mir)[field];
                 if let Some(obj_ty) = self.lower_expr(builder, obj, mir) {
                     if let Some(field_ty) = self.lower_type(mir, field_ty) {
                         builder.get_field(self.lowering.struct_mapping[struct_key], (field.clone(), field_ty.clone()));
@@ -312,11 +314,13 @@ impl<'a> FunctionLowering<'a> {
                     None
                 }
             }
-            mir::Expr::Call(func, arguments) => {
-                self.lower_expr(builder, func, mir).unwrap();
-                let mir::Type::Function(params, ret) = mir.type_of(func) else { panic!() };
+            mir::Expr::Call(fn_type, callee, arguments) => {
+                let mir::FunctionType { params, ret } = fn_type;
+
+                self.lower_expr(builder, callee, mir).unwrap();
+
                 if mir.is_never(&ret) || mir.is_zero_sized(&ret) {
-                    let (params, _) = self.lowering.lower_fn_type(mir, &params, &ret);
+                    let (params, _) = self.lowering.lower_fn_type(mir, fn_type);
                     builder.splat(vec![lir::Type::Function(params.clone(), None)]);
                     for arg in arguments {
                         self.lower_expr(builder, arg, mir);
@@ -325,7 +329,7 @@ impl<'a> FunctionLowering<'a> {
                     builder.call_void(&params);
                     None
                 } else {
-                    let (params, ret) = self.lowering.lower_fn_type(mir, &params, &ret);
+                    let (params, ret) = self.lowering.lower_fn_type(mir, fn_type);
                     let ret = ret.unwrap();
                     builder.splat(vec![
                         lir::Type::Function(params.clone(), Some(Box::new(ret.clone()))),
@@ -419,7 +423,7 @@ impl<'a> FunctionLowering<'a> {
                     None
                 }
             },
-            mir::Expr::Closure { parameters, ret_type, body, closed_blocks } => {
+            mir::Expr::Closure { parameters, fn_type, body, closed_blocks } => {
                 let closure_ty = builder.lir_builder.declare_struct();
                 let name = format!("{}_closure_{}_captures", &self.fn_name, self.closure_count);
                 builder.lir_builder.define_struct(closure_ty, name, |mut builder| {
@@ -433,7 +437,7 @@ impl<'a> FunctionLowering<'a> {
                 let sig = builder.lir_builder.define_function(closure_fn, name.clone(), |mut builder| {
                     let mut closure_lowering = FunctionLowering::new(self.lowering, name);
 
-                    if let Some(ret_ty) = self.lower_type(mir, ret_type) {
+                    if let Some(ret_ty) = self.lower_type(mir, &fn_type.ret) {
                         builder.return_type(ret_ty);
                     } else {
                         builder.return_void()
@@ -464,7 +468,7 @@ impl<'a> FunctionLowering<'a> {
                         }
 
                         closure_lowering.lower_block(&mut builder, *body, mir, |closure_lowering, builder| {
-                            for (i, param) in parameters.iter().enumerate() {
+                            for param in parameters {
                                 if let Some(lowered) = self.lower_type(&mir, &param.typ) {
                                     let info = &mir.locals[param.key];
                                     let local = parameter_locals[&param.key];
@@ -513,6 +517,15 @@ impl<'a> FunctionLowering<'a> {
                     sig,
                     lir::Type::AnyRef
                 ]))
+            }
+            mir::Expr::Cast { expr, cast_type } => {
+                match cast_type {
+                    mir::CastType::StructToSuper { from, to } => {
+                        self.lower_expr(builder, expr, mir);
+                        builder.cast_ref(self.lowering.struct_mapping[from], self.lowering.struct_mapping[to]);
+                        Some(lir::Type::StructRef(self.lowering.struct_mapping[to]))
+                    }
+                }
             }
         }
     }

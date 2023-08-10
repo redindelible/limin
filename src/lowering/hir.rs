@@ -142,7 +142,7 @@ impl<'s> HIR<'s> {
                 for (type_param, typ) in self.structs[struct_].type_params.iter().zip(variant.iter()) {
                     map.insert(type_param.id, typ.clone());
                 };
-                self.structs[struct_].fields[attr].typ.subs(&map)
+                self.structs[struct_].all_fields(self)[attr].subs(&map)
             },
             Expr::IfElse { yield_type, .. } => {
                 yield_type.clone()
@@ -151,32 +151,53 @@ impl<'s> HIR<'s> {
                 let params = parameters.iter().map(|p| p.typ.clone()).collect();
                 Type::Function { params, ret: Box::new(ret_type.clone()) }
             }
+            Expr::Cast(_, ty) => ty.clone()
         }
     }
 
-    pub fn is_subtype(&self, this: &Type, of: &Type) -> bool {
-        match (this, of) {
-            // (Type::Errored, _) | (_, Type::Errored) => panic!("found errored type {:?} {:?}", this, of),
-            (Type::Errored, _) | (_, Type::Errored) => true,
-            (Type::Never, _) => true,
-            (Type::Unit, Type::Unit) => true,
-            (Type::Boolean, Type::Boolean) => true,
-            (Type::Integer { bits: a }, Type::Integer { bits: b}) if a <= b => true,
-            (Type::Struct { struct_: a, variant: a_var}, Type::Struct { struct_: b, variant: b_var}) if a == b && a_var == b_var => true,
-            (Type::Function { params: a_params, ret: a_ret }, Type::Function { params: b_params, ret: b_ret }) => {
-                self.is_subtype(a_ret, b_ret) && b_params.iter().zip(a_params.iter()).all(|(b_typ, a_typ)| self.is_subtype(b_typ, a_typ))
-            },
-            (Type::TypeParameter { id: a, .. }, Type::TypeParameter { id: b, .. }) => a == b,
-            _ => false
-        }
-    }
+    // pub fn is_subtype(&self, this: &Type, of: &Type) -> bool {
+    //     match (this, of) {
+    //         // (Type::Errored, _) | (_, Type::Errored) => panic!("found errored type {:?} {:?}", this, of),
+    //         (Type::Errored, _) | (_, Type::Errored) => true,
+    //         (Type::Never, _) => true,
+    //         (Type::Unit, Type::Unit) => true,
+    //         (Type::Boolean, Type::Boolean) => true,
+    //         (Type::Integer { bits: a }, Type::Integer { bits: b}) if a <= b => true,
+    //         (Type::Struct { struct_: a, variant: a_var}, Type::Struct { struct_: b, variant: b_var}) => {
+    //             if a == b && a_var == b_var {
+    //                 return true;
+    //             }
+    //             if let Some((super_key, super_var, _)) = &self.structs[*a].super_struct {
+    //                 return self.is_subtype(&Type::Struct { struct_: *super_key, variant: super_var.clone() }, of);
+    //             }
+    //             return false;
+    //         },
+    //         (Type::Function { params: a_params, ret: a_ret }, Type::Function { params: b_params, ret: b_ret }) => {
+    //             self.is_subtype(a_ret, b_ret) && b_params.iter().zip(a_params.iter()).all(|(b_typ, a_typ)| self.is_subtype(b_typ, a_typ))
+    //         },
+    //         (Type::TypeParameter { id: a, .. }, Type::TypeParameter { id: b, .. }) => a == b,
+    //         _ => false
+    //     }
+    // }
 }
 
 pub struct Struct<'ir> {
     pub name: String,
     pub type_params: Vec<TypeParameter>,
+    pub super_struct: Option<(StructKey, Vec<Type>, Location<'ir>)>,
     pub fields: IndexMap<String, StructField<'ir>>,
     pub loc: Location<'ir>
+}
+
+impl<'a> Struct<'a> {
+    pub fn all_fields(&self, hir: &HIR) -> IndexMap<String, Type> {
+        let mut fields = IndexMap::new();
+        if let Some((key, _, _)) = &self.super_struct {
+            fields.extend(hir.structs[*key].all_fields(hir));
+        }
+        fields.extend(self.fields.iter().map(|(n, f)| (n.clone(), f.typ.clone())));
+        fields
+    }
 }
 
 #[derive(Clone)]
@@ -198,8 +219,7 @@ pub struct FunctionPrototype<'ir> {
 }
 
 pub struct FunctionBody<'ir> {
-    pub body: Block<'ir>,
-    // pub declared: HashMap<String, NameKey>
+    pub body: Block<'ir>
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -244,7 +264,8 @@ pub enum Expr<'ir> {
     Errored { loc: Location<'ir> },
     New { struct_: StructKey, variant: Vec<Type>, fields: IndexMap<String, Box<Expr<'ir>>>, loc: Location<'ir> },
     IfElse { cond: Box<Expr<'ir>>, then_do: Box<Expr<'ir>>, else_do: Box<Expr<'ir>>, yield_type: Type, loc: Location<'ir> },
-    Closure { parameters: Vec<ClosureParameter<'ir>>, body: Block<'ir>, ret_type: Type, loc: Location<'ir> }
+    Closure { parameters: Vec<ClosureParameter<'ir>>, body: Block<'ir>, ret_type: Type, loc: Location<'ir> },
+    Cast(Box<Expr<'ir>>, Type)
 }
 
 #[derive(Debug)]
@@ -255,7 +276,25 @@ pub struct ClosureParameter<'ir> {
     pub loc: Location<'ir>
 }
 
-impl Expr<'_> {
+impl<'a> Expr<'a> {
+    pub fn loc(&self) -> Location<'a> {
+        match self {
+            Expr::Name { loc, .. } => { *loc }
+            Expr::Integer { loc, .. } => { *loc }
+            Expr::Bool { loc, .. } => { *loc }
+            Expr::Unit { loc, .. } => { *loc }
+            Expr::Block(block) => block.loc,
+            Expr::GetAttr { loc, .. } => { *loc }
+            Expr::Call { loc, .. } => { *loc }
+            Expr::GenericCall { loc, .. } => { *loc }
+            Expr::Errored { loc, .. } => { *loc }
+            Expr::New { loc, .. } => { *loc }
+            Expr::IfElse { loc, .. } => { *loc }
+            Expr::Closure { loc, .. } => { *loc }
+            Expr::Cast(expr, _) => expr.loc()
+        }
+    }
+
     pub fn always_diverges(&self, hir: &HIR) -> bool {
         match self {
             Expr::Name { .. } | Expr::Integer { .. } | Expr::Unit { .. } | Expr::Errored { .. } | Expr::Bool { .. } => false,
@@ -282,6 +321,7 @@ impl Expr<'_> {
             Expr::IfElse { cond, then_do, else_do, .. } => {
                 cond.always_diverges(hir) || (then_do.always_diverges(hir) && else_do.always_diverges(hir))
             }
+            Expr::Cast(expr, _) => expr.always_diverges(hir)
         }
     }
 }

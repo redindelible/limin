@@ -165,6 +165,15 @@ impl<'a> Parser<'a> {
             vec![]
         };
 
+        let super_struct: Option<(String, Location)> = if self.curr().typ == TokenType::LeftParenthesis {
+            let start = self.expect(TokenType::LeftParenthesis)?;
+            let name = self.expect(TokenType::Identifier)?.text.to_owned();
+            let end = self.expect(TokenType::RightParenthesis)?;
+            Some((name, start.loc + end.loc))
+        } else {
+            None
+        };
+
         let mut items = Vec::new();
         self.expect(TokenType::LeftBrace)?;
         while self.curr().typ != TokenType::RightBrace {
@@ -175,7 +184,7 @@ impl<'a> Parser<'a> {
 
         let loc = name.loc + start.loc;
 
-        Ok(TopLevel::Struct(Struct { name: name.text.to_owned(), type_params, items, loc }))
+        Ok(TopLevel::Struct(Struct { name: name.text.to_owned(), type_params, super_struct, items, loc }))
     }
 
     fn parse_struct_item(&mut self) -> ParseResult<StructItem<'a>> {
