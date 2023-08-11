@@ -214,7 +214,7 @@ impl<'a> Lexer<'a> {
                 },
                 _ => {
                     let start = self.idx();
-                    while Lexer::is_unrecognized(self.curr()) {
+                    while Lexer::is_unrecognized(self.curr()) && self.curr() != '\0' {
                         self.advance();
                     }
                     let end = self.idx();
@@ -271,5 +271,44 @@ mod test {
         let s = source("<test>", "alpha   beta");
         let toks = Lexer::lex(&s);
         assert_eq!(toks, vec![token(&s, Identifier, "alpha", false), token(&s, Identifier, "beta", true), token_eof(&s)].into());
+    }
+
+    #[test]
+    fn lex_keyword() {
+        let s = source("<test>", "return");
+        let toks = Lexer::lex(&s);
+        assert_eq!(toks.len(), 2);
+        assert_eq!(toks[0].typ, Return);
+    }
+
+    #[test]
+    fn lex_maximal_munch() {
+        let s = source("<test>", "returntwo");
+        let toks = Lexer::lex(&s);
+        assert_eq!(toks.len(), 2);
+        assert_eq!(toks[0].typ, Identifier);
+    }
+
+    #[test]
+    fn lex_number() {
+        let s = source("<test>", "2");
+        let toks = Lexer::lex(&s);
+        assert_eq!(toks.len(), 2);
+        assert_eq!(toks[0].typ, Integer);
+    }
+
+    #[test]
+    fn lex_symbols() {
+        let s = source("<test>", "+-/");
+        let toks = Lexer::lex(&s);
+        assert_eq!(toks.len(), 4);
+    }
+
+    #[test]
+    fn lex_error() {
+        let s = source("<test>", "````");
+        let toks = Lexer::lex(&s);
+        assert_eq!(toks.len(), 2);
+        assert_eq!(toks[0].typ, Unrecognized);
     }
 }

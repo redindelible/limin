@@ -594,13 +594,9 @@ mod test {
             }
         ");
         let mut p = Parser::new(&s);
-        let top = p.parse_function().unwrap_or_else(|_| {
-            panic!("{:?}", p.errors)
-        });
+        let top = p.parse_function().unwrap();
 
-        let TopLevel::Function(Function { name, parameters, return_type, .. }) = top else {
-            panic!("{:?}", top);
-        };
+        let TopLevel::Function(Function { name, parameters, return_type, .. }) = top else { panic!("{top:?}") };
         assert_eq!(name, "main");
         assert_eq!(parameters, vec![]);
         assert!(return_type.is_some());
@@ -614,9 +610,7 @@ mod test {
             }
         ");
         let mut p = Parser::new(&s);
-        let _ = p.parse_struct().unwrap_or_else(|_| {
-            panic!("{:?}", p.errors)
-        });
+        let _ = p.parse_struct().unwrap();
     }
 
     #[test]
