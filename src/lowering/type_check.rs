@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fmt;
 use std::path::PathBuf;
 use indexmap::IndexMap;
 use slotmap::{new_key_type, SecondaryMap, SlotMap};
@@ -90,106 +91,105 @@ pub enum TypeCheckError<'a> {
 }
 
 impl<'a> Message for TypeCheckError<'a> {
-    fn render(&self) {
+    fn write_into<W: fmt::Write>(&self, to: &mut W) -> fmt::Result {
         match self {
             TypeCheckError::StructDuplicated(name, loc, prev_loc) => {
-                eprintln!("Error: A struct called '{name}' was already defined in this scope.");
-                Self::show_location(loc);
-                eprintln!(" | Note: A struct called '{name}' was previously defined here.");
-                Self::show_note_location(prev_loc);
+                writeln!(to, "Error: A struct called '{name}' was already defined in this scope.")?;
+                Self::show_location(loc, to)?;
+                writeln!(to, " | Note: A struct called '{name}' was previously defined here.")?;
+                Self::show_note_location(prev_loc, to)
             }
             TypeCheckError::FieldDuplicated(name, struct_name, loc, prev_loc) => {
-                eprintln!("Error: The struct '{struct_name}' already has a field called '{name}'.");
-                Self::show_location(loc);
-                eprintln!(" | Note: A field called '{name}' was previously defined here.");
-                Self::show_note_location(prev_loc);
+                writeln!(to, "Error: The struct '{struct_name}' already has a field called '{name}'.")?;
+                Self::show_location(loc, to)?;
+                writeln!(to, " | Note: A field called '{name}' was previously defined here.")?;
+                Self::show_note_location(prev_loc, to)
             }
             TypeCheckError::CouldNotResolveName(name, loc) => {
-                eprintln!("Error: Could not resolve the name '{}'.", name);
-                Self::show_location(loc);
+                writeln!(to, "Error: Could not resolve the name '{}'.", name)?;
+                Self::show_location(loc, to)
             }
             TypeCheckError::CouldNotResolveType(name, loc) => {
-                eprintln!("Error: Could not resolve the type '{}'.", name);
-                Self::show_location(loc);
+                writeln!(to, "Error: Could not resolve the type '{}'.", name)?;
+                Self::show_location(loc, to)
             }
             TypeCheckError::IncompatibleTypes { expected, got, loc } => {
-                eprintln!("Error: Incompatible types. Expected '{}' but got '{}'.", expected.render(), got.render());
-                Self::show_location(loc);
+                writeln!(to, "Error: Incompatible types. Expected '{}' but got '{}'.", expected.render(), got.render())?;
+                Self::show_location(loc, to)
             }
             TypeCheckError::CannotUseNever { loc } => {
-                eprintln!("Error: Values of type '!' cannot exist.");
-                Self::show_location(loc);
+                writeln!(to, "Error: Values of type '!' cannot exist.")?;
+                Self::show_location(loc, to)
             }
             TypeCheckError::ExpectedFunction { got, loc } => {
-                eprintln!("Error: Expected a function to call, but got '{}'.", got.render());
-                Self::show_location(loc);
+                writeln!(to, "Error: Expected a function to call, but got '{}'.", got.render())?;
+                Self::show_location(loc, to)
             }
             TypeCheckError::UnexpectedClosure { expected, loc } => {
-                eprintln!("Error: Expected a value of type '{}', but got a closure.", expected.render());
-                Self::show_location(loc);
+                writeln!(to, "Error: Expected a value of type '{}', but got a closure.", expected.render())?;
+                Self::show_location(loc, to)
             }
             TypeCheckError::ClosureWithWrongParameters { expected, got, loc } => {
-                eprintln!("Error: Expected a closure of type '{}', but the closure only has {} parameters.", expected.render(), got);
-                Self::show_location(loc);
+                writeln!(to, "Error: Expected a closure of type '{}', but the closure only has {} parameters.", expected.render(), got)?;
+                Self::show_location(loc, to)
             }
             TypeCheckError::MismatchedArguments { expected, got, loc } => {
-                eprintln!("Error: Expected {expected} arguments, got {got} arguments.");
-                Self::show_location(loc);
+                writeln!(to, "Error: Expected {expected} arguments, got {got} arguments.")?;
+                Self::show_location(loc, to)
             }
             TypeCheckError::MismatchedTypeArguments { expected, got, loc } => {
-                eprintln!("Error: Expected {expected} type parameters, got {got} type parameters.");
-                Self::show_location(loc);
+                writeln!(to, "Error: Expected {expected} type parameters, got {got} type parameters.")?;
+                Self::show_location(loc, to)
             }
             TypeCheckError::RequiredTypeArguments { got, loc, note_loc } => {
-                eprintln!("Error: Expected type parameters to be supplied for '{got}'.");
-                Self::show_location(loc);
-                eprintln!(" | Note: '{got}' defined here.");
-                Self::show_note_location(note_loc);
+                writeln!(to, "Error: Expected type parameters to be supplied for '{got}'.")?;
+                Self::show_location(loc, to)?;
+                writeln!(to, " | Note: '{got}' defined here.")?;
+                Self::show_note_location(note_loc, to)
             }
             TypeCheckError::NoMainFunction => {
-                eprintln!("Error: No main function could be found.");
+                writeln!(to, "Error: No main function could be found.")
             }
             TypeCheckError::ExpectedStructName { got, loc } => {
-                eprintln!("Error: Could not find a struct named '{}'.", got);
-                Self::show_location(loc);
+                writeln!(to, "Error: Could not find a struct named '{}'.", got)?;
+                Self::show_location(loc, to)
             }
             TypeCheckError::ExpectedStruct { got, loc } => {
-                eprintln!("Error: Expected a struct, but got '{}'.", got.render());
-                Self::show_location(loc);
+                writeln!(to, "Error: Expected a struct, but got '{}'.", got.render())?;
+                Self::show_location(loc, to)
             }
             TypeCheckError::NoSuchFieldName { field, typ, loc } => {
-                eprintln!("Error: '{}' Does not contain a field named '{}'.", typ, field);
-                Self::show_location(loc);
+                writeln!(to, "Error: '{}' Does not contain a field named '{}'.", typ, field)?;
+                Self::show_location(loc, to)
             }
             TypeCheckError::MissingFields { fields, typ, loc } => {
                 let rendered_fields: Vec<_> = fields.iter().map(|f| format!("'{f}'")).collect();
-                eprintln!("Error: Fields {} were not supplied to initialize '{}'.", rendered_fields.join(", "), typ);
-                Self::show_location(loc);
+                writeln!(to, "Error: Fields {} were not supplied to initialize '{}'.", rendered_fields.join(", "), typ)?;
+                Self::show_location(loc, to)
             }
             TypeCheckError::CouldNotInferTypeParameter(name, loc) => {
-                eprintln!("Error: Could not infer the type of '{}'.", name);
-                Self::show_location(loc);
+                writeln!(to, "Error: Could not infer the type of '{}'.", name)?;
+                Self::show_location(loc, to)
             }
             TypeCheckError::CouldNotInferParameters(loc) => {
-                eprintln!("Error: Could not infer the type of the parameters of the closure.");
-                Self::show_location(loc);
+                writeln!(to, "Error: Could not infer the type of the parameters of the closure.")?;
+                Self::show_location(loc, to)
             }
             TypeCheckError::MainMustHaveNoArguments(loc) => {
-                eprintln!("Error: 'main' function must have no arguments.");
-                Self::show_location(loc);
+                writeln!(to, "Error: 'main' function must have no arguments.")?;
+                Self::show_location(loc, to)
             }
             TypeCheckError::MainMustReturnI32(loc) => {
-                eprintln!("Error: 'main' function must return 'i32'.");
-                Self::show_location(loc);
+                writeln!(to, "Error: 'main' function must return 'i32'.")?;
+                Self::show_location(loc, to)
             }
             TypeCheckError::MultipleMainFunctions(new_loc, old_loc) => {
-                eprintln!("Error: Multiple 'main' functions defined.");
-                Self::show_location(new_loc);
-                eprintln!(" | Note: Previous 'main' function defined here.");
-                Self::show_note_location(old_loc);
+                writeln!(to, "Error: Multiple 'main' functions defined.")?;
+                Self::show_location(new_loc, to)?;
+                writeln!(to, " | Note: Previous 'main' function defined here.")?;
+                Self::show_note_location(old_loc, to)
             }
         }
-        eprint!("\n");
     }
 }
 

@@ -1,8 +1,10 @@
+use std::fmt;
 use std::path::PathBuf;
 use crate::parsing::ast::*;
 use crate::error::Message;
 use crate::source::{Source, HasLoc, Location};
 use crate::parsing::lexer::{Lexer, Token, TokenType};
+use crate::util::map_join;
 
 
 pub fn parse_file(source: &Source) -> Result<File, Vec<ParserError>> {
@@ -17,26 +19,25 @@ pub enum ParserError<'a> {
 }
 
 impl<'a> Message for ParserError<'a> {
-    fn render(&self) {
+    fn write_into<W: fmt::Write>(&self, to: &mut W) -> fmt::Result {
         match self {
             ParserError::UnexpectedToken(token, expected) => {
                 if expected.len() == 1 {
-                    eprintln!("Error: Unexpected token. Got {}, but expected {}.", token.typ.name(), expected[0].name());
+                    writeln!(to, "Error: Unexpected token. Got {}, but expected {}.", token.typ.name(), expected[0].name())?;
                 } else if expected.len() == 2 {
-                    eprintln!("Error: Unexpected token. Got {}, but expected {} or {}.", token.typ.name(), expected[0].name(), expected[1].name());
+                    writeln!(to, "Error: Unexpected token. Got {}, but expected {} or {}.", token.typ.name(), expected[0].name(), expected[1].name())?;
                 } else {
-                    let names: Vec<&'static str> = expected.iter().map(|t| t.name()).collect();
-                    eprintln!("Error: Unexpected token. Got {}, but expected any of {}.", token.typ.name(), names.join(", "));
+                    writeln!(to, "Error: Unexpected token. Got {}, but expected any of {}.", token.typ.name(), map_join(expected, |e| e.name()))?;
                 }
-                Self::show_location(&token.loc);
+                Self::show_location(&token.loc, to)
             },
             ParserError::ExpectedSymbol(token, expected) => {
-                eprintln!("Error: Unexpected token. Got {}, but expected the symbol {}.", token.typ.name(), expected);
-                Self::show_location(&token.loc);
+                writeln!(to, "Error: Unexpected token. Got {}, but expected the symbol {}.", token.typ.name(), expected)?;
+                Self::show_location(&token.loc, to)
             },
             ParserError::CouldNotParseNumber(token, as_a) => {
-                eprintln!("Error: Could not parse integer literal into a {}.", as_a);
-                Self::show_location(&token.loc);
+                writeln!(to, "Error: Could not parse integer literal into a {}.", as_a)?;
+                Self::show_location(&token.loc, to)
             }
         }
     }
@@ -481,6 +482,7 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod test {
+    use crate::error::Message;
     use crate::parsing::ast::{BinOp, Expr, Function, TopLevel, Type};
     use crate::parsing::parser::{parse_file, Parser};
     use crate::source::Source;
@@ -603,6 +605,18 @@ mod test {
     }
 
     #[test]
+    fn test_trailing_comma() {
+        let s = source("test", r"
+            fn main() {
+                let a = foo(a,);
+                return 0;
+            }
+        ");
+
+        parse_file(&s).unwrap();
+    }
+
+    #[test]
     fn test_struct() {
         let s = source("test", r"
             struct thing {
@@ -627,5 +641,78 @@ mod test {
         ");
 
         parse_file(&s).unwrap();
+    }
+
+    #[test]
+    fn test_parse_complicated() {
+        let s = source("test", r"
+            fn main() -> i32 {
+                let a: int = 0;
+                let b = new Foo { };
+                let c = new Bar {
+                    first: 400,
+                    second: { return 0; },
+                    third: || { },
+                    fourth: |a: Some| |b| true
+                };
+                return identity<i32, () -> bool>(identity(c).first);
+            }
+
+            struct Foo<A, B, C> { }
+
+            struct Bar<T>(Something) {
+                first: i32;
+                second: List<i32>;
+                third: () -> i32;
+                fourth: (Some) -> (None) -> Maybe;
+            }
+
+            fn identity2<A, B>(thing: A, thing2: B) -> A {
+                (if thing {
+                    thing
+                } else {
+                    new List<i32> { something: false }
+                })
+            }
+
+            struct Nil {
+                nada: Foo<a, b, c>;
+            }
+        ");
+
+        parse_file(&s).unwrap();
+    }
+
+    #[test]
+    fn test_parsing_error_1() {
+        let s = source("test", r"
+            fn main() {
+                let a: int = 0;
+                return 0
+            }
+        ");
+
+        parse_file(&s).unwrap_err().render_to_string();
+    }
+
+    #[test]
+    fn test_parsing_error_2() {
+        let s = source("test", r"
+            fn main() {
+                let a := 0;
+                return 0;
+            }
+        ");
+
+        parse_file(&s).unwrap_err().render_to_string();
+    }
+
+    #[test]
+    fn test_parsing_error_3() {
+        let s = source("test", r"
+            struct Foo { a: i32 }
+        ");
+
+        parse_file(&s).unwrap_err().render_to_string();
     }
 }

@@ -29,7 +29,7 @@ pub struct Compiler {
 
 impl Compiler {
     pub fn new(output: PathBuf, clang: Option<PathBuf>) -> Compiler {
-        let lib_path = std::env::current_exe().unwrap().with_file_name("lib");
+        let lib_path = std::env::current_exe().expect("Error: Could not get the path to this executable.").with_file_name("lib");
         let rt_path = lib_path.join("rt.c");
         Compiler {
             sources: Arena::new(),

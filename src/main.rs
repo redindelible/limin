@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use clap::Parser;
-use compiler::{Compiler, CompileResult};
+use crate::compiler::{Compiler, CompileResult};
 use crate::error::Message;
 
 mod source;
@@ -31,12 +31,12 @@ fn main() {
     match res {
         CompileResult::CouldNotParse(errs) => {
             for err in &errs {
-                err.render();
+                err.render_to_stderr();
             }
         }
         CompileResult::CouldNotTypeCheck(errs) => {
             for err in &errs {
-                err.render();
+                err.render_to_stderr();
             }
         }
         CompileResult::FileError(e) => eprintln!("{}", e),
