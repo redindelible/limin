@@ -1,17 +1,4 @@
-
-
-struct Foo {
-    foo: i32;
-}
-
-struct Bar(Foo) {
-    bar: i32;
-}
-
 fn main() -> i32 {
-    let b = new Bar { foo: 32, bar: 20 };
-
-    let f: Foo = b;
-
-    return f.foo;
-}
+                let thing = if true { 32 } else { false };
+                return thing;
+            }

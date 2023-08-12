@@ -3,6 +3,14 @@
 use std::ops::RangeFrom;
 use slotmap::{new_key_type, SlotMap};
 
+pub fn pluralize(text: impl AsRef<str>, count: u64) -> String {
+    if count == 1 {
+        format!("1 {}", text.as_ref())
+    } else {
+        format!("{} {}s", count, text.as_ref())
+    }
+}
+
 pub fn map_join<I: IntoIterator, T: ToString, F: FnMut(I::Item) -> T>(it: I, closure: F) -> String {
     it.into_iter().map(closure).map(|t| t.to_string()).collect::<Vec<String>>().join(", ")
 }

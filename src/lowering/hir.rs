@@ -109,15 +109,7 @@ impl<'s> HIR<'s> {
             Expr::Integer { .. } => Type::Integer { bits: 32 },
             Expr::Bool { .. } => Type::Boolean,
             Expr::Unit { .. } => Type::Unit,
-            Expr::Block(Block { trailing_expr, .. }) => {
-                if expr.always_diverges(self) {
-                    return Type::Never
-                }
-                match trailing_expr {
-                    Some(t) => self.type_of_expr(t),
-                    None => Type::Unit
-                }
-            },
+            Expr::Block(Block { yield_type, .. }) => yield_type.clone(),
             Expr::Call { callee, .. } => {
                 match self.type_of_expr(callee) {
                     Type::GenericFunction { ret, .. } | Type::Function { ret, ..} => ret.as_ref().clone(),
@@ -247,6 +239,7 @@ pub struct Parameter<'ir> {
 pub struct Block<'ir> {
     pub stmts: Vec<Stmt<'ir>>,
     pub trailing_expr: Option<Box<Expr<'ir>>>,
+    pub yield_type: Type,
     pub declared: HashMap<String, NameKey>,
     pub loc: Location<'ir>
 }

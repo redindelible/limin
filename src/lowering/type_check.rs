@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use indexmap::IndexMap;
 use slotmap::{new_key_type, SecondaryMap, SlotMap};
 use crate::parsing::ast;
-use crate::util::map_join;
+use crate::util::{map_join, pluralize};
 use crate::error::Message;
 use crate::lowering::hir::*;
 use crate::source::{HasLoc, Location};
@@ -130,15 +130,15 @@ impl<'a> Message for TypeCheckError<'a> {
                 Self::show_location(loc, to)
             }
             TypeCheckError::ClosureWithWrongParameters { expected, got, loc } => {
-                writeln!(to, "Error: Expected a closure of type '{}', but the closure only has {} parameters.", expected.render(), got)?;
+                writeln!(to, "Error: Expected a closure of type '{}', but the closure has {}.", expected.render(), pluralize("parameter", *got as u64))?;
                 Self::show_location(loc, to)
             }
             TypeCheckError::MismatchedArguments { expected, got, loc } => {
-                writeln!(to, "Error: Expected {expected} arguments, got {got} arguments.")?;
+                writeln!(to, "Error: Expected {}, got {}.", pluralize("argument", *expected as u64), pluralize("argument", *got as u64))?;
                 Self::show_location(loc, to)
             }
             TypeCheckError::MismatchedTypeArguments { expected, got, loc } => {
-                writeln!(to, "Error: Expected {expected} type parameters, got {got} type parameters.")?;
+                writeln!(to, "Error: Expected {}, got {}.", pluralize("type parameter", *expected as u64), pluralize("type parameter", *got as u64))?;
                 Self::show_location(loc, to)
             }
             TypeCheckError::RequiredTypeArguments { got, loc, note_loc } => {
@@ -742,41 +742,6 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
         }
     }
 
-    // fn check(&mut self, got_type: &Type, expected: ExpectedType, loc: &Location<'a>) -> bool {
-    //     match expected {
-    //         Some(Type::Errored) => false,
-    //         Some(Type::TypeParameterInstance { id, .. }) => {
-    //             let inferred_type = (&self.core.generic_stack[id]).as_ref();
-    //             if let Some(typ) = inferred_type {
-    //                 return self.check(got_type, Some(typ.clone()), loc);
-    //             } else {
-    //                 self.core.generic_stack[id] = Some(got_type.clone());
-    //                 return true
-    //             }
-    //         }
-    //         None => true,
-    //         Some(t) => {
-    //             if let Type::TypeParameterInstance { id, .. } = got_type {
-    //                 let inferred_type = self.core.generic_stack[*id].clone();
-    //                 if let Some(typ) = inferred_type {
-    //                     return self.check(&typ, Some(t), loc);
-    //                 } else {
-    //                     return false;
-    //                 }
-    //             }
-    //             let is_compat = self.checker.hir.is_subtype(got_type, &t);
-    //             if !is_compat {
-    //                 self.push_error(TypeCheckError::IncompatibleTypes{
-    //                     expected: self.display_type(&t),
-    //                     got: self.display_type(got_type),
-    //                     loc: *loc
-    //                 })
-    //             }
-    //             is_compat
-    //         }
-    //     }
-    // }
-
     fn resolve_block(&mut self, block: &ast::Block<'a>, yield_type: ExpectedType, with_ns: Option<NamespaceKey>) -> Block<'a> {
         let ast::Block { stmts, trailing_expr, loc } = block;
 
@@ -822,7 +787,14 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
             }
         };
         let declared = self.checker.namespaces[block_ns].get_names();
-        Block { stmts, trailing_expr, declared, loc: *loc }
+        let yield_type = if always_breaks {
+            Type::Never
+        } else if let Some(expr) = &trailing_expr {
+            self.type_of(expr)
+        } else {
+            Type::Unit
+        };
+        Block { stmts, trailing_expr, yield_type, declared, loc: *loc }
     }
 
     fn is_never(&self, expr: &Expr<'a>) -> bool {
@@ -922,6 +894,9 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
 
                         Expr::GenericCall { generic: generic_tuple, callee: *func, arguments: resolved_arguments, loc: *loc }
                     }
+                    Type::Errored => {
+                        Expr::Errored { loc: *loc }
+                    }
                     _ => {
                         self.push_error(TypeCheckError::ExpectedFunction { got: self.display_type(&callee_ty), loc: callee.loc() });
                         Expr::Errored { loc: *loc }
@@ -1009,13 +984,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                 };
 
                 let resolved_then_do = Box::new(self.resolve_expr(then_do, yield_type.clone()));
-                if self.is_never(&resolved_then_do) {
-                    return Expr::Errored { loc: *loc };
-                };
                 let resolved_else_do = Box::new(self.resolve_expr(else_do, yield_type.clone()));
-                if self.is_never(&resolved_else_do) {
-                    return Expr::Errored { loc: *loc };
-                };
 
                 let expr_yield_type: Type;
                 if resolved_then_do.always_diverges(&self.checker.hir) && resolved_else_do.always_diverges(&self.checker.hir) {
@@ -1035,7 +1004,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                     } else if self.can_cast_to_type(&else_ty, &then_ty) {
                         expr_yield_type = then_ty;
                     } else {
-                        self.push_error(TypeCheckError::IncompatibleTypes { expected: self.display_type(&then_ty), got: self.display_type(&else_ty), loc: *loc });
+                        self.push_error(TypeCheckError::IncompatibleTypes { expected: self.display_type(&then_ty), got: self.display_type(&else_ty), loc: else_do.loc() });
                         return Expr::Errored { loc: *loc };
                     }
                 }
@@ -1097,17 +1066,20 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                 let resolved_body = child.resolve_expr(body, expected_return.clone());
 
                 let ret_type: Type;
+                let yield_type: Type;
                 if let Some(return_type) = expected_return {
                     ret_type = return_type;
+                    yield_type = self.type_of(&resolved_body);
                 } else {
                     if !child.return_types.is_empty() {
                         panic!();
                     }
-                    ret_type = self.checker.hir.type_of_expr(&resolved_body)
+                    yield_type = self.type_of(&resolved_body);
+                    ret_type = yield_type.clone();
                 }
 
                 let declared = self.checker.namespaces[closure_ns].get_names();
-                let body = Block { stmts: vec![], trailing_expr: Some(Box::new(resolved_body)), declared, loc: body.loc() };
+                let body = Block { stmts: vec![], trailing_expr: Some(Box::new(resolved_body)), yield_type, declared, loc: body.loc() };
 
                 Expr::Closure { parameters: resolved_parameters, body, ret_type, loc: *loc }
             }
@@ -1155,11 +1127,11 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
 }
 
 
-// todo fix tests
 #[cfg(test)]
 mod test {
     use std::collections::HashMap;
     use std::path::Path;
+    use crate::error::Message;
     use crate::parsing::ast;
     use crate::lowering::hir::{FunctionKey, HIR, StructKey, Type};
     use crate::lowering::type_check::{collect_fields, collect_function_bodies, collect_functions, collect_structs, initialize, resolve_types};
@@ -1308,6 +1280,42 @@ mod test {
     }
 
     #[test]
+    fn test_if_else() {
+        let s = source("<test>", r"
+            fn main() -> i32 {
+                let a = if true {
+                    return 0;
+                } else {
+                    2
+                };
+
+                a
+            }
+        ");
+        let ast = parse_one(&s);
+
+        resolve_types(ast).unwrap();
+    }
+
+    #[test]
+    fn test_if_else_2() {
+        let s = source("<test>", r"
+            fn main() -> i32 {
+                let a = if true {
+                    2
+                } else {
+                    return 3;
+                };
+
+                a
+            }
+        ");
+        let ast = parse_one(&s);
+
+        resolve_types(ast).unwrap();
+    }
+
+    #[test]
     fn test_resolve_types_1() {
         let s = source("<test>", r"
             struct Alpha {
@@ -1411,5 +1419,235 @@ mod test {
         let ast = parse_one(&s);
 
         resolve_types(ast).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_types_6() {
+        let s = source("<test>", r"
+            fn main() -> i32 {
+                let closure = || 20;
+                return closure();
+            }
+        ");
+        let ast = parse_one(&s);
+
+        resolve_types(ast).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_types_7() {
+        let s = source("<test>", r"
+            fn main() -> i32 {
+                let closure = |a: i32| a;
+                return closure(20);
+            }
+        ");
+        let ast = parse_one(&s);
+
+        resolve_types(ast).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_types_8() {
+        let s = source("<test>", r"
+            fn main() -> i32 {
+                let closure: (i32) -> i32 = |a| a;
+                return closure(20);
+            }
+        ");
+        let ast = parse_one(&s);
+
+        resolve_types(ast).unwrap();
+    }
+
+    #[test]
+    fn test_never_as_value_1() {
+        let s = source("<test>", r"
+            fn main() -> i32 {
+                return { return 0; };
+            }
+        ");
+        let ast = parse_one(&s);
+
+        resolve_types(ast).unwrap();
+    }
+
+    #[test]
+    fn test_never_as_value_2() {
+        let s = source("<test>", r"
+            fn main() -> i32 {
+                let b = { return 0; };
+                return b;
+            }
+        ");
+        let ast = parse_one(&s);
+
+        assert!(resolve_types(ast).is_err_and(|e|
+            e.render_to_string().contains("Error: Values of type '!' cannot exist.")
+        ));
+    }
+
+    #[test]
+    fn test_never_as_value_3() {
+        let s = source("<test>", r"
+            fn main() -> i32 {
+                if true {
+                    return 0;
+                } else {
+                    return 2;
+                }
+            }
+        ");
+        let ast = parse_one(&s);
+
+        resolve_types(ast).unwrap();
+    }
+
+    #[test]
+    fn test_never_as_value_4() {
+        let s = source("<test>", r"
+            fn other(i: i32) -> i32 {
+                return i;
+            }
+
+            fn main() -> i32 {
+                other({ return 2; })
+            }
+        ");
+        let ast = parse_one(&s);
+
+        resolve_types(ast).unwrap();
+    }
+
+    #[test]
+    fn test_error_no_such_field() {
+        let s = source("<test>", r"
+            struct Thing {
+                a: bool;
+            }
+
+            fn main() -> i32 {
+                let t = new Thing { a: false };
+                return t.foo;
+            }
+        ");
+        let ast = parse_one(&s);
+
+        assert!(resolve_types(ast).is_err_and(|e|
+            e.render_to_string().contains("Error: 'Thing' Does not contain a field named 'foo'.")
+        ));
+    }
+
+    #[test]
+    fn test_error_no_such_name() {
+        let s = source("<test>", r"
+            fn main() -> i32 {
+                return t;
+            }
+        ");
+        let ast = parse_one(&s);
+
+        assert!(resolve_types(ast).is_err_and(|e|
+            e.render_to_string().contains("Error: Could not resolve the name 't'.")
+        ));
+    }
+
+    #[test]
+    fn test_error_no_such_type() {
+        let s = source("<test>", r"
+            fn other() -> Thing {
+
+            }
+
+            fn main() -> i32 {
+                return 0;
+            }
+        ");
+        let ast = parse_one(&s);
+
+        assert!(resolve_types(ast).is_err_and(|e|
+            e.render_to_string().contains("Error: Could not resolve the type 'Thing'.")
+        ));
+    }
+
+    #[test]
+    fn test_error_too_many_arguments() {
+        let s = source("<test>", r"
+            fn other() -> i32 {
+                return 0;
+            }
+
+            fn main() -> i32 {
+                return other(100);
+            }
+        ");
+        let ast = parse_one(&s);
+
+        assert!(resolve_types(ast).is_err_and(|e|
+            e.render_to_string().contains("Error: Expected 0 arguments, got 1 argument.")
+        ));
+    }
+
+    #[test]
+    fn test_error_too_few_arguments() {
+        let s = source("<test>", r"
+            fn other(i: i32) -> i32 {
+                return i;
+            }
+
+            fn main() -> i32 {
+                return other();
+            }
+        ");
+        let ast = parse_one(&s);
+
+        assert!(resolve_types(ast).is_err_and(|e|
+            e.render_to_string().contains("Error: Expected 1 argument, got 0 arguments.")
+        ));
+    }
+
+    #[test]
+    fn test_error_closure_could_not_infer() {
+        let s = source("<test>", r"
+            fn main() -> i32 {
+                let thing = |a| a;
+                return thing(20);
+            }
+        ");
+        let ast = parse_one(&s);
+
+        assert!(resolve_types(ast).is_err_and(|e|
+            e.render_to_string().contains("Error: Could not infer the type of the parameters of the closure.")
+        ));
+    }
+
+    #[test]
+    fn test_error_closure_bad_infer() {
+        let s = source("<test>", r"
+            fn main() -> i32 {
+                let thing: () -> i32 = |a| a;
+                return thing(20);
+            }
+        ");
+        let ast = parse_one(&s);
+
+        assert!(resolve_types(ast).is_err_and(|e|
+            e.render_to_string().contains("Expected a closure of type '() -> i32', but the closure has 1 parameter.")
+        ));
+    }
+
+    #[test]
+    fn test_error_mismatched_if_else() {
+        let s = source("<test>", r"
+            fn main() -> i32 {
+                let thing = if true { 32 } else { false };
+                return thing;
+            }
+        ");
+        let ast = parse_one(&s);
+
+        assert!(resolve_types(ast).is_err_and(|e|
+            e.render_to_string().contains("Error: Incompatible types. Expected 'i32' but got 'bool'.")
+        ));
     }
 }
