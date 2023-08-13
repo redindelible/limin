@@ -642,7 +642,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
         }
     }
 
-    fn cast_to_maybe_type(&self, to_type: Option<Type>, resolved_expr: Expr<'a>) -> Expr<'a> {
+    fn cast_to_maybe_type(&mut self, to_type: Option<Type>, resolved_expr: Expr<'a>) -> Expr<'a> {
         if let Some(ty) = to_type {
             self.cast_to_type(resolved_expr, &ty)
         } else {
@@ -650,7 +650,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
         }
     }
 
-    fn cast_to_type(&self, resolved_expr: Expr<'a>, to_type: &Type) -> Expr<'a> {
+    fn cast_to_type(&mut self, resolved_expr: Expr<'a>, to_type: &Type) -> Expr<'a> {
         let actual_type = self.type_of(&resolved_expr);
 
         let incompatible_types = || {
@@ -691,8 +691,41 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                 (Type::Function { params: a_params, ret: a_ret }, Type::Function { params: b_params, ret: b_ret }) => {
                     todo!()
                 },
-                (Type::TypeParameter { id: a, .. }, Type::TypeParameter { id: b, .. }) => {
-                    todo!()
+                (Type::TypeParameterInstance { id, .. }, to_type) => {
+                    let inferred_type = (&self.core.generic_stack[*id]).as_ref().cloned();
+                    if let Some(typ) = inferred_type {
+                        if self.can_cast_to_type(&typ, to_type) {
+                            return Expr::Cast(Box::new(resolved_expr), to_type.clone());
+                        } else {
+                            self.push_error(TypeCheckError::IncompatibleTypes {
+                                expected: self.display_type(to_type),
+                                got: self.display_type(&actual_type),
+                                loc: resolved_expr.loc()
+                            });
+                            return Expr::Errored { loc: resolved_expr.loc() };
+                        }
+                    } else {
+                        self.core.generic_stack[*id] = Some(to_type.clone());
+                        return resolved_expr;
+                    }
+                },
+                (from_typ, Type::TypeParameterInstance { id, .. }) => {
+                    let inferred_type = (&self.core.generic_stack[*id]).as_ref().cloned();
+                    if let Some(typ) = inferred_type {
+                        if self.can_cast_to_type(from_typ, &typ) {
+                            return Expr::Cast(Box::new(resolved_expr), typ);
+                        } else {
+                            self.push_error(TypeCheckError::IncompatibleTypes {
+                                expected: self.display_type(to_type),
+                                got: self.display_type(&actual_type),
+                                loc: resolved_expr.loc()
+                            });
+                            return Expr::Errored { loc: resolved_expr.loc() };
+                        }
+                    } else {
+                        self.core.generic_stack[*id] = Some(from_typ.clone());
+                        return resolved_expr;
+                    }
                 },
                 (_, _) => {
                     return incompatible_types();
@@ -701,11 +734,11 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
         }
     }
 
-    fn can_cast_to_maybe_type(&self, from_type: &Type, to_type: Option<&Type>) -> bool {
+    fn can_cast_to_maybe_type(&mut self, from_type: &Type, to_type: Option<&Type>) -> bool {
         to_type.map_or(true, |ty| self.can_cast_to_type(from_type, ty))
     }
 
-    fn can_cast_to_type(&self, from_type: &Type, to_type: &Type) -> bool {
+    fn can_cast_to_type(&mut self, from_type: &Type, to_type: &Type) -> bool {
         if from_type == to_type {
             true
         } else {
@@ -732,8 +765,31 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                 (Type::Function { params: a_params, ret: a_ret }, Type::Function { params: b_params, ret: b_ret }) => {
                     todo!()
                 },
-                (Type::TypeParameter { id: a, .. }, Type::TypeParameter { id: b, .. }) => {
-                    todo!()
+                (Type::TypeParameterInstance { id, .. }, to_type) => {
+                    let inferred_type = (&self.core.generic_stack[*id]).as_ref().cloned();
+                    if let Some(typ) = inferred_type {
+                        if self.can_cast_to_type(&typ, to_type) {
+                            return true;
+                        } else {
+                            return false;
+                        }
+                    } else {
+                        self.core.generic_stack[*id] = Some(to_type.clone());
+                        return true;
+                    }
+                },
+                (from_typ, Type::TypeParameterInstance { id, .. }) => {
+                    let inferred_type = (&self.core.generic_stack[*id]).as_ref().cloned();
+                    if let Some(typ) = inferred_type {
+                        if self.can_cast_to_type(from_typ, &typ) {
+                            return true;
+                        } else {
+                            return false;
+                        }
+                    } else {
+                        self.core.generic_stack[*id] = Some(from_typ.clone());
+                        return true;
+                    }
                 },
                 (_, _) => {
                     return false;
@@ -874,6 +930,11 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                         }
 
                         if !self.can_cast_to_maybe_type(&ret.subs(&map), yield_type.as_ref()) {
+                            self.push_error(TypeCheckError::IncompatibleTypes {
+                                expected: self.display_type(yield_type.as_ref().unwrap()),
+                                got: self.display_type(&ret.subs(&map)),
+                                loc: *loc
+                            });
                             return Expr::Errored { loc: *loc };
                         }
 

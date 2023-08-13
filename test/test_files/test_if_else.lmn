@@ -1,0 +1,9 @@
+fn main() -> i32 {
+    let a = if true {
+        return 32;
+    } else {
+        64
+    };
+
+    a
+}

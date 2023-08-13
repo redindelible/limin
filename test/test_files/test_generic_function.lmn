@@ -1,0 +1,11 @@
+fn identity<T>(some: T) -> T {
+    return some;
+}
+
+fn identity2<T>(some: T) -> T {
+    return identity(some);
+}
+
+fn main() -> i32 {
+    return identity2(32);
+}

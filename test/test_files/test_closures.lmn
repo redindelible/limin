@@ -1,0 +1,18 @@
+
+
+fn infer_1() -> (i32) -> i32 {
+    |a| a
+}
+
+fn infer_2() -> (i32) -> i32 {
+    let f = |a: i32| a;
+    f
+}
+
+fn capture(value: i32) -> () -> i32 {
+    || value
+}
+
+fn main() -> i32 {
+    return infer_2()(infer_1()(capture(20)()));
+}

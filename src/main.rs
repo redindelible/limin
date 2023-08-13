@@ -78,4 +78,27 @@ mod test {
         assert_eq!(output.status.code(), Some(32));
     }
 
+    #[test]
+    fn test_if_else() {
+        let output = run_file(Path::new("test/test_files/test_if_else.lmn"));
+        assert_eq!(output.status.code(), Some(32));
+    }
+
+    #[test]
+    fn test_generic_function() {
+        let output = run_file(Path::new("test/test_files/test_generic_function.lmn"));
+        assert_eq!(output.status.code(), Some(32));
+    }
+
+    #[test]
+    fn test_closures() {
+        let output = run_file(Path::new("test/test_files/test_closures.lmn"));
+        assert_eq!(output.status.code(), Some(20));
+    }
+
+    #[test]
+    fn test_generic_struct() {
+        let output = run_file(Path::new("test/test_files/test_generic_struct.lmn"));
+        assert_eq!(output.status.code(), Some(32));
+    }
 }

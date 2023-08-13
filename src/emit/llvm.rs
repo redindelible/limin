@@ -248,7 +248,7 @@ impl Module {
     }
 
     pub fn add_global_constant(&mut self, name: String, initializer: Constant) -> GlobalRef {
-        let global = GlobalRef(Rc::new(Global { name: name.clone(), typ: initializer.ty(), is_const: true, initializer: RefCell::new(initializer) }));
+        let global = GlobalRef(Rc::new(Global { name: format!("\"{}\"", &name), typ: initializer.ty(), is_const: true, initializer: RefCell::new(initializer) }));
         self.globals.insert(name, global.clone());
         global
     }
