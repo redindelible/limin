@@ -101,11 +101,11 @@ impl LLVMEmitter {
             llvm::Types::ptr(),
             vec![
                 llvm::ParameterRef::new("type", llvm::Types::ptr()).nowrite().nofree().noalias(),
-                llvm::ParameterRef::new("frame", llvm::Types::ptr()).nocapture().nowrite().nofree().noalias()
+                llvm::ParameterRef::new("frame", llvm::Types::ptr()).nocapture().nofree().noalias()
             ],
             CCC
         ).ret_noalias().willreturn().nounwind()
-            .memory(MemoryAccess::Read)    // this is probably technically not safe since we access inaccessiblemem
+            // .memory(MemoryAccess::Read)    // this is probably technically not safe since we access inaccessiblemem
             .to_value();
 
         let mark_obj_fn = module.add_function(
