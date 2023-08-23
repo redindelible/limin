@@ -1,11 +1,9 @@
-struct Holder<T> {
-    held: T;
-}
 
-fn create_Holder<T>(item: T) -> Holder<T> {
-    return new Holder { held: item };
-}
 
 fn main() -> i32 {
-    return create_Holder(32).held;
+    let a: *i32 = new 30;
+
+    let b: &i32 = &*a;
+
+    return *a;
 }

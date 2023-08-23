@@ -72,6 +72,7 @@ pub struct TypeParameter<'a> {
 #[derive(Debug, Eq, PartialEq)]
 pub struct Struct<'a> {
     pub name: String,
+    pub is_dyn: bool,
     pub type_params: Vec<TypeParameter<'a>>,
     pub super_struct: Option<(String, Location<'a>)>,
     pub items: Vec<StructItem<'a>>,
@@ -121,7 +122,10 @@ pub enum Expr<'a> {
     Integer { number: u64, loc: Location<'a> },
     Bool { value: bool, loc: Location<'a> },
     Block(Block<'a>),
-    New { struct_: String, type_args: Option<Vec<Type<'a>>>, fields: Vec<NewArgument<'a>>, loc: Location<'a> },
+    Reference { expr: Box<Expr<'a>>, loc: Location<'a> },
+    Dereference { expr: Box<Expr<'a>>, loc: Location<'a> },
+    New { expr: Box<Expr<'a>>, loc: Location<'a> },
+    StructInitializer { struct_: String, type_args: Option<Vec<Type<'a>>>, fields: Vec<NewArgument<'a>>, loc: Location<'a> },
     IfElse { cond: Box<Expr<'a>>, then_do: Box<Expr<'a>>, else_do: Box<Expr<'a>>, loc: Location<'a> },
     Closure { parameters: Vec<ClosureParameter<'a>>, body: Box<Expr<'a>>, loc: Location<'a> }
 }
@@ -154,6 +158,9 @@ impl<'a> HasLoc<'a> for Expr<'a> {
             Expr::Bool { loc, .. } => *loc,
             Expr::IfElse { loc, .. } => *loc,
             Expr::Closure { loc, .. } => *loc,
+            Expr::Reference { loc, .. } => *loc,
+            Expr::Dereference { loc, .. } => *loc,
+            Expr::StructInitializer { loc, .. } => *loc,
         }
     }
 }
@@ -162,7 +169,9 @@ impl<'a> HasLoc<'a> for Expr<'a> {
 pub enum Type<'a> {
     Name { name: String, loc: Location<'a> },
     Function { parameters: Vec<Type<'a>>, ret: Box<Type<'a>>, loc: Location<'a> },
-    Generic { name: String, type_args: Vec<Type<'a>>, loc: Location<'a> }
+    Generic { name: String, type_args: Vec<Type<'a>>, loc: Location<'a> },
+    Pointer { pointee: Box<Type<'a>>, loc: Location<'a> },
+    Reference { pointee: Box<Type<'a>>, loc: Location<'a> }
 }
 
 impl<'s> HasLoc<'s> for Type<'s> {
@@ -170,7 +179,9 @@ impl<'s> HasLoc<'s> for Type<'s> {
         match self {
             Type::Name { loc, .. } => *loc,
             Type::Function { loc, .. } => *loc,
-            Type::Generic { loc, .. } => *loc
+            Type::Generic { loc, .. } => *loc,
+            Type::Pointer { loc, .. } => *loc,
+            Type::Reference { loc, .. } => *loc
         }
     }
 }

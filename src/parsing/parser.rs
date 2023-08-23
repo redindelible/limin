@@ -156,6 +156,8 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_struct(&mut self) -> ParseResult<TopLevel<'a>> {
+        let is_dyn = false;
+
         let start = self.expect(TokenType::Struct)?;
         let name = self.expect(TokenType::Identifier)?;
 
@@ -185,7 +187,7 @@ impl<'a> Parser<'a> {
 
         let loc = name.loc + start.loc;
 
-        Ok(TopLevel::Struct(Struct { name: name.text.to_owned(), type_params, super_struct, items, loc }))
+        Ok(TopLevel::Struct(Struct { name: name.text.to_owned(), is_dyn, type_params, super_struct, items, loc }))
     }
 
     fn parse_struct_item(&mut self) -> ParseResult<StructItem<'a>> {
@@ -308,18 +310,18 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_comparison(&mut self) -> ParseResult<Expr<'a>> {
-        let mut left = self.parse_call()?;
+        let mut left = self.parse_ref()?;
         loop {
             match self.curr().typ {
                 TokenType::LeftAngle => {
                     self.advance();
-                    let right = self.parse_call()?;
+                    let right = self.parse_ref()?;
                     let loc = left.loc() + right.loc();
                     left = Expr::BinOp { left: Box::new(left), op: BinOp::LessThan, right: Box::new(right), loc };
                 },
                 TokenType::RightAngle => {
                     self.advance();
-                    let right = self.parse_call()?;
+                    let right = self.parse_ref()?;
                     let loc = left.loc() + right.loc();
                     left = Expr::BinOp { left: Box::new(left), op: BinOp::GreaterThan, right: Box::new(right), loc };
                 }
@@ -327,6 +329,24 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(left)
+    }
+
+    fn parse_ref(&mut self) -> ParseResult<Expr<'a>> {
+        match self.curr().typ {
+            TokenType::Ampersand => {
+                let start = self.advance();
+                let expr = Box::new(self.parse_ref()?);
+                let loc = start.loc + expr.loc();
+                Ok(Expr::Reference { expr, loc })
+            }
+            TokenType::Star => {
+                let start = self.advance();
+                let expr = Box::new(self.parse_ref()?);
+                let loc = start.loc + expr.loc();
+                Ok(Expr::Dereference { expr, loc })
+            }
+            _ => self.parse_call()
+        }
     }
 
     fn parse_call(&mut self) -> ParseResult<Expr<'a>> {
@@ -348,6 +368,7 @@ impl<'a> Parser<'a> {
                     let state = self.store();
                     let result: Result<_, usize> = (|| {
                         let type_arguments = self.delimited_parse(TokenType::LeftAngle, TokenType::RightAngle, Self::parse_type)?;
+                        // todo parse struct initializers in here
                         let arguments = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, Self::parse_expr)?;
                         Ok((type_arguments, arguments))
                     })();
@@ -394,26 +415,25 @@ impl<'a> Parser<'a> {
         match self.curr().typ {
             TokenType::New => {
                 let start = self.advance();
-                let struct_ = self.expect(TokenType::Identifier)?.text.into();
-                let type_args = if self.curr().typ == TokenType::LeftAngle {
-                    let (type_args, _) = self.delimited_parse(TokenType::LeftAngle, TokenType::RightAngle, Self::parse_type)?;
-                    Some(type_args)
-                } else {
-                    None
-                };
+                let expr = Box::new(self.parse_expr()?);  // maybe change the precedence here way up
+                let loc = start.loc + expr.loc();
 
-                let (fields, loc) = self.delimited_parse(TokenType::LeftBrace, TokenType::RightBrace, |this| {
-                    let name = this.expect(TokenType::Identifier)?;
-                    this.expect(TokenType::Colon)?;
-                    let argument = this.parse_expr()?;
-                    let loc = name.loc + argument.loc();
-                    Ok(NewArgument { field_name: name.text.to_owned(), argument: Box::new(argument), name_loc: loc })
-                })?;
-                let loc = loc + start.loc;
-                Ok(Expr::New { struct_, type_args, fields, loc})
+                Ok(Expr::New { expr, loc })
             },
             TokenType::Identifier => {
                 let tok = self.advance();
+                if self.curr().typ == TokenType::LeftBrace {
+                    let type_args = None;
+                    let (fields, loc) = self.delimited_parse(TokenType::LeftBrace, TokenType::RightBrace, |this| {
+                        let name = this.expect(TokenType::Identifier)?;
+                        this.expect(TokenType::Colon)?;
+                        let argument = this.parse_expr()?;
+                        let loc = name.loc + argument.loc();
+                        Ok(NewArgument { field_name: name.text.to_owned(), argument: Box::new(argument), name_loc: loc })
+                    })?;
+                    let loc = tok.loc + loc;
+                    Ok(Expr::StructInitializer { struct_, type_args, fields, loc })
+                }
                 Ok(Expr::Name { name: tok.text.to_owned(), loc: tok.loc })
             },
             TokenType::Integer => {
@@ -454,6 +474,18 @@ impl<'a> Parser<'a> {
 
     fn parse_type_terminal(&mut self) -> ParseResult<Type<'a>> {
         match self.curr().typ {
+            TokenType::Star => {
+                let start = self.advance();
+                let pointee = Box::new(self.parse_type()?);
+                let loc = start.loc + pointee.loc();
+                Ok(Type::Pointer { pointee, loc })
+            }
+            TokenType::Ampersand => {
+                let start = self.advance();
+                let pointee = Box::new(self.parse_type()?);
+                let loc = start.loc + pointee.loc();
+                Ok(Type::Reference { pointee, loc })
+            }
             TokenType::Identifier => {
                 let name = self.advance();
                 if self.curr().typ == TokenType::LeftAngle {
