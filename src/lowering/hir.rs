@@ -75,8 +75,6 @@ impl Type {
 pub struct HIR<'s> {
     pub name: String,
     pub main_function: Option<FunctionKey>,
-    
-    // todo find some way to preserve insertion order
 
     pub names: SlotMap<NameKey, NameInfo<'s>>,
     pub structs: SlotMap<StructKey, Struct<'s>>,
@@ -190,6 +188,23 @@ impl<'a> Struct<'a> {
         fields.extend(self.fields.iter().map(|(n, f)| (n.clone(), f.typ.clone())));
         fields
     }
+}
+
+pub struct Impl<'ir> {
+    pub impl_trait: Option<()>,
+    pub bounds: Vec<()>,
+    pub method_prototypes: HashMap<String, MethodPrototype<'ir>>,
+    pub method_bodies: HashMap<String, MethodBody<'ir>>,
+
+    pub loc: Location<'ir>
+}
+
+pub struct MethodPrototype<'ir> {
+
+}
+
+pub struct MethodBody<'ir> {
+
 }
 
 #[derive(Clone)]

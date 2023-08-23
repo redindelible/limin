@@ -80,7 +80,24 @@ pub struct Struct<'a> {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum StructItem<'a> {
-    Field { name: String, typ: Box<Type<'a>>, loc: Location<'a> }
+    Field { name: String, typ: Box<Type<'a>>, loc: Location<'a> },
+    Impl(Impl<'a>)
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum Impl<'a> {
+    Unbounded { methods: Vec<Method<'a>>, loc: Location<'a> }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct Method<'a> {
+    pub name: String,
+    pub type_parameters: Vec<TypeParameter<'a>>,
+    pub maybe_self: Option<(String, Location<'a>)>,
+    pub parameters: Vec<Parameter<'a>>,
+    pub return_type: Option<Box<Type<'a>>>,
+    pub body: Block<'a>,
+    pub loc: Location<'a>,
 }
 
 #[derive(Debug, Eq, PartialEq)]

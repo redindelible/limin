@@ -24,6 +24,7 @@ pub enum TokenType {
     Let,
     Return,
     Struct,
+    Impl,
     If,
     Else,
     New,
@@ -58,7 +59,8 @@ const KEYWORDS: phf::Map<&str, TokenType> = phf_map! {
     "true" => TokenType::True,
     "false" => TokenType::False,
     "if" => TokenType::If,
-    "else" => TokenType::Else
+    "else" => TokenType::Else,
+    "impl" => TokenType::Impl,
 };
 
 impl TokenType {
@@ -83,6 +85,7 @@ impl TokenType {
             TokenType::Let => "'let'",
             TokenType::Return => "'return'",
             TokenType::Struct => "'struct'",
+            TokenType::Impl => "'impl'",
             TokenType::EOF => "the end of the file",
             TokenType::New => "'new'",
             TokenType::True => "'true'",

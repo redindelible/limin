@@ -3,7 +3,7 @@ use std::cell::{RefCell};
 use std::collections::HashMap;
 use indexmap::IndexMap;
 use crate::emit::{ilir, lir, llvm};
-use crate::emit::llvm::{GEPIndex, MemoryAccess, Value};
+use crate::emit::llvm::{GEPIndex, Value};
 use crate::emit::llvm::CallingConvention::CCC;
 use crate::emit::trace_roots::trace_roots;
 use crate::util;
