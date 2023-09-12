@@ -1,10 +1,9 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::rc::Rc;
 use indexmap::IndexMap;
 use slotmap::{SlotMap, new_key_type, SecondaryMap};
 use crate::source::Location;
-use crate::util::Counter;
 
 new_key_type! {
     pub struct NameKey;
@@ -24,42 +23,29 @@ pub enum NameInfo<'ir> {
     }
 }
 
-pub struct LifetimeTracker {
-    counter: Counter
-}
+#[derive(Clone)]
+struct Lifetime_(Option<Lifetime>);
 
 #[derive(Clone)]
-pub struct Lifetime(Vec<u64>);
+pub struct Lifetime(Rc<Lifetime_>);
 
 impl Lifetime {
-    pub fn lives_as_long_as(&self, other: &Self) -> bool {
-        other.0.starts_with(&self.0)
+    pub fn new_root() -> Lifetime {
+        Lifetime(Rc::new(Lifetime_(None)))
     }
 
-    pub fn longer_of(&self, other: &Self) -> Option<Lifetime> {
-        if self.lives_as_long_as(other) {
-            Some(self.clone())
-        } else if other.lives_as_long_as(self) {
-            Some(other.clone())
-        } else {
-            None
+    pub fn child(&self) -> Lifetime {
+        Lifetime(Rc::new(Lifetime_(Some(self.clone()))))
+    }
+
+    pub fn always_outlives(&self, other: &Lifetime) -> bool {
+        let mut check: &Lifetime = other;
+        loop {
+            if Rc::ptr_eq(&self.0, &other.0) {
+                return true;
+            }
+
         }
-    }
-}
-
-impl LifetimeTracker {
-    pub fn new_root(&mut self) -> Lifetime {
-        Lifetime(vec![self.counter.next() as u64])
-    }
-
-    pub fn new_static(&self) -> Lifetime {
-        Lifetime(vec![])
-    }
-
-    pub fn child(&mut self, of: &Lifetime) -> Lifetime {
-        let mut new = of.0.clone();
-        new.push(self.counter.next() as u64);
-        Lifetime(new)
     }
 }
 
