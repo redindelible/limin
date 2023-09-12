@@ -1,8 +1,10 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use indexmap::IndexMap;
 use slotmap::{SlotMap, new_key_type, SecondaryMap};
 use crate::source::Location;
+use crate::util::Counter;
 
 new_key_type! {
     pub struct NameKey;
@@ -21,6 +23,46 @@ pub enum NameInfo<'ir> {
         level: usize
     }
 }
+
+pub struct LifetimeTracker {
+    counter: Counter
+}
+
+#[derive(Clone)]
+pub struct Lifetime(Vec<u64>);
+
+impl Lifetime {
+    pub fn lives_as_long_as(&self, other: &Self) -> bool {
+        other.0.starts_with(&self.0)
+    }
+
+    pub fn longer_of(&self, other: &Self) -> Option<Lifetime> {
+        if self.lives_as_long_as(other) {
+            Some(self.clone())
+        } else if other.lives_as_long_as(self) {
+            Some(other.clone())
+        } else {
+            None
+        }
+    }
+}
+
+impl LifetimeTracker {
+    pub fn new_root(&mut self) -> Lifetime {
+        Lifetime(vec![self.counter.next() as u64])
+    }
+
+    pub fn new_static(&self) -> Lifetime {
+        Lifetime(vec![])
+    }
+
+    pub fn child(&mut self, of: &Lifetime) -> Lifetime {
+        let mut new = of.0.clone();
+        new.push(self.counter.next() as u64);
+        Lifetime(new)
+    }
+}
+
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Type {
