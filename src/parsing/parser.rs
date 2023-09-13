@@ -432,9 +432,10 @@ impl<'a> Parser<'a> {
                         Ok(NewArgument { field_name: name.text.to_owned(), argument: Box::new(argument), name_loc: loc })
                     })?;
                     let loc = tok.loc + loc;
-                    Ok(Expr::StructInitializer { struct_, type_args, fields, loc })
+                    Ok(Expr::StructInitializer { struct_: tok.text.to_string(), type_args, fields, loc })
+                } else {
+                    Ok(Expr::Name { name: tok.text.to_owned(), loc: tok.loc })
                 }
-                Ok(Expr::Name { name: tok.text.to_owned(), loc: tok.loc })
             },
             TokenType::Integer => {
                 let tok = self.advance();

@@ -373,6 +373,12 @@ fn resolve_type<'a>(checker: &TypeCheck<'a>, ns: NamespaceKey, typ: &ast::Type<'
             checker.push_error(TypeCheckError::CouldNotResolveType(name.clone(), *loc));
             Type::Errored
         }
+        ast::Type::Pointer { pointee, loc } => {
+            Type::Pointer { pointee: Box::new(resolve_type(checker, ns, pointee)) }
+        }
+        ast::Type::Reference { pointee, loc } => {
+            Type::Reference { pointee: Box::new(resolve_type(checker, ns, pointee)) }
+        }
         ast::Type::Function { parameters, ret, .. } => {
             let parameters: Vec<Type> = parameters.iter().map(|p| resolve_type(checker, ns, p)).collect();
             let ret = resolve_type(checker, ns, ret);
@@ -964,7 +970,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                     }
                 }
             }
-            ast::Expr::New { struct_, fields, loc, .. } => {
+            ast::Expr::StructInitializer { struct_, fields, loc, .. } => {
                 let Some(struct_key) = resolve_struct(self.checker, self.namespace, struct_) else {
                     self.push_error(TypeCheckError::ExpectedStructName { got: struct_.clone(), loc: *loc });
                     return Expr::Errored { loc: *loc };
@@ -1009,7 +1015,7 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                     }
                 }
 
-                Expr::New { struct_: struct_key, variant, fields: resolved_fields, loc: *loc }
+                Expr::StructInitializer { struct_: struct_key, variant, fields: resolved_fields, loc: *loc }
             }
             ast::Expr::GetAttr { obj, attr, loc } => {
                 let resolved_obj = self.resolve_expr(obj, None);

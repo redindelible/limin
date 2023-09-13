@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::rc::Rc;
@@ -24,18 +25,25 @@ pub enum NameInfo<'ir> {
 }
 
 #[derive(Clone)]
-struct Lifetime_(Option<Lifetime>);
-
-#[derive(Clone)]
-pub struct Lifetime(Rc<Lifetime_>);
+pub struct Lifetime(Rc<Option<Lifetime>>);
 
 impl Lifetime {
+    const STATIC: OnceCell<Lifetime> = OnceCell::new();
+
+    fn new(parent: Option<Lifetime>) -> Lifetime {
+        Lifetime(Rc::new(parent))
+    }
+
+    pub fn new_static() -> Lifetime {
+        Lifetime::STATIC.get_or_init(|| Lifetime::new(None)).clone()
+    }
+
     pub fn new_root() -> Lifetime {
-        Lifetime(Rc::new(Lifetime_(None)))
+        Lifetime::new(Some(Lifetime::new_static()))
     }
 
     pub fn child(&self) -> Lifetime {
-        Lifetime(Rc::new(Lifetime_(Some(self.clone()))))
+        Lifetime::new(Some(self.clone()))
     }
 
     pub fn always_outlives(&self, other: &Lifetime) -> bool {
@@ -44,11 +52,66 @@ impl Lifetime {
             if Rc::ptr_eq(&self.0, &other.0) {
                 return true;
             }
-
+            if let Some(parent) = check.0.as_ref() {
+                check = parent;
+            } else {
+                return false;
+            }
         }
     }
 }
 
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum UnknownLifetimeType {
+    Errored,
+    Unit,
+    Never,
+    Boolean,
+    Integer { bits: u8 },
+    Pointer { pointee: Box<UnknownLifetimeType> },
+    Reference { pointee: Box<UnknownLifetimeType> },
+    Struct { struct_: StructKey, variant: Vec<UnknownLifetimeType> },
+    Function { params: Vec<UnknownLifetimeType>, ret: Box<UnknownLifetimeType> },
+    // GenericFunction { func: FunctionKey, type_params: Vec<TypeParameter>, params: Vec<UnknownLifetimeType>, ret: Box<UnknownLifetimeType> },
+    TypeParameter { name: String, bound: Option<Box<UnknownLifetimeType>>, id: u64 },
+    // TypeParameterInstance { name: String, id: TypeParamKey }
+}
+
+impl UnknownLifetimeType {
+    pub fn assign_lifetime(&self, lifetime: Lifetime) -> Type {
+        match self {
+            UnknownLifetimeType::Errored => Type::Errored,
+            UnknownLifetimeType::Unit => Type::Unit,
+            UnknownLifetimeType::Never => Type::Never,
+            UnknownLifetimeType::Boolean => Type::Boolean,
+            UnknownLifetimeType::Integer { bits } => Type::Integer { bits: *bits },
+            UnknownLifetimeType::Pointer { pointee } => {
+                Type::Pointer { pointee: Box::new(pointee.assign_lifetime(lifetime)) }
+            }
+            UnknownLifetimeType::Reference { pointee } => {
+                Type::Reference { pointee: Box::new(pointee.assign_lifetime(lifetime.clone())), lifetime }
+            }
+            UnknownLifetimeType::Struct { struct_, variant } => {
+                Type::Struct { struct_: *struct_, variant: variant.iter().map(|ty| ty.assign_lifetime(lifetime.clone())).collect(), lifetime }
+            }
+            UnknownLifetimeType::Function { params, ret } => {
+                Type::Function {
+                    params: params.iter().map(|ty| ty.assign_lifetime(lifetime.clone())).collect(),
+                    ret: Box::new(ret.assign_lifetime(lifetime))
+                }
+            }
+            UnknownLifetimeType::TypeParameter { name, bound, id } => {
+                Type::TypeParameter {
+                    name: name.clone(),
+                    bound: bound.as_ref().map(|bound| Box::new(bound.assign_lifetime(lifetime.clone()))),
+                    id: *id,
+                    lifetime: lifetime.clone()
+                }
+            }
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Type {
@@ -57,11 +120,13 @@ pub enum Type {
     Never,
     Boolean,
     Integer { bits: u8 },
-    Struct { struct_: StructKey, variant: Vec<Type> },
+    Pointer { pointee: Box<Type> },
+    Reference { pointee: Box<Type>, lifetime: Lifetime },
+    Struct { struct_: StructKey, variant: Vec<Type>, lifetime: Lifetime },
     Function { params: Vec<Type>, ret: Box<Type> },
     GenericFunction { func: FunctionKey, type_params: Vec<TypeParameter>, params: Vec<Type>, ret: Box<Type> },
-    TypeParameter { name: String, bound: Option<Box<Type>>, id: u64 },
-    TypeParameterInstance { name: String, id: TypeParamKey }
+    TypeParameter { name: String, bound: Option<Box<Type>>, id: u64, lifetime: Lifetime },
+    TypeParameterInstance { name: String, id: TypeParamKey, lifetime: Lifetime }
 }
 
 impl Type {
@@ -80,6 +145,8 @@ impl Type {
             Type::Struct { struct_, variant } => {
                 Type::Struct { struct_: *struct_, variant: variant.iter().map(|t| t.subs(map)).collect() }
             },
+            Type::Pointer { pointee } => Type::Pointer { pointee: Box::new(pointee.subs(map)) },
+            Type::Reference { pointee } => Type::Reference { pointee: Box::new(pointee.subs(map)) },
             // I don't think this one is possible
             Type::GenericFunction { .. } => panic!(),
         }
@@ -152,9 +219,12 @@ impl<'s> HIR<'s> {
                 };
                 proto.ret.subs(&map)
             },
-            Expr::New { struct_, variant, .. } => {
+            Expr::StructInitializer { struct_, variant, .. } => {
                 Type::Struct { struct_: *struct_, variant: variant.clone() }
             },
+            Expr::New { expr, .. } => {
+                Type::Pointer { pointee: Box::new(self.type_of_expr(expr)) }
+            }
             Expr::Errored { .. } => Type::Errored,
             Expr::GetAttr { obj, attr, .. } => {
                 let Type::Struct { struct_, variant } = self.type_of_expr(obj) else { panic!() };
@@ -283,7 +353,8 @@ pub enum Expr<'ir> {
     Call { callee: Box<Expr<'ir>>, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
     GenericCall { generic: Vec<Type>, callee: FunctionKey, arguments: Vec<Expr<'ir>>, loc: Location<'ir>},
     Errored { loc: Location<'ir> },
-    New { struct_: StructKey, variant: Vec<Type>, fields: IndexMap<String, Box<Expr<'ir>>>, loc: Location<'ir> },
+    StructInitializer { struct_: StructKey, variant: Vec<Type>, fields: IndexMap<String, Box<Expr<'ir>>>, loc: Location<'ir> },
+    New { expr: Box<Expr<'ir>>, loc: Location<'ir> },
     IfElse { cond: Box<Expr<'ir>>, then_do: Box<Expr<'ir>>, else_do: Box<Expr<'ir>>, yield_type: Type, loc: Location<'ir> },
     Closure { parameters: Vec<ClosureParameter<'ir>>, body: Block<'ir>, ret_type: Type, loc: Location<'ir> },
     Cast(Box<Expr<'ir>>, Type)
@@ -310,6 +381,7 @@ impl<'a> Expr<'a> {
             Expr::GenericCall { loc, .. } => { *loc }
             Expr::Errored { loc, .. } => { *loc }
             Expr::New { loc, .. } => { *loc }
+            Expr::StructInitializer { loc, .. } => { *loc }
             Expr::IfElse { loc, .. } => { *loc }
             Expr::Closure { loc, .. } => { *loc }
             Expr::Cast(expr, _) => expr.loc()
@@ -322,18 +394,21 @@ impl<'a> Expr<'a> {
             Expr::Closure { .. } => false,
             Expr::Block( Block { stmts, trailing_expr, .. } ) => {
                 stmts.iter().any(|stmt| stmt.always_diverges(hir)) || trailing_expr.as_ref().map_or(false, |e| e.always_diverges(hir))
-            },
+            }
             Expr::Call { callee, arguments, .. } => {
                 if callee.always_diverges(hir) || arguments.iter().any(|arg| arg.always_diverges(hir)) {
                     return true;
                 }
                 let Type::Function { ret, .. } = hir.type_of_expr(callee) else { panic!() };
                 ret.is_never(hir)
-            },
+            }
             Expr::GenericCall { arguments, .. } => {
                 arguments.iter().any(|arg| arg.always_diverges(hir))
-            },
-            Expr::New { fields, .. } => {
+            }
+            Expr::New { expr, .. } => {
+                expr.always_diverges(hir)
+            }
+            Expr::StructInitializer { fields, .. } => {
                 fields.values().any(|val| val.always_diverges(hir))
             }
             Expr::GetAttr { obj, .. } => {
