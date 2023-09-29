@@ -28,7 +28,7 @@ pub fn collect_structs(initial: Initial) -> CollectedStructs {
                 checker.push_error(TypeCheckError::StructDuplicated(name.clone(), *loc, checker.hir.structs[prev_key].loc));
             }
 
-            checker.add_struct(file_ns, Struct { name: name.clone(), type_params: Vec::new(), super_struct: None, fields: IndexMap::new(), loc: *loc });
+            checker.add_struct(file_ns, Struct { name: name.clone(), type_params: Vec::new(), super_struct: None, fields: IndexMap::new(), impls: Vec::new(), loc: *loc });
         }
     }
 

@@ -79,12 +79,70 @@ pub fn collect_functions(collected: CollectedFields) -> CollectedFunctions {
                 }
                 ast::TopLevel::Struct(struct_) => {
                     let key = checker.get_struct_key(file_ns, &struct_.name);
+                    let struct_ns = struct_namespaces[key];
+                    let self_type = Type::Struct {
+                        struct_: key,
+                        variant: checker.hir.structs[key].type_params.iter().map(|tp| tp.as_type()).collect()
+                    };
 
                     for item in &struct_.items {
                         if let ast::StructItem::Impl(impl_) = item {
                             match impl_ {
                                 ast::Impl::Unbounded { methods, loc } => {
-                                    ...
+                                    let mut im = Impl {
+                                        impl_trait: None,
+                                        bounds: vec![],
+                                        method_prototypes: HashMap::new(),
+                                        method_bodies: HashMap::new(),
+                                        loc: *loc
+                                    };
+                                    for method in methods {
+                                        let func_ns = checker.add_namespace(Some(struct_ns));
+
+                                        let mut type_params = vec![];
+                                        for type_param in &method.type_parameters {
+                                            let bound = if let Some(bound) = &type_param.bound {
+                                                let typ = resolve_type(&checker, struct_ns, bound);
+                                                Some(typ)
+                                            } else {
+                                                None
+                                            };
+                                            let id = checker.add_type_param();
+                                            let typ = Type::TypeParameter { name: type_param.name.clone(), bound: bound.clone().map(|t| Box::new(t)), id };
+                                            type_params.push(TypeParameter { name: type_param.name.clone(), bound, id });
+                                            checker.add_type(func_ns, type_param.name.clone(), typ);
+                                        }
+
+                                        let maybe_self = if let Some((name, loc)) = &method.maybe_self {
+                                            let self_decl = checker.add_name(func_ns, name.clone(), NameInfo::Local {
+                                                typ: self_type.clone(),
+                                                level: 0,
+                                                loc: *loc
+                                            });
+                                            Some(self_decl)
+                                        } else {
+                                            None
+                                        };
+
+                                        let mut params = Vec::new();
+                                        for param in &method.parameters {
+                                            let typ = resolve_type(&checker, func_ns, &param.typ);
+                                            let decl = checker.add_name(func_ns, param.name.clone(), NameInfo::Local { typ: typ.clone(), loc: param.loc, level: 0 });
+                                            params.push(Parameter { name: param.name.clone(), typ, loc: param.loc, decl });
+                                        }
+                                        let ret = method.return_type.as_ref().map_or(Type::Unit, |t| resolve_type(&checker, func_ns, t));
+
+                                        let proto = MethodPrototype {
+                                            name: method.name.clone(),
+                                            type_params,
+                                            maybe_self,
+                                            params,
+                                            ret,
+                                            loc: *loc
+                                        };
+                                        im.method_prototypes.insert(method.name.clone(), proto);
+                                    }
+                                    checker.hir.structs[key].impls.push(im);
                                 }
                             }
                         }
