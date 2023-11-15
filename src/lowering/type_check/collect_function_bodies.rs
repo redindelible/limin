@@ -509,7 +509,9 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                 let ty = self.checker.hir.type_of_expr(&resolved_obj);
 
                 let Type::Struct { struct_, variant } = ty else {
-                    self.push_error(TypeCheckError::ExpectedStruct { got: self.display_type(&ty), loc: *loc });
+                    if !matches!(ty, Type::Errored) {
+                        self.push_error(TypeCheckError::ExpectedStruct { got: self.display_type(&ty), loc: *loc });
+                    }
                     return Expr::Errored { loc: *loc };
                 };
 

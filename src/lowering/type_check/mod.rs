@@ -298,7 +298,7 @@ impl<'a> TypeCheck<'a> {
 }
 
 
-struct Initial<'a> {
+pub struct Initial<'a> {
     checker: TypeCheck<'a>,
 
     root: NamespaceKey,

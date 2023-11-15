@@ -201,11 +201,17 @@ pub struct Impl<'ir> {
 }
 
 pub struct MethodPrototype<'ir> {
+    pub name: String,
+    pub type_params: Vec<TypeParameter>,
+    pub maybe_self: Option<NameKey>,
+    pub params: Vec<Parameter<'ir>>,
+    pub ret: Type,
+
     pub loc: Location<'ir>
 }
 
 pub struct MethodBody<'ir> {
-    pub loc: Location<'ir>
+    pub body: Block<'ir>
 }
 
 #[derive(Clone)]
