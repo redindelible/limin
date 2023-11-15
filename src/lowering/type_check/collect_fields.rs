@@ -6,7 +6,7 @@ use crate::lowering::type_check::{TypeCheck, NamespaceKey, TypeCheckError, resol
 use crate::lowering::type_check::collect_structs::CollectedStructs;
 use crate::lowering::hir::*;
 
-pub struct CollectedFields<'a> {
+pub(super) struct CollectedFields<'a> {
     pub(super) checker: TypeCheck<'a>,
 
     pub root: NamespaceKey,
@@ -15,7 +15,7 @@ pub struct CollectedFields<'a> {
     pub struct_namespaces: SecondaryMap<StructKey, NamespaceKey>,
 }
 
-pub fn collect_fields(collected: CollectedStructs) -> CollectedFields {
+pub(super) fn collect_fields(collected: CollectedStructs) -> CollectedFields {
     // todo also collect trait required methods here
     let CollectedStructs {
         mut checker, files, root,

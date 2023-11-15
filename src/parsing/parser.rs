@@ -407,7 +407,11 @@ impl<'a> Parser<'a> {
                 TokenType::LeftParenthesis => {
                     let (arguments, args_loc) = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, Self::parse_expr)?;
                     let loc = left.loc() + args_loc;
-                    left = Expr::Call { callee: Box::new(left), arguments, loc };
+                    if let Expr::GetAttr { obj, attr, .. } = left {
+                        left = Expr::MethodCall { object: obj, method: attr, arguments, loc };
+                    } else {
+                        left = Expr::Call { callee: Box::new(left), arguments, loc };
+                    }
                 }
                 TokenType::LeftAngle => {
                     let state = self.store();

@@ -5,7 +5,7 @@ use crate::parsing::ast;
 use crate::lowering::type_check::{TypeCheck, NamespaceKey, Initial, TypeCheckError};
 use crate::lowering::hir::*;
 
-pub struct CollectedStructs<'a> {
+pub(super) struct CollectedStructs<'a> {
     pub(super) checker: TypeCheck<'a>,
 
     pub root: NamespaceKey,
@@ -13,7 +13,7 @@ pub struct CollectedStructs<'a> {
     pub file_namespaces: HashMap<PathBuf, NamespaceKey>,
 }
 
-pub fn collect_structs(initial: Initial) -> CollectedStructs {
+pub(super) fn collect_structs(initial: Initial) -> CollectedStructs {
     let Initial { mut checker, root, files } = initial;
 
     let mut file_namespaces = HashMap::new();
@@ -28,7 +28,7 @@ pub fn collect_structs(initial: Initial) -> CollectedStructs {
                 checker.push_error(TypeCheckError::StructDuplicated(name.clone(), *loc, checker.hir.structs[prev_key].loc));
             }
 
-            checker.add_struct(file_ns, Struct { name: name.clone(), type_params: Vec::new(), super_struct: None, fields: IndexMap::new(), loc: *loc });
+            checker.add_struct(file_ns, Struct { name: name.clone(), type_params: Vec::new(), super_struct: None, fields: IndexMap::new(), impls: Vec::new(), loc: *loc });
         }
     }
 

@@ -176,6 +176,7 @@ pub struct Struct<'ir> {
     pub type_params: Vec<TypeParameter>,
     pub super_struct: Option<(StructKey, Vec<Type>, Location<'ir>)>,
     pub fields: IndexMap<String, StructField<'ir>>,
+    pub impls: Vec<Impl<'ir>>,
     pub loc: Location<'ir>
 }
 
@@ -200,11 +201,11 @@ pub struct Impl<'ir> {
 }
 
 pub struct MethodPrototype<'ir> {
-
+    pub loc: Location<'ir>
 }
 
 pub struct MethodBody<'ir> {
-
+    pub loc: Location<'ir>
 }
 
 #[derive(Clone)]

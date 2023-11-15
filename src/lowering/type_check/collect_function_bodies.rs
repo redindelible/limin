@@ -8,7 +8,7 @@ use crate::lowering::type_check::collect_functions::CollectedFunctions;
 use crate::source::HasLoc;
 
 
-pub fn collect_function_bodies(collected: CollectedFunctions) -> Result<HIR, Vec<TypeCheckError>> {
+pub(super) fn collect_function_bodies(collected: CollectedFunctions) -> Result<HIR, Vec<TypeCheckError>> {
     let CollectedFunctions { mut checker, files, file_namespaces, function_namespaces, .. } = collected;
 
     for (file_path, file) in &files {
@@ -525,6 +525,16 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
 
                 Expr::GetAttr { obj: Box::new(resolved_obj), attr: attr.clone(), loc: *loc }
             },
+            ast::Expr::MethodCall { object, method, arguments, loc } => {
+                let resolved_object = self.resolve_expr(object, None);
+                if self.is_never(&resolved_object) {
+                    return Expr::Errored { loc: *loc };
+                }
+
+                let Type::Struct { struct_, variant } = self.checker.hir.type_of_expr(&resolved_object) else {
+
+                }
+            }
             ast::Expr::GenericCall { .. } => todo!(),
             ast::Expr::BinOp { .. } => todo!(),
             ast::Expr::IfElse { cond, then_do, else_do, loc } => {

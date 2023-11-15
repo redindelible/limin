@@ -15,7 +15,12 @@ use crate::lowering::hir::*;
 use crate::source::Location;
 
 pub fn resolve_types(ast: ast::AST) -> Result<HIR, Vec<TypeCheckError>> {
-    collect_function_bodies::collect_function_bodies(collect_functions::collect_functions(collect_fields::collect_fields(collect_structs::collect_structs(initialize(ast)))))
+    let initialized = initialize(ast);
+    let collected_structs = collect_structs::collect_structs(initialized);
+    let collected_fields = collect_fields::collect_fields(collected_structs);
+    let collected_function = collect_functions::collect_functions(collected_fields);
+    let collected_bodies = collect_function_bodies::collect_function_bodies(collected_function);
+    collected_bodies
 }
 
 #[derive(Debug, Eq, PartialEq)]

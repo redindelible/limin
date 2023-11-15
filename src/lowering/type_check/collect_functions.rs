@@ -6,7 +6,7 @@ use crate::lowering::type_check::{TypeCheck, NamespaceKey, TypeCheckError, resol
 use crate::lowering::hir::*;
 use crate::lowering::type_check::collect_fields::CollectedFields;
 
-pub struct CollectedFunctions<'a> {
+pub(super) struct CollectedFunctions<'a> {
     pub(super) checker: TypeCheck<'a>,
 
     pub root: NamespaceKey,
@@ -16,7 +16,7 @@ pub struct CollectedFunctions<'a> {
     pub struct_namespaces: SecondaryMap<StructKey, NamespaceKey>,
 }
 
-pub fn collect_functions(collected: CollectedFields) -> CollectedFunctions {
+pub(super) fn collect_functions(collected: CollectedFields) -> CollectedFunctions {
     let CollectedFields { mut checker, files, file_namespaces, root, struct_namespaces } = collected;
 
     let mut func_namespaces = SecondaryMap::new();
@@ -84,7 +84,20 @@ pub fn collect_functions(collected: CollectedFields) -> CollectedFunctions {
                         if let ast::StructItem::Impl(impl_) = item {
                             match impl_ {
                                 ast::Impl::Unbounded { methods, loc } => {
-                                    ...
+                                    let mut method_prototypes: HashMap<String, MethodPrototype> = HashMap::new();
+                                    for method in methods {
+                                        method_prototypes.insert(method.name.clone(), MethodPrototype {
+                                            loc: method.loc
+                                        });
+                                    }
+
+                                    checker.hir.structs[key].impls.push(Impl {
+                                        impl_trait: None,
+                                        bounds: vec![],
+                                        method_prototypes,
+                                        method_bodies: HashMap::new(),
+                                        loc: *loc
+                                    })
                                 }
                             }
                         }
