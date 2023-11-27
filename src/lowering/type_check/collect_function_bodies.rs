@@ -2,14 +2,17 @@ use std::collections::HashMap;
 use indexmap::IndexMap;
 use slotmap::SlotMap;
 use crate::parsing::ast;
-use crate::lowering::type_check::{TypeCheck, NamespaceKey, TypeCheckError, resolve_type, DisplayType, resolve_struct};
-use crate::lowering::hir::*;
-use crate::lowering::type_check::collect_functions::CollectedFunctions;
-use crate::source::HasLoc;
+use crate::lowering::type_check as tc;
+use crate::lowering::hir;
+// use crate::source::HasLoc;
 
 
-pub(super) fn collect_function_bodies(collected: CollectedFunctions) -> Result<HIR, Vec<TypeCheckError>> {
-    let CollectedFunctions { mut checker, files, file_namespaces, function_namespaces, .. } = collected;
+pub(super) fn collect_function_bodies(checker: &mut tc::TypeCheck, collected: tc::collect_functions::CollectedPrototypes) -> tc::ResolveResult<hir::HIR> {
+    let tc::collect_functions::CollectedPrototypes { types, functions, structs } = &collected;
+
+    for (&func_key, func_info) in functions {
+        let context = ResolveContext::create_for_function(&collected, Some(func_info.ret.clone()), func_info.ns);
+    }
 
     for (file_path, file) in &files {
         let file_ns = file_namespaces[file_path];
@@ -29,38 +32,27 @@ pub(super) fn collect_function_bodies(collected: CollectedFunctions) -> Result<H
         }
     }
 
-    checker.finalize()
+    todo!()
 }
 
 
-type ExpectedType = Option<Type>;
+type ExpectedType = Option<tc::Type>;
 
-struct ResolveContextCore {
-    generic_stack: SlotMap<TypeParamKey, Option<Type>>
-}
-
-impl ResolveContextCore {
-    fn new() -> ResolveContextCore {
-        ResolveContextCore {
-            generic_stack: SlotMap::with_key()
-        }
-    }
-}
 
 struct ResolveContext<'a, 'b> where 'a: 'b {
-    checker: &'b mut TypeCheck<'a>,
-    expected_return: Option<Type>,
-    namespace: NamespaceKey,
-    core: &'b mut ResolveContextCore,
+    prototypes: &'b tc::collect_functions::CollectedPrototypes<'a>,
+
+    expected_return: Option<tc::Type>,
+    namespace: tc::NamespaceKey,
     level: usize,
 
-    return_types: Vec<Type>
+    return_types: Vec<tc::Type>
 }
 
-impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
-    fn create_for_function(checker: &'b mut TypeCheck<'a>, expected_return: Option<Type>, namespace: NamespaceKey, core: &'b mut ResolveContextCore) -> ResolveContext<'a, 'b> {
+impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
+    fn create_for_function(prototypes: &'b tc::collect_functions::CollectedPrototypes<'a>, expected_return: Option<tc::Type>, namespace: tc::NamespaceKey) -> ResolveContext<'a, 'b> {
         ResolveContext {
-            checker, expected_return, namespace, core,
+            prototypes, expected_return, namespace,
             level: 0,
             return_types: vec![]
         }
@@ -287,23 +279,23 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
         }
     }
 
-    fn resolve_block(&mut self, block: &ast::Block<'a>, yield_type: ExpectedType, with_ns: Option<NamespaceKey>) -> Block<'a> {
+    fn resolve_block(&mut self, block: &ast::Block<'a>, yield_type: ExpectedType, block_ns: tc::NamespaceKey) -> hir::Block<'a> {
         let ast::Block { stmts, trailing_expr, loc } = block;
 
-        let block_ns = with_ns.unwrap_or_else(||
-            self.checker.add_namespace(Some(self.namespace))
-        );
         let stmts = {
             let mut child = ResolveContext {
+                prototypes: &self.prototypes,
                 namespace: block_ns,
                 expected_return: self.expected_return.clone(),
-                checker: self.checker,
-                core: self.core,
                 level: 0,
                 return_types: vec![]
             };
-            let stmts: Vec<_> = stmts.iter().map(|stmt| child.resolve_stmt(stmt)).collect();
-            stmts
+            let mut hir_stmts: Vec<hir::Stmt> = Vec::new();
+            for stmt in stmts {
+                let hir_stmt = child.resolve_stmt(stmt);
+                hir_stmts.push(hir_stmt);
+            }
+            hir_stmts
         };
         let always_breaks = stmts.iter().any(|stmt| stmt.always_diverges(&self.checker.hir));
 
@@ -533,9 +525,19 @@ impl<'a, 'b> ResolveContext<'a, 'b>  where 'a: 'b  {
                     return Expr::Errored { loc: *loc };
                 }
 
-                let Type::Struct { struct_, variant } = self.checker.hir.type_of_expr(&resolved_object) else {
+                let ty = self.checker.hir.type_of_expr(&resolved_object);
+                let Type::Struct { struct_, variant } = ty else {
+                    if !matches!(ty, Type::Errored) {
+                        self.push_error(TypeCheckError::ExpectedStruct { got: self.display_type(&ty), loc: *loc });
+                    }
+                    return Expr::Errored { loc: *loc };
+                };
 
-                }
+                todo!()
+
+                // self.checker.hir.structs[struct_].all_fields()
+
+                // Expr::MethodCall { object: Box::new(resolved_object), method: method.clone(), }
             }
             ast::Expr::GenericCall { .. } => todo!(),
             ast::Expr::BinOp { .. } => todo!(),

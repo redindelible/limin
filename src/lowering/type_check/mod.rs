@@ -1,24 +1,34 @@
 mod collect_structs;
-mod collect_fields;
 mod collect_functions;
 mod collect_function_bodies;
+mod collect_types;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
+use indexmap::IndexMap;
 use slotmap::{new_key_type, SlotMap};
 use crate::parsing::ast;
 use crate::util::{map_join, pluralize};
 use crate::error::Message;
-use crate::lowering::hir::*;
+use crate::lowering::hir;
 use crate::source::Location;
 
-pub fn resolve_types(ast: ast::AST) -> Result<HIR, Vec<TypeCheckError>> {
-    let initialized = initialize(ast);
-    let collected_structs = collect_structs::collect_structs(initialized);
-    let collected_fields = collect_fields::collect_fields(collected_structs);
-    let collected_function = collect_functions::collect_functions(collected_fields);
+use crate::lowering::type_check::collect_types::CollectedTypes;
+use crate::lowering::type_check::collect_structs::CollectedStructs;
+use crate::lowering::type_check::collect_functions::CollectedPrototypes;
+
+
+pub fn resolve_types(ast: ast::AST) -> Result<hir::HIR, Vec<TypeCheckError>> {
+    let mut checker = TypeCheck::new(ast.name.clone());
+    let root = checker.root();
+    checker.add_type(root, "i32".to_owned(), Type::SignedInteger(32));
+    checker.add_type(root, "i64".to_owned(), Type::SignedInteger(32));
+    checker.add_type(root, "bool".to_owned(), Type::Boolean);
+
+    let collected_structs = collect_structs::collect_structs(&mut checker, &ast);
+    let collected_fields = collect_types::collect_types(&mut checker,collected_structs);
+    let collected_function = collect_functions::collect_functions(&mut checker, collected_fields);
     let collected_bodies = collect_function_bodies::collect_function_bodies(collected_function);
     collected_bodies
 }
@@ -75,8 +85,10 @@ impl DisplayType<'_> {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum TypeCheckError<'a> {
+    NameDuplicated(String, Location<'a>, Location<'a>),
     StructDuplicated(String, Location<'a>, Location<'a>),
     FieldDuplicated(String, String, Location<'a>, Location<'a>),
+    MethodDuplicated(String, String, Location<'a>, Location<'a>),
     CouldNotResolveName(String, Location<'a>),
     CouldNotResolveType(String, Location<'a>),
     IncompatibleTypes { expected: DisplayType<'a>, got: DisplayType<'a>, loc: Location<'a> },
@@ -102,6 +114,12 @@ pub enum TypeCheckError<'a> {
 impl<'a> Message for TypeCheckError<'a> {
     fn write_into<W: fmt::Write>(&self, to: &mut W) -> fmt::Result {
         match self {
+            TypeCheckError::NameDuplicated(name, loc, prev_loc) => {
+                writeln!(to, "Error: A name called '{name}' was already defined in this scope.")?;
+                Self::show_location(loc, to)?;
+                writeln!(to, " | Note: A name called '{name}' was previously defined here.")?;
+                Self::show_note_location(prev_loc, to)
+            }
             TypeCheckError::StructDuplicated(name, loc, prev_loc) => {
                 writeln!(to, "Error: A struct called '{name}' was already defined in this scope.")?;
                 Self::show_location(loc, to)?;
@@ -109,6 +127,12 @@ impl<'a> Message for TypeCheckError<'a> {
                 Self::show_note_location(prev_loc, to)
             }
             TypeCheckError::FieldDuplicated(name, struct_name, loc, prev_loc) => {
+                writeln!(to, "Error: The struct '{struct_name}' already has a field called '{name}'.")?;
+                Self::show_location(loc, to)?;
+                writeln!(to, " | Note: A field called '{name}' was previously defined here.")?;
+                Self::show_note_location(prev_loc, to)
+            }
+            TypeCheckError::MethodDuplicated(name, struct_name, loc, prev_loc) => {
                 writeln!(to, "Error: The struct '{struct_name}' already has a field called '{name}'.")?;
                 Self::show_location(loc, to)?;
                 writeln!(to, " | Note: A field called '{name}' was previously defined here.")?;
@@ -202,16 +226,47 @@ impl<'a> Message for TypeCheckError<'a> {
     }
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
+pub struct StructKey(usize);
+
+impl StructKey {
+    #[must_use]
+    fn next(&self) -> StructKey {
+        StructKey(self.0 + 1)
+    }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
+pub struct TypeParameterKey(usize);
+
+impl TypeParameterKey {
+    #[must_use]
+    fn next(&self) -> TypeParameterKey {
+        TypeParameterKey(self.0 + 1)
+    }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
+pub struct FunctionKey(usize);
+
+impl FunctionKey {
+    #[must_use]
+    fn next(&self) -> FunctionKey {
+        FunctionKey(self.0 + 1)
+    }
+}
+
 new_key_type! {
     pub struct NamespaceKey;
+    pub struct NameKey;
 }
 
 struct Namespace {
-    pub parent: Option<NamespaceKey>,
-    pub names: HashMap<String, NameKey>,
-    pub types: HashMap<String, Type>,
-    pub structs: HashMap<String, StructKey>,
-    pub namespaces: HashMap<String, NamespaceKey>,
+    parent: Option<NamespaceKey>,
+    names: HashMap<String, NameKey>,
+    types: HashMap<String, Type>,
+    structs: HashMap<String, StructKey>,
+    namespaces: HashMap<String, NamespaceKey>,
 }
 
 impl Namespace {
@@ -230,138 +285,274 @@ impl Namespace {
     }
 }
 
+#[derive(Clone)]
+enum Type {
+    TypeParameter(TypeParameterKey),
+    Boolean,
+    SignedInteger(u8),
+    UnsignedInteger(u8),
+    Struct(StructKey, Vec<Type>),
+    Function(Vec<Type>, Box<Type>),
+    Unit,
+    Errored
+}
+
+// #[derive(Clone)]
+// enum UncheckedType {
+//     TypeParameter(TypeParameterKey),
+//     Boolean,
+//     SignedInteger(u8),
+//     UnsignedInteger(u8),
+//     Struct(StructKey, Vec<UncheckedType>),
+//     Function(Vec<UncheckedType>, Box<UncheckedType>),
+//     Unit,
+//     Errored
+// }
+//
+// impl UncheckedType {
+//     fn from_type(ty: &Type) -> UncheckedType {
+//         match ty {
+//             Type::TypeParameter(key) => UncheckedType::TypeParameter(*key),
+//             Type::Boolean => UncheckedType::Boolean,
+//             Type::SignedInteger(bits) => UncheckedType::SignedInteger(*bits),
+//             Type::UnsignedInteger(bits) => UncheckedType::UnsignedInteger(*bits),
+//             Type::Struct(key, variant) => {
+//                 UncheckedType::Struct(*key, variant.iter().map(|ty| UncheckedType::from_type(ty)).collect())
+//             }
+//             Type::Function(params, ret) => {
+//                 UncheckedType::Function(params.iter().map(|ty| UncheckedType::from_type(ty)).collect(),
+//                 Box::new(UncheckedType::from_type(ret)))
+//             }
+//             Type::Unit => UncheckedType::Unit,
+//             Type::Errored => UncheckedType::Errored
+//         }
+//     }
+// }
+
+pub enum ResolveResult<'a, T> {
+    Success(T),
+    Failure(Vec<TypeCheckError<'a>>)
+}
+
+impl<'a, T> ResolveResult<'a, T> {
+    fn collect_results<I: IntoIterator<Item=ResolveResult<'a, T>>>(iter: I) -> ResolveResult<'a, Vec<T>> {
+        let mut items = Vec::new();
+        let mut errors = Vec::new();
+        for item in iter {
+            match item {
+                ResolveResult::Success(t) => items.push(t),
+                ResolveResult::Failure(errs) => errors.extend(errs)
+            }
+        }
+        if errors.is_empty() {
+            ResolveResult::Success(items)
+        } else {
+            ResolveResult::Failure(errors)
+        }
+    }
+
+    fn ok(self, checker: &mut TypeCheck<'a>) -> Option<T> {
+        match self {
+            ResolveResult::Success(t) => Some(t),
+            ResolveResult::Failure(errs) => {
+                for error in errs {
+                    checker.push_error(error);
+                }
+                None
+            }
+        }
+    }
+}
+
+impl<'a> ResolveResult<'a, Type> {
+    fn expect_type(self, checker: &mut TypeCheck<'a>) -> Type {
+        match self {
+            ResolveResult::Success(ty) => ty,
+            ResolveResult::Failure(errors) => {
+                for error in errors {
+                    checker.push_error(error)
+                }
+                Type::Errored
+            }
+        }
+    }
+}
+
+
+macro_rules! combine_errors {
+    ($($res:expr),*) => {
+        {
+            let mut errors: Vec<TypeCheckError<'_>> = Vec::new();
+            $(
+                if let ResolveResult::Failure(errs) = $res {
+                    errors.extend(errs);
+                }
+            )*
+
+            errors
+        }
+    };
+}
+
+
+pub enum NameInfo<'a> {
+    Local {
+        name: String,
+        ty: Type,
+        loc: Location<'a>
+    },
+    Function {
+        name: String,
+        key: FunctionKey,
+        params: Vec<Type>,
+        ret: Type,
+        loc: Location<'a>
+    }
+}
+
+impl<'a> NameInfo<'a> {
+    pub fn name(&self) -> &String {
+        match self {
+            NameInfo::Local { name, .. } => name,
+            NameInfo::Function { name, .. } => name
+        }
+    }
+
+    pub fn loc(&self) -> Location<'a> {
+        match self {
+            NameInfo::Local { loc, .. } => *loc,
+            NameInfo::Function { loc, .. } => *loc
+        }
+    }
+}
+
 struct TypeCheck<'a> {
     namespaces: SlotMap<NamespaceKey, Namespace>,
-    errors: RefCell<Vec<TypeCheckError<'a>>>,
-    hir: HIR<'a>,
-    type_param_counter: u64
+    root: NamespaceKey,
+
+    errors: Vec<TypeCheckError<'a>>,
+    type_parameter_key: TypeParameterKey,
+    type_parameter_ctxt: Vec<HashMap<TypeParameterKey, Type>>,
+
+    names: SlotMap<NameKey, NameInfo<'a>>
 }
 
 impl<'a> TypeCheck<'a> {
     pub fn new(name: String) -> TypeCheck<'a> {
-        TypeCheck { namespaces: SlotMap::with_key(), hir: HIR::new(name), errors: Default::default(), type_param_counter: 0 }
+        let mut namespaces = SlotMap::with_key();
+        let root = namespaces.insert(Namespace::new(None));
+        TypeCheck {
+            namespaces, root,
+            errors: Default::default(),
+            type_parameter_key: TypeParameterKey::default(), type_parameter_ctxt: vec![],
+            names: SlotMap::with_key()
+        }
     }
 
-    pub fn add_type_param(&mut self) -> u64 {
-        let count = self.type_param_counter;
-        self.type_param_counter += 1;
-        count
+    pub fn root(&self) -> NamespaceKey {
+        self.root
+    }
+
+    pub fn add_type_param(&mut self) -> TypeParameterKey {
+        let key = self.type_parameter_key;
+        self.type_parameter_key = self.type_parameter_key.next();
+        key
     }
 
     pub fn add_type(&mut self, ns: NamespaceKey, name: String, typ: Type) {
+        // todo return if there's a previous value
         self.namespaces[ns].types.insert(name, typ);
     }
 
-    pub fn add_name(&mut self, ns: NamespaceKey, name: String, info: NameInfo<'a>) -> NameKey {
-        let key = self.hir.names.insert(info);
-        self.namespaces[ns].names.insert(name, key);
-        key
+    #[must_use]
+    pub fn add_local(&mut self, name: impl Into<String>, ty: Type, loc: Location<'a>, ns: NamespaceKey) -> (NameKey, Option<NameKey>) {
+        let name = name.into();
+        let info = NameInfo::Local { name: name.clone(), ty, loc };
+        let key = self.names.insert(info);
+        (key, self.namespaces[ns].names.insert(name, key))
+    }
+
+    #[must_use]
+    pub fn add_function(&mut self, name: impl Into<String>, key: FunctionKey, params: Vec<Type>, ret: Type, loc: Location<'a>, ns: NamespaceKey) -> (NameKey, Option<NameKey>) {
+        let name = name.into();
+        let info = NameInfo::Function { name: name.clone(), key, params, ret, loc };
+        let key = self.names.insert(info);
+        (key, self.namespaces[ns].names.insert(name, key))
+    }
+
+    pub fn add_struct(&mut self, name: impl Into<String>, key: StructKey, ns: NamespaceKey) -> Option<StructKey> {
+        self.namespaces[ns].structs.insert(name.into(), key)
     }
 
     pub fn add_namespace(&mut self, parent: Option<NamespaceKey>) -> NamespaceKey {
         self.namespaces.insert(Namespace::new(parent))
     }
 
-    pub fn add_struct(&mut self, ns: NamespaceKey, struct_: Struct<'a>) -> StructKey {
-        let name = struct_.name.clone();
-        let key = self.hir.structs.insert(struct_);
-        self.namespaces[ns].structs.insert(name, key);
-        key
+    pub fn get_name(&self, name: NameKey) -> &NameInfo {
+        &self.names[name]
     }
 
-    pub fn get_struct_key(&self, file: NamespaceKey, name: &str) -> StructKey {
-        self.namespaces[file].structs[name]
-    }
-
-    pub fn get_function_key(&self, file: NamespaceKey, name: &str) -> FunctionKey {
-        match self.hir.names[self.namespaces[file].names[name]] {
-            NameInfo::Function { func } => func,
-            _ => panic!("not a function")
-        }
-    }
-
-    pub fn type_of_expr(&self, expr: &Expr<'a>) -> Type {
-        self.hir.type_of_expr(expr)
-    }
-
-    pub fn push_error(&self, err: TypeCheckError<'a>) {
-        self.errors.borrow_mut().push(err);
-    }
-
-    pub fn finalize(self) -> Result<HIR<'a>, Vec<TypeCheckError<'a>>> {
-        if self.errors.borrow().is_empty() {
-            Ok(self.hir)
+    pub fn resolve_struct<'b>(&'b self, name: impl AsRef<str>, ns: NamespaceKey, loc: Location<'a>) -> ResolveResult<'a, StructKey> {
+        if let Some(&s) = self.namespaces[ns].structs.get(name.as_ref()) {
+            return ResolveResult::Success(s);
+        };
+        if let Some(parent) = self.namespaces[ns].parent {
+            return self.resolve_struct(name, parent, loc);
         } else {
-            Err(self.errors.into_inner())
+            return ResolveResult::Failure(vec![TypeCheckError::CouldNotResolveType(name.as_ref().to_owned(), loc)]);
         }
     }
-}
 
-
-pub struct Initial<'a> {
-    checker: TypeCheck<'a>,
-
-    root: NamespaceKey,
-    files: HashMap<PathBuf, ast::File<'a>>
-}
-
-fn initialize(ast: ast::AST) -> Initial {
-    let mut checker = TypeCheck::new(ast.name);
-    let root = checker.add_namespace(None);
-    checker.add_type(root, "i32".to_owned(), Type::Integer { bits: 32 });
-    checker.add_type(root, "i64".to_owned(), Type::Integer { bits: 64 });
-    checker.add_type(root, "bool".to_owned(), Type::Boolean);
-    Initial { root, checker, files: ast.files }
-}
-
-fn resolve_type<'a>(checker: &TypeCheck<'a>, ns: NamespaceKey, typ: &ast::Type<'a>) -> Type {
-    match typ {
-        ast::Type::Name { name, loc } => {
-            if let Some(t) = checker.namespaces[ns].types.get(name) {
-                return t.clone();
-            }
-            if let Some(&t) = checker.namespaces[ns].structs.get(name) {
-                if !checker.hir.structs[t].type_params.is_empty() {
-                    checker.push_error(TypeCheckError::RequiredTypeArguments { got: checker.hir.structs[t].name.clone(), loc: *loc, note_loc: checker.hir.structs[t].loc });
-                    return Type::Errored
+    pub fn resolve_type<'b>(&'b self, ty: &'a ast::Type<'a>, in_ns: NamespaceKey, ctxt: &CollectedTypes) -> ResolveResult<'a, Type> {
+        match ty {
+            ast::Type::Name { name, loc } => {
+                if let Some(ty) = self.namespaces[in_ns].types.get(name) {
+                    return ResolveResult::Success(ty.clone());
                 }
-                return Type::Struct { struct_: t, variant: vec![] };
-            }
-            if let Some(parent) = checker.namespaces[ns].parent {
-                return resolve_type(checker,parent, typ);
-            }
-            checker.push_error(TypeCheckError::CouldNotResolveType(name.clone(), *loc));
-            Type::Errored
-        }
-        ast::Type::Function { parameters, ret, .. } => {
-            let parameters: Vec<Type> = parameters.iter().map(|p| resolve_type(checker, ns, p)).collect();
-            let ret = resolve_type(checker, ns, ret);
-            Type::Function { params: parameters, ret: Box::new(ret) }
-        }
-        ast::Type::Generic { name, type_args, loc } => {
-            if let Some(s) = resolve_struct(checker, ns, name) {
-                let type_params = &checker.hir.structs[s].type_params;
-                if type_params.len() != type_args.len() {
-                    checker.push_error(TypeCheckError::MismatchedTypeArguments { expected: type_params.len(), got: type_args.len(), loc: *loc });
-                    return Type::Errored;
+                if let Some(&t) = self.namespaces[in_ns].structs.get(name) {
+                    if !ctxt.structs[&t].type_parameters.is_empty() {
+                        return ResolveResult::Failure(vec![TypeCheckError::RequiredTypeArguments { got: ctxt.structs[&t].name.clone(), loc: *loc, note_loc: ctxt.structs[&t].ast_struct.loc }]);
+                    }
+                    return ResolveResult::Success(Type::Struct(t, vec![]));
                 }
-                let type_args: Vec<Type> = type_args.iter().map(|arg| resolve_type(checker, ns, arg)).collect();
-                return Type::Struct { struct_: s, variant: type_args };
+                if let Some(parent) = self.namespaces[in_ns].parent {
+                    return self.resolve_type(ty, parent, ctxt);
+                }
+                return ResolveResult::Failure(vec![TypeCheckError::CouldNotResolveType(name.clone(), *loc)]);
             }
-            checker.push_error(TypeCheckError::CouldNotResolveType(name.clone(), *loc));
-            Type::Errored
+            ast::Type::Function { parameters, ret, .. } => {
+                let parameters: ResolveResult<'a, Vec<Type>> = ResolveResult::collect_results(parameters.iter().map(|p| self.resolve_type(p, in_ns, ctxt)));
+                let ret = self.resolve_type(ret, in_ns, ctxt);
+                match (parameters, ret) {
+                    (ResolveResult::Success(parameters), ResolveResult::Success(ret)) => {
+                        return ResolveResult::Success(Type::Function(parameters, Box::new(ret)))
+                    },
+                    (parameters, ret) => {
+                        return ResolveResult::Failure(combine_errors!(parameters, ret));
+                    }
+                }
+            }
+            ast::Type::Generic { name, type_args, loc } => {
+                let key_result = self.resolve_struct(name, in_ns, *loc);
+
+                let type_args_result: ResolveResult<'a, Vec<Type>> = ResolveResult::collect_results(type_args.iter().map(|arg| self.resolve_type(arg, in_ns, ctxt)));
+
+                if let (ResolveResult::Success(key), ResolveResult::Success(type_args)) = (&key_result, &type_args_result) {
+                    let type_params = &ctxt.structs[key].type_parameters;
+                    if type_params.len() != type_args.len() {
+                        return ResolveResult::Failure(vec![TypeCheckError::MismatchedTypeArguments { expected: type_params.len(), got: type_args.len(), loc: *loc }]);
+                    }
+                    return ResolveResult::Success(Type::Struct(*key, type_args.clone()));
+                } else {
+                    return ResolveResult::Failure(combine_errors!(key_result, type_args_result));
+                }
+            }
         }
     }
-}
 
-fn resolve_struct<'a>(checker: &TypeCheck<'a>, ns: NamespaceKey, name: &str) -> Option<StructKey> {
-    if let Some(s) = checker.namespaces[ns].structs.get(name) {
-        return Some(*s);
-    };
-    if let Some(parent) = checker.namespaces[ns].parent {
-        return resolve_struct(checker,parent, name);
+    pub fn push_error(&mut self, err: TypeCheckError<'a>) {
+        self.errors.push(err);
     }
-    None
 }
 
 
@@ -373,7 +564,7 @@ mod test {
     use crate::parsing::ast;
     use crate::lowering::hir::{FunctionKey, HIR, StructKey, Type};
     use crate::lowering::type_check::{initialize, resolve_types};
-    use crate::lowering::type_check::collect_fields::collect_fields;
+    use crate::lowering::type_check::collect_types::collect_types;
     use crate::lowering::type_check::collect_function_bodies::collect_function_bodies;
     use crate::lowering::type_check::collect_functions::collect_functions;
     use crate::lowering::type_check::collect_structs::collect_structs;
@@ -426,7 +617,7 @@ mod test {
         let ast = parse_one(&s);
 
         let initial = initialize(ast);
-        let collected = collect_fields(collect_structs(initial));
+        let collected = collect_types(collect_structs(initial));
 
         let file = collected.file_namespaces[Path::new("<test>")];
 
@@ -468,7 +659,7 @@ mod test {
         let ast = parse_one(&s);
 
         let initial = initialize(ast);
-        let collected = collect_functions(collect_fields(collect_structs(initial)));
+        let collected = collect_functions(collect_types(collect_structs(initial)));
 
         let file = collected.file_namespaces[Path::new("<test>")];
 
@@ -518,7 +709,7 @@ mod test {
         let ast = parse_one(&s);
 
         let initial = initialize(ast);
-        let _ = collect_function_bodies(collect_functions(collect_fields(collect_structs(initial)))).unwrap();
+        let _ = collect_function_bodies(collect_functions(collect_types(collect_structs(initial)))).unwrap();
     }
 
     #[test]

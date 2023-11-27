@@ -1,174 +1,211 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
-use slotmap::SecondaryMap;
+use indexmap::IndexMap;
 use crate::parsing::ast;
-use crate::lowering::type_check::{TypeCheck, NamespaceKey, TypeCheckError, resolve_type};
-use crate::lowering::hir::*;
-use crate::lowering::type_check::collect_fields::CollectedFields;
+use crate::lowering::type_check as tc;
+use crate::source::Location;
 
-pub(super) struct CollectedFunctions<'a> {
-    pub(super) checker: TypeCheck<'a>,
+pub(super) struct StructInfo<'a> {
+    pub fields: IndexMap<String, FieldInfo<'a>>,
+    pub impls: Vec<ImplInfo<'a>>,
 
-    pub root: NamespaceKey,
-    pub files: HashMap<PathBuf, ast::File<'a>>,
-    pub file_namespaces: HashMap<PathBuf, NamespaceKey>,
-    pub function_namespaces: SecondaryMap<FunctionKey, NamespaceKey>,
-    pub struct_namespaces: SecondaryMap<StructKey, NamespaceKey>,
+    pub self_type: tc::Type,
 }
 
-pub(super) fn collect_functions(collected: CollectedFields) -> CollectedFunctions {
-    let CollectedFields { mut checker, files, file_namespaces, root, struct_namespaces } = collected;
+pub(super) struct FieldInfo<'a> {
+    pub ty: tc::Type,
+    pub loc: Location<'a>
+}
 
-    let mut func_namespaces = SecondaryMap::new();
+pub(super) struct ImplInfo<'a> {
+    pub methods: IndexMap<String, MethodInfo<'a>>,
+    pub loc: Location<'a>
+}
 
-    for (file_path, file) in &files {
-        let file_ns = file_namespaces[file_path];
-        for top_level in &file.top_levels {
+pub(super) struct MethodInfo<'a> {
+    type_parameters: IndexMap<String, tc::collect_types::TypeParameterInfo<'a>>,
+    maybe_self: Option<tc::NameKey>,
+    params: IndexMap<String, ParameterInfo<'a>>,
+    ret: tc::Type,
+
+    ast_method: &'a ast::Method<'a>
+}
+
+pub(super) struct ParameterInfo<'a> {
+    ty: tc::Type,
+    loc: Location<'a>
+}
+
+pub(super) struct FunctionInfo<'a> {
+    pub type_parameters: IndexMap<String, tc::collect_types::TypeParameterInfo<'a>>,
+    pub params: IndexMap<String, ParameterInfo<'a>>,
+    pub ret: tc::Type,
+
+    pub ns: tc::NamespaceKey,
+    pub name_key: tc::NameKey,
+    pub ast_func: &'a ast::Function<'a>
+}
+
+pub(super) struct CollectedPrototypes<'a> {
+    pub types: tc::CollectedTypes<'a>,
+    pub functions: IndexMap<tc::FunctionKey, FunctionInfo<'a>>,
+    pub structs: IndexMap<tc::StructKey, StructInfo<'a>>
+}
+
+pub(super) fn collect_functions<'a>(checker: &mut tc::TypeCheck<'a>, types: tc::collect_types::CollectedTypes<'a>) -> CollectedPrototypes<'a> {
+    let tc::CollectedTypes { file_info, structs, .. } = &types;
+
+    let mut functions: IndexMap<tc::FunctionKey, FunctionInfo> = IndexMap::new();
+    let mut function_key = tc::FunctionKey::default();
+    let mut main_key: Option<tc::FunctionKey> = None;
+
+    let mut struct_info: IndexMap<tc::StructKey, StructInfo> = IndexMap::new();
+
+    for &tc::collect_types::FileInfo { file_ns, ast_file, .. } in file_info.iter() {
+        for top_level in &ast_file.top_levels {
             match top_level {
                 ast::TopLevel::Function(func) => {
                     let func_ns = checker.add_namespace(Some(file_ns));
 
-                    let mut type_params = vec![];
+                    let mut type_parameters: IndexMap<String, tc::collect_types::TypeParameterInfo> = IndexMap::new();
                     for type_param in &func.type_parameters {
                         let bound = if let Some(bound) = &type_param.bound {
-                            let typ = resolve_type(&checker, file_ns, bound);
+                            let typ = checker.resolve_type(bound, func_ns, &types);
                             Some(typ)
                         } else {
                             None
                         };
-                        let id = checker.add_type_param();
-                        let typ = Type::TypeParameter { name: type_param.name.clone(), bound: bound.clone().map(|t| Box::new(t)), id };
-                        type_params.push(TypeParameter { name: type_param.name.clone(), bound, id });
-                        checker.add_type(func_ns, type_param.name.clone(), typ);
+                        let key = checker.add_type_param();
+                        type_parameters.insert(type_param.name.clone(), tc::collect_types::TypeParameterInfo { key, loc: type_param.loc });
+                        checker.add_type(func_ns, type_param.name.clone(), tc::Type::TypeParameter(key));
                     }
 
-                    let mut params = Vec::new();
+                    let mut params: IndexMap<String, ParameterInfo> = IndexMap::new();
                     for param in &func.parameters {
-                        let typ = resolve_type(&checker, func_ns, &param.typ);
-                        let decl = checker.add_name(func_ns, param.name.clone(), NameInfo::Local { typ: typ.clone(), loc: param.loc, level: 0 });
-                        params.push(Parameter { name: param.name.clone(), typ, loc: param.loc, decl });
+                        let typ = checker.resolve_type(&param.typ, func_ns, &types).expect_type(checker);
+                        let (decl, prev) = checker.add_local(&param.name, typ.clone(), param.loc, func_ns);
+                        params.insert(param.name.clone(), ParameterInfo { ty: typ, loc: param.loc });
                     }
-                    let ret = func.return_type.as_ref().map_or(Type::Unit, |t| resolve_type(&checker, func_ns, t));
+                    let ret = match &func.return_type {
+                        Some(ty) => checker.resolve_type(ty, func_ns, &types).expect_type(checker),
+                        None => tc::Type::Unit
+                    };
 
-                    let key = checker.hir.function_prototypes.insert_with_key(|key| {
-                        let decl = checker.hir.names.insert(NameInfo::Function { func: key });
-                        checker.namespaces[file_ns].names.insert(func.name.clone(), decl);
-                        let sig = Type::GenericFunction { func: key, type_params: type_params.clone(), params: params.iter().map(|p| p.typ.clone()).collect(), ret: Box::new(ret.clone()) };
-                        FunctionPrototype { name: func.name.clone(), type_params, params, ret, sig, decl, loc: func.loc }
+                    let (name_key, prev) = checker.add_function(
+                        &func.name, function_key,
+                        params.iter().map(|(_, p)| p.ty.clone()).collect(), ret.clone(),
+                        func.loc, file_ns
+                    );
+                    if let Some(prev_key) = prev {
+                        let prev_info = checker.get_name(prev_key);
+                        checker.push_error(tc::TypeCheckError::NameDuplicated(prev_info.name().clone(), func.loc, prev_info.loc()));
+                    }
+                    functions.insert(function_key, FunctionInfo {
+                        type_parameters,
+                        params,
+                        ret,
+                        ns: func_ns,
+                        name_key,
+                        ast_func: func
                     });
 
                     if func.name == "main" {
-                        let proto = &checker.hir.function_prototypes[key];
-                        if !proto.params.is_empty() {
-                            checker.push_error(TypeCheckError::MainMustHaveNoArguments(func.loc))
+                        let info = &functions[&function_key];
+                        if !info.params.is_empty() {
+                            checker.push_error(tc::TypeCheckError::MainMustHaveNoArguments(func.loc))
                         }
-                        if !matches!(proto.ret, Type::Integer { bits: 32 }) {
-                            checker.push_error(TypeCheckError::MainMustReturnI32(func.loc))
+                        if !matches!(info.ret, tc::Type::SignedInteger(32)) {
+                            checker.push_error(tc::TypeCheckError::MainMustReturnI32(func.loc))
                         }
 
-                        if let Some(prev_func) = checker.hir.main_function {
-                            let prev_loc = checker.hir.function_prototypes[prev_func].loc;
-                            checker.push_error(TypeCheckError::MultipleMainFunctions(func.loc, prev_loc))
+                        if let Some(prev_func) = main_key {
+                            checker.push_error(tc::TypeCheckError::MultipleMainFunctions(func.loc, functions[&prev_func].ast_func.loc))
                         } else {
-                            checker.hir.main_function = Some(key);
+                            main_key = Some(function_key);
                         }
                     }
 
-                    // checker.add_name(file_ns, func.name.clone(), NameInfo::Function { func: key });
-                    func_namespaces.insert(key, func_ns);
+                    function_key = function_key.next();
                 }
-                ast::TopLevel::Struct(struct_) => {
-                    let key = checker.get_struct_key(file_ns, &struct_.name);
-                    let struct_ns = struct_namespaces[key];
-                    let self_type = Type::Struct {
-                        struct_: key,
-                        variant: checker.hir.structs[key].type_params.iter().map(|tp| tp.as_type()).collect()
-                    };
+                _ => { }
+            }
+        }
+    }
 
-                    for item in &struct_.items {
-                        if let ast::StructItem::Impl(impl_) = item {
-                            match impl_ {
-                                ast::Impl::Unbounded { methods, loc } => {
-                                    let mut method_prototypes: HashMap<String, MethodPrototype> = HashMap::new();
-                                    for method in methods {
-                                        method_prototypes.insert(method.name.clone(), MethodPrototype {
-                                            loc: method.loc
-                                        });
-                                    }
+    for (&struct_key, struct_info) in structs {
+        let &tc::collect_types::StructInfo { ref name, struct_ns, super_struct, ref type_parameters, ast_struct } = struct_info;
 
-                                    checker.hir.structs[key].impls.push(Impl {
-                                        impl_trait: None,
-                                        bounds: vec![],
-                                        method_prototypes,
-                                        method_bodies: HashMap::new(),
-                                        loc: *loc
-                                    })
-                                    let mut im = Impl {
-                                        impl_trait: None,
-                                        bounds: vec![],
-                                        method_prototypes: HashMap::new(),
-                                        method_bodies: HashMap::new(),
-                                        loc: *loc
-                                    };
-                                    for method in methods {
-                                        let func_ns = checker.add_namespace(Some(struct_ns));
+        let self_type = tc::Type::Struct(struct_key, type_parameters.values().map(|t| t.as_type()).collect());
 
-                                        let mut type_params = vec![];
-                                        for type_param in &method.type_parameters {
-                                            let bound = if let Some(bound) = &type_param.bound {
-                                                let typ = resolve_type(&checker, struct_ns, bound);
-                                                Some(typ)
-                                            } else {
-                                                None
-                                            };
-                                            let id = checker.add_type_param();
-                                            let typ = Type::TypeParameter { name: type_param.name.clone(), bound: bound.clone().map(|t| Box::new(t)), id };
-                                            type_params.push(TypeParameter { name: type_param.name.clone(), bound, id });
-                                            checker.add_type(func_ns, type_param.name.clone(), typ);
-                                        }
+        let mut fields: IndexMap<String, FieldInfo> = IndexMap::new();
+        let mut impls: Vec<ImplInfo> = Vec::new();
 
-                                        let maybe_self = if let Some((name, loc)) = &method.maybe_self {
-                                            let self_decl = checker.add_name(func_ns, name.clone(), NameInfo::Local {
-                                                typ: self_type.clone(),
-                                                level: 0,
-                                                loc: *loc
-                                            });
-                                            Some(self_decl)
-                                        } else {
-                                            None
-                                        };
+        for item in &ast_struct.items {
+            match item {
+                ast::StructItem::Field { name: field_name, typ, loc } => {
+                    let resolved = checker.resolve_type(typ, struct_ns, &types).expect_type(checker);
+                    if let Some(prev) = fields.insert(field_name.clone(), FieldInfo { ty: resolved, loc: *loc}) {
+                        checker.push_error(tc::TypeCheckError::FieldDuplicated(field_name.clone(), name.clone(), *loc, prev.loc));
+                    }
+                }
+                ast::StructItem::Impl(ast::Impl::Unbounded { methods: ast_methods, loc }) => {
+                    let mut methods: IndexMap<String, MethodInfo> = IndexMap::new();
 
-                                        let mut params = Vec::new();
-                                        for param in &method.parameters {
-                                            let typ = resolve_type(&checker, func_ns, &param.typ);
-                                            let decl = checker.add_name(func_ns, param.name.clone(), NameInfo::Local { typ: typ.clone(), loc: param.loc, level: 0 });
-                                            params.push(Parameter { name: param.name.clone(), typ, loc: param.loc, decl });
-                                        }
-                                        let ret = method.return_type.as_ref().map_or(Type::Unit, |t| resolve_type(&checker, func_ns, t));
+                    for func in ast_methods {
+                        let func_ns = checker.add_namespace(Some(struct_ns));
 
-                                        let proto = MethodPrototype {
-                                            name: method.name.clone(),
-                                            type_params,
-                                            maybe_self,
-                                            params,
-                                            ret,
-                                            loc: *loc
-                                        };
-                                        im.method_prototypes.insert(method.name.clone(), proto);
-                                    }
-                                    checker.hir.structs[key].impls.push(im);
-                                }
-                            }
+                        let mut type_parameters: IndexMap<String, tc::collect_types::TypeParameterInfo> = IndexMap::new();
+                        for type_param in &func.type_parameters {
+                            let bound = if let Some(bound) = &type_param.bound {
+                                let typ = checker.resolve_type(bound, func_ns, &types);
+                                Some(typ)
+                            } else {
+                                None
+                            };
+                            let key = checker.add_type_param();
+                            type_parameters.insert(type_param.name.clone(), tc::collect_types::TypeParameterInfo { key, loc: type_param.loc });
+                            checker.add_type(func_ns, type_param.name.clone(), tc::Type::TypeParameter(key));
+                        }
+
+                        let maybe_self = if let Some((name, loc)) = &func.maybe_self {
+                            let (self_decl, _) = checker.add_local(name, self_type.clone(), *loc, func_ns);
+                            Some(self_decl)
+                        } else {
+                            None
+                        };
+
+                        let mut params: IndexMap<String, ParameterInfo> = IndexMap::new();
+                        for param in &func.parameters {
+                            let typ = checker.resolve_type(&param.typ, func_ns, &types).expect_type(checker);
+                            let (decl, prev) = checker.add_local(&param.name, typ.clone(), param.loc, func_ns);
+                            params.insert(param.name.clone(), ParameterInfo { ty: typ, loc: param.loc });
+                        }
+                        let ret = match &func.return_type {
+                            Some(ty) => checker.resolve_type(ty, func_ns, &types).expect_type(checker),
+                            None => tc::Type::Unit
+                        };
+
+                        let prev_method = methods.insert(func.name.clone(), MethodInfo {
+                            type_parameters,
+                            maybe_self,
+                            params,
+                            ret,
+                            ast_method: func
+                        });
+                        if let Some(prev_method) = prev_method {
+                            checker.push_error(tc::TypeCheckError::MethodDuplicated(func.name.clone(), struct_info.name.clone(), func.loc, prev_method.ast_method.loc));
                         }
                     }
+                    impls.push(ImplInfo {
+                        methods,
+                        loc: *loc
+                    });
                 }
             }
         }
     }
 
-    if checker.hir.main_function.is_none() {
-        checker.push_error(TypeCheckError::NoMainFunction);
+    if main_key.is_none() {
+        checker.push_error(tc::TypeCheckError::NoMainFunction);
     }
 
-    CollectedFunctions { checker, files, file_namespaces, function_namespaces: func_namespaces, root, struct_namespaces }
+    CollectedPrototypes { types, functions, structs: struct_info }
 }

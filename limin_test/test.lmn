@@ -1,12 +1,6 @@
 
 struct Holder<T> {
     held: T;
-
-    impl {
-        fn get(self) -> T {
-            return self.held;
-        }
-    }
 }
 
 fn create_Holder<T>(item: T) -> Holder<T> {
@@ -14,5 +8,5 @@ fn create_Holder<T>(item: T) -> Holder<T> {
 }
 
 fn main() -> i32 {
-    return create_Holder(32).get();
+    return create_Holder(create_Holder(32)).held.held;
 }

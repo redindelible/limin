@@ -275,6 +275,7 @@ pub enum Expr<'ir> {
     Block(Block<'ir>),
     GetAttr { obj: Box<Expr<'ir>>, attr: String, loc: Location<'ir> },
     Call { callee: Box<Expr<'ir>>, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
+    // MethodCall { object: Box<Expr<'ir>>, method: String, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
     GenericCall { generic: Vec<Type>, callee: FunctionKey, arguments: Vec<Expr<'ir>>, loc: Location<'ir>},
     Errored { loc: Location<'ir> },
     New { struct_: StructKey, variant: Vec<Type>, fields: IndexMap<String, Box<Expr<'ir>>>, loc: Location<'ir> },

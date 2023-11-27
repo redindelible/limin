@@ -23,6 +23,10 @@ pub fn map_join_with<I: IntoIterator, T: ToString, F: FnMut(I::Item) -> T>(it: I
     it.into_iter().map(closure).map(|t| t.to_string()).collect::<Vec<String>>().join(sep)
 }
 
+// impl<A, T: FromIterator<A> + IntoIterator<Item=A>> IntoIterTools<A> for T{
+//
+// }
+
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Default)]
 pub struct Counter {
     count: usize
