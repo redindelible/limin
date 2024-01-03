@@ -476,10 +476,10 @@ impl<'a> Parser<'a> {
                     this.expect(TokenType::Colon)?;
                     let argument = this.parse_expr()?;
                     let loc = name.loc + argument.loc();
-                    Ok(NewArgument { field_name: name.text.to_owned(), argument: Box::new(argument), name_loc: loc })
+                    Ok(NewArgument { name: name.text.to_owned(), argument: Box::new(argument), name_loc: loc })
                 })?;
                 let loc = loc + start.loc;
-                Ok(Expr::New { struct_, type_args, fields, loc})
+                Ok(Expr::New { struct_, type_args, arguments: fields, loc})
             },
             TokenType::Identifier => {
                 let tok = self.advance();

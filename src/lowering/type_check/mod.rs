@@ -1,21 +1,21 @@
-mod collect_structs;
+mod collect_struct_prototypes;
 mod collect_functions;
 mod collect_function_bodies;
+mod collect_structs;
 mod collect_types;
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
-use indexmap::IndexMap;
 use slotmap::{new_key_type, SlotMap};
 use crate::parsing::ast;
-use crate::util::{map_join, pluralize};
+use crate::util::{KeyMap, map_join, pluralize};
 use crate::error::Message;
 use crate::lowering::hir;
+use crate::lowering::hir::{Type, NameKey, StructKey, FunctionKey, TypeParameterKey, InferenceVariableKey, NameInfo, TypeParameterInfo, InferenceVariableInfo, FunctionType, StructType};
 use crate::source::Location;
 
-use crate::lowering::type_check::collect_types::CollectedTypes;
-use crate::lowering::type_check::collect_structs::CollectedStructs;
+use crate::lowering::type_check::collect_structs::CollectedTypes;
+use crate::lowering::type_check::collect_struct_prototypes::CollectedStructPrototypes;
 use crate::lowering::type_check::collect_functions::CollectedPrototypes;
 
 
@@ -23,14 +23,15 @@ pub fn resolve_types(ast: ast::AST) -> Result<hir::HIR, Vec<TypeCheckError>> {
     let mut checker = TypeCheck::new(ast.name.clone());
     let root = checker.root();
     checker.add_type(root, "i32".to_owned(), Type::SignedInteger(32));
-    checker.add_type(root, "i64".to_owned(), Type::SignedInteger(32));
+    checker.add_type(root, "i64".to_owned(), Type::SignedInteger(64));
     checker.add_type(root, "bool".to_owned(), Type::Boolean);
 
-    let collected_structs = collect_structs::collect_structs(&mut checker, &ast);
-    let collected_fields = collect_types::collect_types(&mut checker,collected_structs);
-    let collected_function = collect_functions::collect_functions(&mut checker, collected_fields);
-    let collected_bodies = collect_function_bodies::collect_function_bodies(collected_function);
-    collected_bodies
+    let collected_struct_prototypes = collect_struct_prototypes::collect_struct_prototypes(&mut checker, &ast);
+    let collected_structs = collect_structs::collect_structs(&mut checker, collected_struct_prototypes);
+    let collected_types = collect_types::collect_types(&mut checker, collected_structs);
+    let collected_functions = collect_functions::collect_functions(&mut checker, collected_types);
+    let collected_bodies = collect_function_bodies::collect_function_bodies(checker, collected_functions);
+    collected_bodies.into_result()
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -39,12 +40,11 @@ pub enum DisplayType<'a> {
     Never,
     Boolean,
     Errored,
-    Integer { bits: u8 },
+    Integer { is_signed: bool, bits: u8 },
     Struct { name: String, variant: Vec<DisplayType<'a>>, loc: Location<'a> },
     Function { params: Vec<DisplayType<'a>>, ret: Box<DisplayType<'a>> },
-    GenericFunction { type_params: Vec<DisplayType<'a>>, params: Vec<DisplayType<'a>>, ret: Box<DisplayType<'a>> },
     TypeParameter { name: String, bound: Option<Box<DisplayType<'a>>> },
-    TypeParamInstance { name: String }
+    InferenceVariable { name: String, inferred: Option<Box<DisplayType<'a>>> }
 }
 
 impl DisplayType<'_> {
@@ -54,7 +54,7 @@ impl DisplayType<'_> {
             DisplayType::Never => "!".into(),
             DisplayType::Boolean => "bool".into(),
             DisplayType::Errored => "<could not resolve>".into(),
-            DisplayType::Integer { bits } => format!("i{bits}"),
+            DisplayType::Integer { is_signed, bits } => if *is_signed { format!("i{bits}") } else { format!("u{bits}") },
             DisplayType::Struct { name, variant, .. } => {
                 if variant.is_empty() {
                     format!("{name}")
@@ -73,12 +73,13 @@ impl DisplayType<'_> {
                     format!("{name}")
                 }
             },
-            DisplayType::GenericFunction { type_params, params, ret } => {
-                let rendered_type_params: Vec<String> = type_params.iter().map(|t| t.render()).collect();
-                let rendered_params: Vec<String> = params.iter().map(|t| t.render()).collect();
-                format!("<{}>({}) -> {}", rendered_type_params.join(", "), rendered_params.join(", "), ret.render())
-            }
-            DisplayType::TypeParamInstance { name } => format!("{name}"),
+            DisplayType::InferenceVariable { name, inferred } => {
+                if let Some(inferred) = inferred {
+                    format!("{name}: {}", inferred.render())
+                } else {
+                    format!("{name}")
+                }
+            },
         }
     }
 }
@@ -93,6 +94,7 @@ pub enum TypeCheckError<'a> {
     CouldNotResolveType(String, Location<'a>),
     IncompatibleTypes { expected: DisplayType<'a>, got: DisplayType<'a>, loc: Location<'a> },
     CannotUseNever { loc: Location<'a> },
+    CannotUseGenericFunction { name: String, loc: Location<'a> },
     ExpectedFunction { got: DisplayType<'a>, loc: Location<'a> },
     UnexpectedClosure { expected: DisplayType<'a>, loc: Location<'a> },
     ClosureWithWrongParameters { expected: DisplayType<'a>, got: usize, loc: Location<'a> },
@@ -152,6 +154,10 @@ impl<'a> Message for TypeCheckError<'a> {
             }
             TypeCheckError::CannotUseNever { loc } => {
                 writeln!(to, "Error: Values of type '!' cannot exist.")?;
+                Self::show_location(loc, to)
+            }
+            TypeCheckError::CannotUseGenericFunction { name, loc } => {
+                writeln!(to, "Error: Attempted to load generic function '{name}'.")?;
                 Self::show_location(loc, to)
             }
             TypeCheckError::ExpectedFunction { got, loc } => {
@@ -226,39 +232,9 @@ impl<'a> Message for TypeCheckError<'a> {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
-pub struct StructKey(usize);
-
-impl StructKey {
-    #[must_use]
-    fn next(&self) -> StructKey {
-        StructKey(self.0 + 1)
-    }
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
-pub struct TypeParameterKey(usize);
-
-impl TypeParameterKey {
-    #[must_use]
-    fn next(&self) -> TypeParameterKey {
-        TypeParameterKey(self.0 + 1)
-    }
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
-pub struct FunctionKey(usize);
-
-impl FunctionKey {
-    #[must_use]
-    fn next(&self) -> FunctionKey {
-        FunctionKey(self.0 + 1)
-    }
-}
 
 new_key_type! {
     pub struct NamespaceKey;
-    pub struct NameKey;
 }
 
 struct Namespace {
@@ -285,49 +261,6 @@ impl Namespace {
     }
 }
 
-#[derive(Clone)]
-enum Type {
-    TypeParameter(TypeParameterKey),
-    Boolean,
-    SignedInteger(u8),
-    UnsignedInteger(u8),
-    Struct(StructKey, Vec<Type>),
-    Function(Vec<Type>, Box<Type>),
-    Unit,
-    Errored
-}
-
-// #[derive(Clone)]
-// enum UncheckedType {
-//     TypeParameter(TypeParameterKey),
-//     Boolean,
-//     SignedInteger(u8),
-//     UnsignedInteger(u8),
-//     Struct(StructKey, Vec<UncheckedType>),
-//     Function(Vec<UncheckedType>, Box<UncheckedType>),
-//     Unit,
-//     Errored
-// }
-//
-// impl UncheckedType {
-//     fn from_type(ty: &Type) -> UncheckedType {
-//         match ty {
-//             Type::TypeParameter(key) => UncheckedType::TypeParameter(*key),
-//             Type::Boolean => UncheckedType::Boolean,
-//             Type::SignedInteger(bits) => UncheckedType::SignedInteger(*bits),
-//             Type::UnsignedInteger(bits) => UncheckedType::UnsignedInteger(*bits),
-//             Type::Struct(key, variant) => {
-//                 UncheckedType::Struct(*key, variant.iter().map(|ty| UncheckedType::from_type(ty)).collect())
-//             }
-//             Type::Function(params, ret) => {
-//                 UncheckedType::Function(params.iter().map(|ty| UncheckedType::from_type(ty)).collect(),
-//                 Box::new(UncheckedType::from_type(ret)))
-//             }
-//             Type::Unit => UncheckedType::Unit,
-//             Type::Errored => UncheckedType::Errored
-//         }
-//     }
-// }
 
 pub enum ResolveResult<'a, T> {
     Success(T),
@@ -335,12 +268,12 @@ pub enum ResolveResult<'a, T> {
 }
 
 impl<'a, T> ResolveResult<'a, T> {
-    fn collect_results<I: IntoIterator<Item=ResolveResult<'a, T>>>(iter: I) -> ResolveResult<'a, Vec<T>> {
-        let mut items = Vec::new();
+    fn collect_results<O: Default + Extend<T>>(iter: impl IntoIterator<Item=ResolveResult<'a, T>>) -> ResolveResult<'a, O> {
+        let mut items = O::default();
         let mut errors = Vec::new();
         for item in iter {
             match item {
-                ResolveResult::Success(t) => items.push(t),
+                ResolveResult::Success(t) => items.extend([t]),
                 ResolveResult::Failure(errs) => errors.extend(errs)
             }
         }
@@ -362,6 +295,20 @@ impl<'a, T> ResolveResult<'a, T> {
             }
         }
     }
+
+    fn into_result(self) -> Result<T, Vec<TypeCheckError<'a>>> {
+        match self {
+            ResolveResult::Success(t) => Ok(t),
+            ResolveResult::Failure(errs) => Err(errs)
+        }
+    }
+
+    fn is_failure(&self) -> bool {
+        match self {
+            ResolveResult::Success(_) => false,
+            ResolveResult::Failure(_) => true
+        }
+    }
 }
 
 impl<'a> ResolveResult<'a, Type> {
@@ -378,13 +325,12 @@ impl<'a> ResolveResult<'a, Type> {
     }
 }
 
-
 macro_rules! combine_errors {
     ($($res:expr),*) => {
         {
-            let mut errors: Vec<TypeCheckError<'_>> = Vec::new();
+            let mut errors: std::vec::Vec<$crate::lowering::type_check::TypeCheckError<'_>> = std::vec::Vec::new();
             $(
-                if let ResolveResult::Failure(errs) = $res {
+                if let $crate::lowering::type_check::ResolveResult::Failure(errs) = $res {
                     errors.extend(errs);
                 }
             )*
@@ -393,48 +339,19 @@ macro_rules! combine_errors {
         }
     };
 }
+pub(crate) use combine_errors;
 
-
-pub enum NameInfo<'a> {
-    Local {
-        name: String,
-        ty: Type,
-        loc: Location<'a>
-    },
-    Function {
-        name: String,
-        key: FunctionKey,
-        params: Vec<Type>,
-        ret: Type,
-        loc: Location<'a>
-    }
-}
-
-impl<'a> NameInfo<'a> {
-    pub fn name(&self) -> &String {
-        match self {
-            NameInfo::Local { name, .. } => name,
-            NameInfo::Function { name, .. } => name
-        }
-    }
-
-    pub fn loc(&self) -> Location<'a> {
-        match self {
-            NameInfo::Local { loc, .. } => *loc,
-            NameInfo::Function { loc, .. } => *loc
-        }
-    }
-}
 
 struct TypeCheck<'a> {
+    name: String,
     namespaces: SlotMap<NamespaceKey, Namespace>,
     root: NamespaceKey,
 
     errors: Vec<TypeCheckError<'a>>,
-    type_parameter_key: TypeParameterKey,
-    type_parameter_ctxt: Vec<HashMap<TypeParameterKey, Type>>,
 
-    names: SlotMap<NameKey, NameInfo<'a>>
+    type_parameters: KeyMap<TypeParameterKey, TypeParameterInfo<'a>>,
+    names: KeyMap<NameKey, NameInfo<'a>>,
+    inference_variables: KeyMap<InferenceVariableKey, InferenceVariableInfo<'a>>
 }
 
 impl<'a> TypeCheck<'a> {
@@ -442,10 +359,12 @@ impl<'a> TypeCheck<'a> {
         let mut namespaces = SlotMap::with_key();
         let root = namespaces.insert(Namespace::new(None));
         TypeCheck {
+            name,
             namespaces, root,
             errors: Default::default(),
-            type_parameter_key: TypeParameterKey::default(), type_parameter_ctxt: vec![],
-            names: SlotMap::with_key()
+            names: KeyMap::new(),
+            type_parameters: KeyMap::new(),
+            inference_variables: KeyMap::new()
         }
     }
 
@@ -453,10 +372,12 @@ impl<'a> TypeCheck<'a> {
         self.root
     }
 
-    pub fn add_type_param(&mut self) -> TypeParameterKey {
-        let key = self.type_parameter_key;
-        self.type_parameter_key = self.type_parameter_key.next();
-        key
+    pub fn add_inference_variable(&mut self, name: impl Into<String>, loc: Location<'a>) -> InferenceVariableKey {
+        self.inference_variables.add(InferenceVariableInfo { ty: None, name: name.into(), loc })
+    }
+
+    pub fn add_type_param(&mut self, name: impl Into<String>, loc: Location<'a>) -> TypeParameterKey {
+        self.type_parameters.add(TypeParameterInfo { name: name.into(), loc })
     }
 
     pub fn add_type(&mut self, ns: NamespaceKey, name: String, typ: Type) {
@@ -465,18 +386,18 @@ impl<'a> TypeCheck<'a> {
     }
 
     #[must_use]
-    pub fn add_local(&mut self, name: impl Into<String>, ty: Type, loc: Location<'a>, ns: NamespaceKey) -> (NameKey, Option<NameKey>) {
+    pub fn add_local(&mut self, name: impl Into<String>, ty: Type, level: usize, loc: Location<'a>, ns: NamespaceKey) -> (NameKey, Option<NameKey>) {
         let name = name.into();
-        let info = NameInfo::Local { name: name.clone(), ty, loc };
-        let key = self.names.insert(info);
+        let info = NameInfo::Local { name: name.clone(), ty, level, loc };
+        let key = self.names.add(info);
         (key, self.namespaces[ns].names.insert(name, key))
     }
 
     #[must_use]
-    pub fn add_function(&mut self, name: impl Into<String>, key: FunctionKey, params: Vec<Type>, ret: Type, loc: Location<'a>, ns: NamespaceKey) -> (NameKey, Option<NameKey>) {
+    pub fn add_function(&mut self, name: impl Into<String>, key: FunctionKey, loc: Location<'a>, ns: NamespaceKey) -> (NameKey, Option<NameKey>) {
         let name = name.into();
-        let info = NameInfo::Function { name: name.clone(), key, params, ret, loc };
-        let key = self.names.insert(info);
+        let info = NameInfo::Function { name: name.clone(), key, loc };
+        let key = self.names.add(info);
         (key, self.namespaces[ns].names.insert(name, key))
     }
 
@@ -488,32 +409,36 @@ impl<'a> TypeCheck<'a> {
         self.namespaces.insert(Namespace::new(parent))
     }
 
-    pub fn get_name(&self, name: NameKey) -> &NameInfo {
-        &self.names[name]
+    pub fn query_inference_variable<'s>(&'s self, key: InferenceVariableKey) -> &'s InferenceVariableInfo<'a> {
+        &self.inference_variables[key]
     }
 
-    pub fn resolve_struct<'b>(&'b self, name: impl AsRef<str>, ns: NamespaceKey, loc: Location<'a>) -> ResolveResult<'a, StructKey> {
+    pub fn query_inference_variable_mut<'s>(&'s mut self, key: InferenceVariableKey) -> &'s mut InferenceVariableInfo<'a> {
+        &mut self.inference_variables[key]
+    }
+
+    pub fn resolve_struct(&self, name: impl AsRef<str>, ns: NamespaceKey) -> Option<StructKey> {
         if let Some(&s) = self.namespaces[ns].structs.get(name.as_ref()) {
-            return ResolveResult::Success(s);
+            return Some(s);
         };
         if let Some(parent) = self.namespaces[ns].parent {
-            return self.resolve_struct(name, parent, loc);
+            return self.resolve_struct(name, parent);
         } else {
-            return ResolveResult::Failure(vec![TypeCheckError::CouldNotResolveType(name.as_ref().to_owned(), loc)]);
+            return None;
         }
     }
 
-    pub fn resolve_type<'b>(&'b self, ty: &'a ast::Type<'a>, in_ns: NamespaceKey, ctxt: &CollectedTypes) -> ResolveResult<'a, Type> {
+    pub fn resolve_type<'b>(&'b self, ty: &'b ast::Type<'a>, in_ns: NamespaceKey, ctxt: &'b CollectedTypes<'a, 'b>) -> ResolveResult<'a, Type> {
         match ty {
             ast::Type::Name { name, loc } => {
                 if let Some(ty) = self.namespaces[in_ns].types.get(name) {
                     return ResolveResult::Success(ty.clone());
                 }
                 if let Some(&t) = self.namespaces[in_ns].structs.get(name) {
-                    if !ctxt.structs[&t].type_parameters.is_empty() {
-                        return ResolveResult::Failure(vec![TypeCheckError::RequiredTypeArguments { got: ctxt.structs[&t].name.clone(), loc: *loc, note_loc: ctxt.structs[&t].ast_struct.loc }]);
+                    if !ctxt.structs[t].type_parameters.is_empty() {
+                        return ResolveResult::Failure(vec![TypeCheckError::RequiredTypeArguments { got: ctxt.structs[t].name.clone(), loc: *loc, note_loc: ctxt.structs[t].ast_struct.loc }]);
                     }
-                    return ResolveResult::Success(Type::Struct(t, vec![]));
+                    return ResolveResult::Success(StructType(t, vec![]).into());
                 }
                 if let Some(parent) = self.namespaces[in_ns].parent {
                     return self.resolve_type(ty, parent, ctxt);
@@ -525,7 +450,7 @@ impl<'a> TypeCheck<'a> {
                 let ret = self.resolve_type(ret, in_ns, ctxt);
                 match (parameters, ret) {
                     (ResolveResult::Success(parameters), ResolveResult::Success(ret)) => {
-                        return ResolveResult::Success(Type::Function(parameters, Box::new(ret)))
+                        return ResolveResult::Success(FunctionType(parameters, Box::new(ret)).into())
                     },
                     (parameters, ret) => {
                         return ResolveResult::Failure(combine_errors!(parameters, ret));
@@ -533,19 +458,51 @@ impl<'a> TypeCheck<'a> {
                 }
             }
             ast::Type::Generic { name, type_args, loc } => {
-                let key_result = self.resolve_struct(name, in_ns, *loc);
+                let key_result = self.resolve_struct(name, in_ns);
 
                 let type_args_result: ResolveResult<'a, Vec<Type>> = ResolveResult::collect_results(type_args.iter().map(|arg| self.resolve_type(arg, in_ns, ctxt)));
 
-                if let (ResolveResult::Success(key), ResolveResult::Success(type_args)) = (&key_result, &type_args_result) {
+                if let (&Some(key), ResolveResult::Success(type_args)) = (&key_result, &type_args_result) {
                     let type_params = &ctxt.structs[key].type_parameters;
                     if type_params.len() != type_args.len() {
                         return ResolveResult::Failure(vec![TypeCheckError::MismatchedTypeArguments { expected: type_params.len(), got: type_args.len(), loc: *loc }]);
                     }
-                    return ResolveResult::Success(Type::Struct(*key, type_args.clone()));
+                    return ResolveResult::Success(StructType(key, type_args.clone()).into());
                 } else {
+                    let key_result: ResolveResult<'a, Type> = ResolveResult::Failure(vec![TypeCheckError::ExpectedStructName { got: name.clone(), loc: *loc }]);
                     return ResolveResult::Failure(combine_errors!(key_result, type_args_result));
                 }
+            }
+        }
+    }
+
+    pub fn subs(&self, ty: &Type,  map: &HashMap<TypeParameterKey, Type>) -> Type {
+        match ty {
+            Type::Never => Type::Never,
+            Type::Unit => Type::Unit,
+            Type::Boolean => Type::Boolean,
+            Type::Errored => Type::Errored,
+            Type::SignedInteger(bits) => Type::SignedInteger(*bits),
+            Type::UnsignedInteger(bits) => Type::UnsignedInteger(*bits),
+            Type::TypeParameter(key) => {
+                if let Some(ty) = map.get(key) {
+                    self.subs(ty, map)
+                } else {
+                    Type::TypeParameter(*key)
+                }
+            },
+            Type::InferenceVariable(key) => {
+                if let Some(ty) = &self.inference_variables[*key].ty {
+                    self.subs(ty, map)
+                } else {
+                    Type::InferenceVariable(*key)
+                }
+            }
+            Type::Function(FunctionType(params, ret)) => {
+                FunctionType(params.iter().map(|t| self.subs(t, map)).collect(), Box::new(self.subs(ret, map))).into()
+            },
+            Type::Struct(StructType(struct_, variant)) => {
+                StructType(*struct_, variant.iter().map(|t| self.subs(t, map)).collect()).into()
             }
         }
     }
@@ -559,15 +516,9 @@ impl<'a> TypeCheck<'a> {
 #[cfg(test)]
 mod test {
     use std::collections::HashMap;
-    use std::path::Path;
     use crate::error::Message;
     use crate::parsing::ast;
-    use crate::lowering::hir::{FunctionKey, HIR, StructKey, Type};
-    use crate::lowering::type_check::{initialize, resolve_types};
-    use crate::lowering::type_check::collect_types::collect_types;
-    use crate::lowering::type_check::collect_function_bodies::collect_function_bodies;
-    use crate::lowering::type_check::collect_functions::collect_functions;
-    use crate::lowering::type_check::collect_structs::collect_structs;
+    use crate::lowering::type_check::resolve_types;
     use crate::source::Source;
 
     fn source(name: &str, text: &str) -> Source {
@@ -579,137 +530,6 @@ mod test {
         let mut map = HashMap::new();
         map.insert(file.path.clone(), file);
         ast::AST { name: "".into(), files: map }
-    }
-
-    #[test]
-    fn verify_collect_structs() {
-        let s = source("<test>", r"
-            struct Alpha { }
-
-            struct Beta { }
-        ");
-        let ast = parse_one(&s);
-
-        let initial = initialize(ast);
-        let collected = collect_structs(initial);
-
-        let hir = collected.checker.finalize().unwrap();
-        let structs: Vec<_> = hir.structs.values().collect();
-
-        let expected_names = vec!["Alpha", "Beta"];
-        assert!(expected_names.iter().all(|&name| structs.iter().any(|s| s.name == name)));
-    }
-
-    #[test]
-    fn verify_collect_fields() {
-        let s = source("<test>", r"
-            struct Alpha {
-                x: i32;
-                y: Alpha;
-                z: Beta;
-            }
-
-            struct Beta {
-                x: bool;
-                z: Beta;
-            }
-        ");
-        let ast = parse_one(&s);
-
-        let initial = initialize(ast);
-        let collected = collect_types(collect_structs(initial));
-
-        let file = collected.file_namespaces[Path::new("<test>")];
-
-        let alpha_key = collected.checker.get_struct_key(file, "Alpha");
-        let beta_key = collected.checker.get_struct_key(file, "Beta");
-
-        let hir = collected.checker.finalize().unwrap();
-
-        let alpha = &hir.structs[alpha_key];
-        assert_eq!(alpha.fields.len(), 3);
-        assert_eq!(alpha.fields["x"].typ, Type::Integer { bits: 32 });
-        assert_eq!(alpha.fields["y"].typ, Type::Struct { struct_: alpha_key, variant: vec![] });
-        assert_eq!(alpha.fields["z"].typ, Type::Struct { struct_: beta_key, variant: vec![] });
-
-        let beta = &hir.structs[beta_key];
-
-        assert_eq!(beta.fields.len(), 2);
-        assert_eq!(beta.fields["x"].typ, Type::Boolean);
-        assert_eq!(beta.fields["z"].typ, Type::Struct { struct_: beta_key, variant: vec![] });
-    }
-
-    #[test]
-    fn verify_collect_functions() {
-        let s = source("<test>", r"
-            struct Alpha { }
-
-            struct Beta { }
-
-            fn aleph(a: i32) -> Alpha { }
-
-            fn bet(b: Beta, c: Gamma) -> bool { }
-
-            struct Gamma { }
-
-            fn main() -> i32 {
-                return 0;
-            }
-        ");
-        let ast = parse_one(&s);
-
-        let initial = initialize(ast);
-        let collected = collect_functions(collect_types(collect_structs(initial)));
-
-        let file = collected.file_namespaces[Path::new("<test>")];
-
-        let alpha_key = collected.checker.get_struct_key(file, "Alpha");
-        let beta_key = collected.checker.get_struct_key(file, "Beta");
-        let gamma_key = collected.checker.get_struct_key(file, "Gamma");
-        let aleph_key = collected.checker.get_function_key(file, "aleph");
-        let bet_key = collected.checker.get_function_key(file, "bet");
-
-        let hir = collected.checker.finalize().unwrap();
-
-        let aleph = &hir.function_prototypes[aleph_key];
-        let Type::GenericFunction { params, ret, .. } = &aleph.sig else { panic!("{:?}", &aleph.sig) };
-        assert_eq!(ret.as_ref(), &Type::Struct { struct_: alpha_key, variant: vec![] });
-        assert_eq!(params, &vec![Type::Integer { bits: 32 }]);
-
-        let bet = &hir.function_prototypes[bet_key];
-        let Type::GenericFunction { params, ret, ..} = &bet.sig else { panic!("{:?}", &bet.sig) };
-        assert_eq!(ret.as_ref(), &Type::Boolean);
-        assert_eq!(params, &vec![Type::Struct { struct_: beta_key, variant: vec![] }, Type::Struct { struct_: gamma_key, variant: vec![] }]);
-    }
-
-    fn get_struct_with_name(hir: &HIR, name: &str) -> StructKey {
-        hir.structs.iter().find(|(_, struc)| struc.name == name).unwrap().0
-    }
-
-    fn get_func_with_name(hir: &HIR, name: &str) -> FunctionKey {
-        hir.function_prototypes.iter().find(|(_, proto)| proto.name == name).unwrap().0
-    }
-
-    #[test]
-    fn verify_collect_function_bodies() {
-        let s = source("<test>", r"
-            struct Alpha {
-                a: i32;
-                b: Alpha;
-            }
-
-            fn aleph(thing: Alpha) -> Alpha {
-                return thing;
-            }
-
-            fn main() -> i32 {
-                return 0;
-            }
-        ");
-        let ast = parse_one(&s);
-
-        let initial = initialize(ast);
-        let _ = collect_function_bodies(collect_functions(collect_types(collect_structs(initial)))).unwrap();
     }
 
     #[test]
@@ -915,9 +735,7 @@ mod test {
         ");
         let ast = parse_one(&s);
 
-        assert!(resolve_types(ast).is_err_and(|e|
-            e.render_to_string().contains("Error: Values of type '!' cannot exist.")
-        ));
+        resolve_types(ast).unwrap();
     }
 
     #[test]
@@ -1079,7 +897,10 @@ mod test {
         ");
         let ast = parse_one(&s);
 
-        assert!(resolve_types(ast).is_err_and(|e|
+        let resolved = resolve_types(ast);
+
+
+        assert!(resolved.is_err_and(|e|
             e.render_to_string().contains("Error: Incompatible types. Expected 'i32' but got 'bool'.")
         ));
     }

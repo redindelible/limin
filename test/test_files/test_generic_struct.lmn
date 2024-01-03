@@ -7,5 +7,5 @@ fn create_Holder<T>(item: T) -> Holder<T> {
 }
 
 fn main() -> i32 {
-    return create_Holder(32).held;
+    return create_Holder(create_Holder(32)).held.held;
 }

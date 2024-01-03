@@ -1,3 +1,5 @@
+#![forbid(unused_must_use)]
+
 use std::path::PathBuf;
 use clap::Parser;
 use crate::compiler::{Compiler, CompileResult};

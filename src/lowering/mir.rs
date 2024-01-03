@@ -23,31 +23,6 @@ pub struct MIR {
 }
 
 impl MIR {
-    pub fn type_of(&self, expr: &Expr) -> Type {
-        match expr {
-            Expr::Never => Type::Never,
-            Expr::Unit => Type::Unit,
-            Expr::Integer(_) => Type::Integer(32),
-            Expr::Boolean(_) => Type::Boolean,
-            Expr::LoadLocal(local) => self.locals[*local].typ.clone(),
-            // Expr::StoreLocal(_, value) => self.type_of(value),
-            Expr::LoadFunction(func) => self.function_prototypes[*func].sig(),
-            Expr::Block(block) => self.blocks[*block].ret_type.clone(),
-            Expr::GetAttr(struct_, _, attr) => {
-                self.struct_bodies[*struct_].fields[attr].clone()
-            }
-            Expr::Call(fn_type, _, _) => fn_type.ret.as_ref().clone(),
-            Expr::New(struct_key, _) => Type::Struct(*struct_key),
-            Expr::IfElse { yield_type, .. } => yield_type.clone(),
-            Expr::Closure { fn_type, .. } => Type::Function(fn_type.clone()),
-            Expr::Cast { expr, cast_type } => {
-                match cast_type {
-                    CastType::StructToSuper { to, .. } => Type::Struct(*to)
-                }
-            }
-        }
-    }
-
     pub fn is_zero_sized(&self, ty: &Type) -> bool {
         self.is_zero_sized_helper(ty, &mut Vec::new())
     }
@@ -72,11 +47,11 @@ impl MIR {
         }
     }
 
-    pub fn is_never(&self, ty: &Type) -> bool {
-        self.is_never_helper(ty, &mut Vec::new())
+    pub fn is_empty(&self, ty: &Type) -> bool {
+        self.is_empty_helper(ty, &mut Vec::new())
     }
 
-    fn is_never_helper(&self, ty: &Type, visited: &mut Vec<StructKey>) -> bool {
+    fn is_empty_helper(&self, ty: &Type, visited: &mut Vec<StructKey>) -> bool {
         match ty {
             Type::Never => true,
             Type::Struct(key) => {
@@ -85,12 +60,12 @@ impl MIR {
                 }
 
                 visited.push(*key);
-                let result = self.struct_bodies[*key].fields.values().any(|ty| self.is_never(ty));
+                let result = self.struct_bodies[*key].fields.values().any(|ty| self.is_empty(ty));
                 visited.pop();
                 result
             }
             Type::Function(fn_type) => {
-                fn_type.params.iter().any(|ty| self.is_never_helper(ty, visited))
+                fn_type.params.iter().any(|ty| self.is_empty_helper(ty, visited))
             }
 
             Type::Unit => false,
@@ -187,12 +162,8 @@ pub enum Expr {
     IfElse { cond: Box<Expr>, then_do: Box<Expr>, else_do: Box<Expr>, yield_type: Type },
     Closure { parameters: Vec<ClosureParameter>, fn_type: FunctionType, body: BlockKey, closed_blocks: Vec<BlockKey> },
 
-    Cast { expr: Box<Expr>, cast_type: CastType }
-}
-
-#[derive(Debug, Clone)]
-pub enum CastType {
-    StructToSuper { from: StructKey, to: StructKey }
+    CoerceFromNever(Box<Expr>),
+    SignExtend(Box<Expr>, u8)
 }
 
 #[derive(Debug, Clone)]
@@ -202,53 +173,9 @@ pub struct ClosureParameter {
     pub typ: Type
 }
 
-impl Expr {
-    pub fn always_diverges(&self, mir: &MIR) -> bool {
-        match self {
-            Expr::Unit => false,
-            Expr::Never => true,
-            Expr::Integer(_) => false,
-            Expr::Boolean(_) => false,
-            // Expr::Parameter(_, _) => false,
-            Expr::LoadLocal(_) => false,
-            Expr::LoadFunction(_) => false,
-            Expr::GetAttr(_, obj, _) => {
-                obj.always_diverges(mir)
-            }
-            Expr::Call(fn_type, callee, args) => {
-                if callee.always_diverges(mir) || args.iter().any(|arg| arg.always_diverges(mir)) {
-                    return true;
-                }
-
-                mir.is_never(&fn_type.ret)
-            }
-            Expr::New(_, fields) => fields.values().any(|field| field.always_diverges(mir)),
-            Expr::Block(block) => {
-                let block = &mir.blocks[*block];
-                block.stmts.iter().any(|stmt| stmt.always_diverges(mir)) || block.ret.always_diverges(mir)
-            }
-            Expr::IfElse { cond, then_do, else_do, .. } => {
-                cond.always_diverges(mir) || (then_do.always_diverges(mir) && else_do.always_diverges(mir))
-            },
-            Expr::Closure { .. } => false,
-            Expr::Cast { expr, .. } => expr.always_diverges(mir)
-        }
-    }
-}
-
 #[derive(Clone)]
 pub enum Stmt {
     Expr(Box<Expr>),
     Decl(LocalKey, Type, Box<Expr>),
     Ret(Box<Expr>)
-}
-
-impl Stmt {
-    pub fn always_diverges(&self, mir: &MIR) -> bool {
-        match self {
-            Stmt::Expr(e) => e.always_diverges(mir),
-            Stmt::Decl(_, _, value) => value.always_diverges(mir),
-            Stmt::Ret(_) => true,
-        }
-    }
 }

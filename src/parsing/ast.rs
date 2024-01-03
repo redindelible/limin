@@ -34,16 +34,6 @@ impl<'a> File<'a> {
             }
         )
     }
-
-    pub fn iter_functions(&self) -> impl Iterator<Item = &Function<'a>>  {
-        self.top_levels.iter().filter_map(|t|
-            if let TopLevel::Function(function) = t {
-                Some(function)
-            } else {
-                None
-            }
-        )
-    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -139,14 +129,14 @@ pub enum Expr<'a> {
     Integer { number: u64, loc: Location<'a> },
     Bool { value: bool, loc: Location<'a> },
     Block(Block<'a>),
-    New { struct_: String, type_args: Option<Vec<Type<'a>>>, fields: Vec<NewArgument<'a>>, loc: Location<'a> },
+    New { struct_: String, type_args: Option<Vec<Type<'a>>>, arguments: Vec<NewArgument<'a>>, loc: Location<'a> },
     IfElse { cond: Box<Expr<'a>>, then_do: Box<Expr<'a>>, else_do: Box<Expr<'a>>, loc: Location<'a> },
     Closure { parameters: Vec<ClosureParameter<'a>>, body: Box<Expr<'a>>, loc: Location<'a> }
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct NewArgument<'a> {
-    pub field_name: String,
+    pub name: String,
     pub name_loc: Location<'a>,
     pub argument: Box<Expr<'a>>
 }

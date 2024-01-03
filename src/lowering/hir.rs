@@ -1,217 +1,137 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use indexmap::IndexMap;
-use slotmap::{SlotMap, new_key_type, SecondaryMap};
 use crate::source::Location;
+use crate::util::{KeyMap, declare_key_type};
 
-new_key_type! {
+
+declare_key_type! {
     pub struct NameKey;
     pub struct StructKey;
     pub struct FunctionKey;
-    pub struct TypeParamKey;
+    pub struct TypeParameterKey;
+    pub struct InferenceVariableKey;
 }
 
-pub enum NameInfo<'ir> {
-    Function { func: FunctionKey },
+pub enum NameInfo<'a> {
     Local {
-        typ: Type,
-        loc: Location<'ir>,
-
-        /// The "closure level", so the actual function will be 0 and nested closures will be one higher than their parent.
-        level: usize
+        name: String,
+        ty: Type,
+        level: usize,
+        loc: Location<'a>
+    },
+    Function {
+        name: String,
+        key: FunctionKey,
+        loc: Location<'a>
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+impl<'a> NameInfo<'a> {
+    pub fn name(&self) -> &String {
+        match self {
+            NameInfo::Local { name, .. } => name,
+            NameInfo::Function { name, .. } => name
+        }
+    }
+
+    pub fn loc(&self) -> Location<'a> {
+        match self {
+            NameInfo::Local { loc, .. } => *loc,
+            NameInfo::Function { loc, .. } => *loc
+        }
+    }
+}
+
+pub struct TypeParameterInfo<'a> {
+    pub name: String,
+    pub loc: Location<'a>
+}
+
+pub struct InferenceVariableInfo<'a> {
+    pub ty: Option<Type>,
+    pub name: String,
+    pub loc: Location<'a>
+}
+
+
+#[derive(Clone, Debug)]
 pub enum Type {
     Errored,
     Unit,
     Never,
     Boolean,
-    Integer { bits: u8 },
-    Struct { struct_: StructKey, variant: Vec<Type> },
-    Function { params: Vec<Type>, ret: Box<Type> },
-    GenericFunction { func: FunctionKey, type_params: Vec<TypeParameter>, params: Vec<Type>, ret: Box<Type> },
-    TypeParameter { name: String, bound: Option<Box<Type>>, id: u64 },
-    TypeParameterInstance { name: String, id: TypeParamKey }
+    SignedInteger(u8),
+    UnsignedInteger(u8),
+    Struct(StructType),
+    Function(FunctionType),
+    TypeParameter(TypeParameterKey),
+    InferenceVariable(InferenceVariableKey)
 }
 
-impl Type {
-    pub fn subs(&self, map: &HashMap<u64, Type>) -> Type {
-        match self {
-            Type::Never | Type::Unit | Type::Boolean => self.clone(),
-            Type::Errored => Type::Errored,
-            Type::Integer { bits } => Type::Integer { bits: *bits },
-            Type::TypeParameter { id, .. } if map.contains_key(id) => {
-                map[id].clone()
-            },
-            Type::TypeParameter { .. } | Type::TypeParameterInstance { .. }=> self.clone(),
-            Type::Function { params, ret } => {
-                Type::Function { params: params.iter().map(|t| t.subs(map)).collect(), ret: Box::new(ret.subs(map)) }
-            },
-            Type::Struct { struct_, variant } => {
-                Type::Struct { struct_: *struct_, variant: variant.iter().map(|t| t.subs(map)).collect() }
-            },
-            // I don't think this one is possible
-            Type::GenericFunction { .. } => panic!(),
-        }
-    }
+#[derive(Clone, Debug)]
+pub struct StructType(pub StructKey, pub Vec<Type>);
 
-    pub fn is_never(&self, _hir: &HIR) -> bool {
-        match self {
-            Type::Never => true,
-            _ => false
-        }
-    }
-    
-    pub fn is_error(&self) -> bool {
-        match self {
-            Type::Errored => true,
-            _ => false
-        }
+#[derive(Clone, Debug)]
+pub struct FunctionType(pub Vec<Type>, pub Box<Type>);
+
+impl From<StructType> for Type {
+    fn from(value: StructType) -> Self {
+        Type::Struct(value)
     }
 }
 
-pub struct HIR<'s> {
+impl From<FunctionType> for Type {
+    fn from(value: FunctionType) -> Self {
+        Type::Function(value)
+    }
+}
+
+impl From<TypeParameterKey> for Type {
+    fn from(value: TypeParameterKey) -> Self {
+        Type::TypeParameter(value)
+    }
+}
+
+pub struct HIR<'a> {
     pub name: String,
-    pub main_function: Option<FunctionKey>,
+    pub main_function: FunctionKey,
 
-    pub names: SlotMap<NameKey, NameInfo<'s>>,
-    pub structs: SlotMap<StructKey, Struct<'s>>,
-    pub function_prototypes: SlotMap<FunctionKey, FunctionPrototype<'s>>,
-    pub function_bodies: SecondaryMap<FunctionKey, FunctionBody<'s>>
-}
+    pub names: KeyMap<NameKey, NameInfo<'a>>,
+    pub type_parameters: KeyMap<TypeParameterKey, TypeParameterInfo<'a>>,
+    pub inference_variables: KeyMap<InferenceVariableKey, InferenceVariableInfo<'a>>,
 
-impl<'s> HIR<'s> {
-    pub fn new(name: String) -> HIR<'s> {
-        HIR {
-            name,
-            names: SlotMap::with_key(),
-            main_function: None,
-            structs: SlotMap::with_key(),
-            function_prototypes: SlotMap::with_key(),
-            function_bodies: SecondaryMap::new()
-        }
-    }
-
-    pub fn type_of_name(&self, name: NameKey) -> Type {
-        match &self.names[name] {
-            NameInfo::Function { func } => self.function_prototypes[*func].sig.clone(),
-            NameInfo::Local { typ, .. } => typ.clone()
-        }
-    }
-
-    pub fn type_of_expr(&self, expr: &Expr<'s>) -> Type {
-        match expr {
-            Expr::Name { decl, .. } => self.type_of_name(*decl),
-            Expr::Integer { .. } => Type::Integer { bits: 32 },
-            Expr::Bool { .. } => Type::Boolean,
-            Expr::Unit { .. } => Type::Unit,
-            Expr::Block(Block { yield_type, .. }) => yield_type.clone(),
-            Expr::Call { callee, .. } => {
-                match self.type_of_expr(callee) {
-                    Type::GenericFunction { ret, .. } | Type::Function { ret, ..} => ret.as_ref().clone(),
-                    _ => panic!()
-                }
-            },
-            Expr::GenericCall { generic, callee, .. } => {
-                let proto = &self.function_prototypes[*callee];
-                let mut map = HashMap::new();
-                for (type_param, typ) in proto.type_params.iter().zip(generic.iter()) {
-                    map.insert(type_param.id, typ.clone());
-                };
-                proto.ret.subs(&map)
-            },
-            Expr::New { struct_, variant, .. } => {
-                Type::Struct { struct_: *struct_, variant: variant.clone() }
-            },
-            Expr::Errored { .. } => Type::Errored,
-            Expr::GetAttr { obj, attr, .. } => {
-                let Type::Struct { struct_, variant } = self.type_of_expr(obj) else { panic!() };
-                let mut map = HashMap::new();
-                for (type_param, typ) in self.structs[struct_].type_params.iter().zip(variant.iter()) {
-                    map.insert(type_param.id, typ.clone());
-                };
-                self.structs[struct_].all_fields(self)[attr].subs(&map)
-            },
-            Expr::IfElse { yield_type, .. } => {
-                yield_type.clone()
-            },
-            Expr::Closure { parameters, ret_type, .. } => {
-                let params = parameters.iter().map(|p| p.typ.clone()).collect();
-                Type::Function { params, ret: Box::new(ret_type.clone()) }
-            }
-            Expr::Cast(_, ty) => ty.clone()
-        }
-    }
-
-    // pub fn is_subtype(&self, this: &Type, of: &Type) -> bool {
-    //     match (this, of) {
-    //         // (Type::Errored, _) | (_, Type::Errored) => panic!("found errored type {:?} {:?}", this, of),
-    //         (Type::Errored, _) | (_, Type::Errored) => true,
-    //         (Type::Never, _) => true,
-    //         (Type::Unit, Type::Unit) => true,
-    //         (Type::Boolean, Type::Boolean) => true,
-    //         (Type::Integer { bits: a }, Type::Integer { bits: b}) if a <= b => true,
-    //         (Type::Struct { struct_: a, variant: a_var}, Type::Struct { struct_: b, variant: b_var}) => {
-    //             if a == b && a_var == b_var {
-    //                 return true;
-    //             }
-    //             if let Some((super_key, super_var, _)) = &self.structs[*a].super_struct {
-    //                 return self.is_subtype(&Type::Struct { struct_: *super_key, variant: super_var.clone() }, of);
-    //             }
-    //             return false;
-    //         },
-    //         (Type::Function { params: a_params, ret: a_ret }, Type::Function { params: b_params, ret: b_ret }) => {
-    //             self.is_subtype(a_ret, b_ret) && b_params.iter().zip(a_params.iter()).all(|(b_typ, a_typ)| self.is_subtype(b_typ, a_typ))
-    //         },
-    //         (Type::TypeParameter { id: a, .. }, Type::TypeParameter { id: b, .. }) => a == b,
-    //         _ => false
-    //     }
-    // }
+    pub structs: KeyMap<StructKey, Struct<'a>>,
+    pub functions: KeyMap<FunctionKey, Function<'a>>,
 }
 
 pub struct Struct<'ir> {
     pub name: String,
-    pub type_params: Vec<TypeParameter>,
+    pub type_params: Vec<TypeParameterKey>,
     pub super_struct: Option<(StructKey, Vec<Type>, Location<'ir>)>,
     pub fields: IndexMap<String, StructField<'ir>>,
     pub impls: Vec<Impl<'ir>>,
     pub loc: Location<'ir>
 }
 
-impl<'a> Struct<'a> {
-    pub fn all_fields(&self, hir: &HIR) -> IndexMap<String, Type> {
-        let mut fields = IndexMap::new();
-        if let Some((key, _, _)) = &self.super_struct {
-            fields.extend(hir.structs[*key].all_fields(hir));
-        }
-        fields.extend(self.fields.iter().map(|(n, f)| (n.clone(), f.typ.clone())));
-        fields
-    }
-}
-
 pub struct Impl<'ir> {
     pub impl_trait: Option<()>,
     pub bounds: Vec<()>,
-    pub method_prototypes: HashMap<String, MethodPrototype<'ir>>,
-    pub method_bodies: HashMap<String, MethodBody<'ir>>,
+    pub methods: HashMap<String, Method<'ir>>,
 
     pub loc: Location<'ir>
 }
 
-pub struct MethodPrototype<'ir> {
+pub struct Method<'ir> {
     pub name: String,
-    pub type_params: Vec<TypeParameter>,
+    pub type_params: Vec<TypeParameterKey>,
     pub maybe_self: Option<NameKey>,
     pub params: Vec<Parameter<'ir>>,
     pub ret: Type,
 
-    pub loc: Location<'ir>
-}
+    pub body: Block<'ir>,
 
-pub struct MethodBody<'ir> {
-    pub body: Block<'ir>
+    pub loc: Location<'ir>
 }
 
 #[derive(Clone)]
@@ -221,123 +141,75 @@ pub struct StructField<'ir> {
     pub loc: Location<'ir>
 }
 
-pub struct FunctionPrototype<'ir> {
+pub struct Function<'ir> {
     pub name: String,
     pub decl: NameKey,
-    pub type_params: Vec<TypeParameter>,
+    pub type_params: Vec<TypeParameterKey>,
     pub params: Vec<Parameter<'ir>>,
     pub ret: Type,
 
-    pub sig: Type,
+    pub body: Block<'ir>,
+
     pub loc: Location<'ir>
 }
 
-pub struct FunctionBody<'ir> {
-    pub body: Block<'ir>
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct TypeParameter {
-    pub name: String,
-    pub bound: Option<Type>,
-    pub id: u64,
-}
-
-impl TypeParameter {
-    pub fn as_type(&self) -> Type {
-        Type::TypeParameter { name: self.name.clone(), id: self.id, bound: self.bound.as_ref().map(|t| Box::new(t.clone())) }
-    }
-}
-
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Parameter<'ir> {
     pub name: String,
+    pub decl: NameKey,
     pub typ: Type,
     pub loc: Location<'ir>,
-    pub decl: NameKey,
 }
 
 #[derive(Debug)]
 pub struct Block<'ir> {
     pub stmts: Vec<Stmt<'ir>>,
-    pub trailing_expr: Option<Box<Expr<'ir>>>,
+    pub trailing_expr: Box<Expr<'ir>>,
     pub yield_type: Type,
+    pub always_diverges: bool,
     pub declared: HashMap<String, NameKey>,
     pub loc: Location<'ir>
 }
 
 #[derive(Debug)]
 pub enum Expr<'ir> {
-    Name { decl: NameKey, loc: Location<'ir> },
-    Integer { num: u64, loc: Location<'ir> },
-    Bool { value: bool, loc: Location<'ir> },
-    Unit { loc: Location<'ir> },
+    Name(NameKey, Location<'ir>),
+    Integer(u64, Location<'ir>),
+    Bool(bool, Location<'ir>),
+    Unit(Location<'ir>),
+    Never(Location<'ir>),
     Block(Block<'ir>),
-    GetAttr { obj: Box<Expr<'ir>>, attr: String, loc: Location<'ir> },
-    Call { callee: Box<Expr<'ir>>, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
+    GetAttr { obj: Box<Expr<'ir>>, obj_type: StructType, field_ty: Type, attr: String, loc: Location<'ir> },
+    Call { callee: Box<Expr<'ir>>, callee_type: FunctionType, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
     // MethodCall { object: Box<Expr<'ir>>, method: String, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
-    GenericCall { generic: Vec<Type>, callee: FunctionKey, arguments: Vec<Expr<'ir>>, loc: Location<'ir>},
+    GenericCall { generic: Vec<Type>, callee: FunctionKey, arguments: Vec<Expr<'ir>>, ret_type: Type, loc: Location<'ir>},
     Errored { loc: Location<'ir> },
-    New { struct_: StructKey, variant: Vec<Type>, fields: IndexMap<String, Box<Expr<'ir>>>, loc: Location<'ir> },
+    New { struct_type: StructType, fields: IndexMap<String, Box<Expr<'ir>>>, loc: Location<'ir> },
     IfElse { cond: Box<Expr<'ir>>, then_do: Box<Expr<'ir>>, else_do: Box<Expr<'ir>>, yield_type: Type, loc: Location<'ir> },
-    Closure { parameters: Vec<ClosureParameter<'ir>>, body: Block<'ir>, ret_type: Type, loc: Location<'ir> },
-    Cast(Box<Expr<'ir>>, Type)
-}
+    Closure { parameters: Vec<Parameter<'ir>>, body: Block<'ir>, fn_type: FunctionType, loc: Location<'ir> },
 
-#[derive(Debug)]
-pub struct ClosureParameter<'ir> {
-    pub name: String,
-    pub key: NameKey,
-    pub typ: Type,
-    pub loc: Location<'ir>
+    CoerceFromNever(Box<Expr<'ir>>, Type),
+    SignExtend(Box<Expr<'ir>>, u8)
 }
 
 impl<'a> Expr<'a> {
     pub fn loc(&self) -> Location<'a> {
         match self {
-            Expr::Name { loc, .. } => { *loc }
-            Expr::Integer { loc, .. } => { *loc }
-            Expr::Bool { loc, .. } => { *loc }
-            Expr::Unit { loc, .. } => { *loc }
+            Expr::Name(_, loc) => *loc,
+            Expr::Integer(_, loc) => *loc,
+            Expr::Bool(_, loc) => *loc,
+            Expr::Unit(loc) => *loc,
             Expr::Block(block) => block.loc,
-            Expr::GetAttr { loc, .. } => { *loc }
-            Expr::Call { loc, .. } => { *loc }
-            Expr::GenericCall { loc, .. } => { *loc }
-            Expr::Errored { loc, .. } => { *loc }
-            Expr::New { loc, .. } => { *loc }
-            Expr::IfElse { loc, .. } => { *loc }
-            Expr::Closure { loc, .. } => { *loc }
-            Expr::Cast(expr, _) => expr.loc()
-        }
-    }
-
-    pub fn always_diverges(&self, hir: &HIR) -> bool {
-        match self {
-            Expr::Name { .. } | Expr::Integer { .. } | Expr::Unit { .. } | Expr::Errored { .. } | Expr::Bool { .. } => false,
-            Expr::Closure { .. } => false,
-            Expr::Block( Block { stmts, trailing_expr, .. } ) => {
-                stmts.iter().any(|stmt| stmt.always_diverges(hir)) || trailing_expr.as_ref().map_or(false, |e| e.always_diverges(hir))
-            },
-            Expr::Call { callee, arguments, .. } => {
-                if callee.always_diverges(hir) || arguments.iter().any(|arg| arg.always_diverges(hir)) {
-                    return true;
-                }
-                let Type::Function { ret, .. } = hir.type_of_expr(callee) else { panic!() };
-                ret.is_never(hir)
-            },
-            Expr::GenericCall { arguments, .. } => {
-                arguments.iter().any(|arg| arg.always_diverges(hir))
-            },
-            Expr::New { fields, .. } => {
-                fields.values().any(|val| val.always_diverges(hir))
-            }
-            Expr::GetAttr { obj, .. } => {
-                obj.always_diverges(hir)
-            }
-            Expr::IfElse { cond, then_do, else_do, .. } => {
-                cond.always_diverges(hir) || (then_do.always_diverges(hir) && else_do.always_diverges(hir))
-            }
-            Expr::Cast(expr, _) => expr.always_diverges(hir)
+            Expr::GetAttr { loc, .. } => *loc,
+            Expr::Call { loc, .. } => *loc,
+            Expr::GenericCall { loc, .. } => *loc,
+            Expr::Errored { loc, .. } => *loc,
+            Expr::New { loc, .. } => *loc,
+            Expr::IfElse { loc, .. } => *loc,
+            Expr::Closure { loc, .. } => *loc,
+            Expr::Never(loc) => *loc,
+            Expr::CoerceFromNever(expr, _) => expr.loc(),
+            Expr::SignExtend(expr, _) => expr.loc(),
         }
     }
 }
@@ -347,14 +219,4 @@ pub enum Stmt<'ir> {
     Decl { decl: NameKey, value: Expr<'ir>, loc: Location<'ir> },
     Return { value: Expr<'ir>, loc: Location<'ir> },
     Expr { expr: Expr<'ir>, loc: Location<'ir> }
-}
-
-impl Stmt<'_> {
-    pub fn always_diverges(&self, hir: &HIR) -> bool {
-        match self {
-            Stmt::Decl { value, .. } => value.always_diverges(hir),
-            Stmt::Expr { expr, .. } => expr.always_diverges(hir),
-            Stmt::Return { .. } => true
-        }
-    }
 }
