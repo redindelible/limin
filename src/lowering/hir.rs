@@ -9,6 +9,7 @@ declare_key_type! {
     pub struct NameKey;
     pub struct StructKey;
     pub struct FunctionKey;
+    pub struct MethodKey;
     pub struct TypeParameterKey;
     pub struct InferenceVariableKey;
 }
@@ -108,7 +109,7 @@ pub struct HIR<'a> {
 pub struct Struct<'ir> {
     pub name: String,
     pub type_params: Vec<TypeParameterKey>,
-    pub super_struct: Option<(StructKey, Vec<Type>, Location<'ir>)>,
+    pub super_struct: Option<(StructType, Location<'ir>)>,
     pub fields: IndexMap<String, StructField<'ir>>,
     pub impls: Vec<Impl<'ir>>,
     pub loc: Location<'ir>
@@ -181,8 +182,8 @@ pub enum Expr<'ir> {
     Block(Block<'ir>),
     GetAttr { obj: Box<Expr<'ir>>, obj_type: StructType, field_ty: Type, attr: String, loc: Location<'ir> },
     Call { callee: Box<Expr<'ir>>, callee_type: FunctionType, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
-    // MethodCall { object: Box<Expr<'ir>>, method: String, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
     GenericCall { generic: Vec<Type>, callee: FunctionKey, arguments: Vec<Expr<'ir>>, ret_type: Type, loc: Location<'ir>},
+    MethodCall { object: Box<Expr<'ir>>, obj_type: StructType, method: MethodKey, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
     Errored { loc: Location<'ir> },
     New { struct_type: StructType, fields: IndexMap<String, Box<Expr<'ir>>>, loc: Location<'ir> },
     IfElse { cond: Box<Expr<'ir>>, then_do: Box<Expr<'ir>>, else_do: Box<Expr<'ir>>, yield_type: Type, loc: Location<'ir> },
@@ -203,6 +204,7 @@ impl<'a> Expr<'a> {
             Expr::GetAttr { loc, .. } => *loc,
             Expr::Call { loc, .. } => *loc,
             Expr::GenericCall { loc, .. } => *loc,
+            Expr::MethodCall { loc, .. } => *loc,
             Expr::Errored { loc, .. } => *loc,
             Expr::New { loc, .. } => *loc,
             Expr::IfElse { loc, .. } => *loc,

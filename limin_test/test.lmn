@@ -2,7 +2,13 @@ struct Foo {
     a: i32;
 }
 
+impl for Foo {
+    fn get_a(self) -> i32 {
+        return self.a;
+    }
+}
+
 fn main() -> i32 {
-    let b = { return 0; };
-    return b;
+    let foo = new Foo { a: 0 };
+    return foo.get_a();
 }

@@ -148,6 +148,7 @@ impl<'a> Parser<'a> {
         match self.curr().typ {
             TokenType::Struct => self.parse_struct(),
             TokenType::Fn => self.parse_function(),
+            TokenType::Impl => self.parse_impl(),
             _ => {
                 self.errors.push(ParserError::UnexpectedToken(self.curr(), vec![TokenType::Struct, TokenType::Fn]));
                 Err(0)
@@ -191,8 +192,6 @@ impl<'a> Parser<'a> {
     fn parse_struct_item(&mut self) -> ParseResult<StructItem<'a>> {
         if self.curr().typ == TokenType::Identifier {
             self.parse_struct_field()
-        } else if self.curr().typ == TokenType::Impl {
-            Ok(StructItem::Impl(self.parse_struct_impl()?))
         } else {
             self.errors.push(ParserError::UnexpectedToken(self.curr(), vec![TokenType::Identifier, TokenType::Impl]));
             Err(0)
@@ -207,8 +206,10 @@ impl<'a> Parser<'a> {
         Ok(StructItem::Field { name: name.text.to_owned(), typ, loc: name.loc + end.loc })
     }
 
-    fn parse_struct_impl(&mut self) -> ParseResult<Impl<'a>> {
+    fn parse_impl(&mut self) -> ParseResult<TopLevel<'a>> {
         let start = self.expect(TokenType::Impl)?;
+        self.expect(TokenType::For)?;
+        let for_type = self.parse_type()?;
         self.expect(TokenType::LeftBrace)?;
         let mut methods: Vec<Method<'a>> = Vec::new();
         while self.curr().typ != TokenType::RightBrace {
@@ -216,7 +217,7 @@ impl<'a> Parser<'a> {
         }
         let end = self.expect(TokenType::RightBrace)?;
         let loc = start.loc + end.loc;
-        Ok(Impl::Unbounded { methods, loc })
+        Ok(TopLevel::Impl(Impl::Unbounded { for_type, methods, loc }))
     }
 
     fn parse_method(&mut self) -> ParseResult<Method<'a>> {

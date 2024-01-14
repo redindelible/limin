@@ -7,9 +7,8 @@ use crate::util::KeyMap;
 pub(super) struct StructInfo<'a, 'b> {
     pub type_parameters: IndexMap<String, tc::TypeParameterKey>,
     pub fields: IndexMap<String, FieldInfo<'a>>,
-    pub impls: Vec<ImplInfo<'a, 'b>>,
 
-    pub self_type: tc::Type,
+    pub self_type: tc::StructType,
     pub ast_struct: &'b ast::Struct<'a>
 }
 
@@ -19,8 +18,8 @@ pub(super) struct FieldInfo<'a> {
     pub loc: Location<'a>
 }
 
-pub(super) struct ImplInfo<'a, 'b> {
-    pub methods: IndexMap<String, MethodInfo<'a, 'b>>,
+pub(super) struct ImplInfo<'a> {
+    pub methods: IndexMap<String, tc::MethodKey>,
     pub loc: Location<'a>
 }
 
@@ -65,7 +64,22 @@ pub(super) struct CollectedPrototypes<'a, 'b> {
     pub types: tc::CollectedTypes<'a, 'b>,
     pub functions: KeyMap<tc::FunctionKey, FunctionInfo<'a, 'b>>,
     pub structs: KeyMap<tc::StructKey, StructInfo<'a, 'b>>,
+    pub methods: KeyMap<tc::MethodKey, MethodInfo<'a, 'b>>,
     pub main_function: Option<tc::FunctionKey>,
+}
+
+impl<'a, 'b> CollectedPrototypes<'a, 'b> {
+    pub fn get_method(&self, struct_: tc::StructKey, name: impl AsRef<str>) -> Vec<tc::MethodKey> {
+        let mut methods = Vec::new();
+
+        for impl_ in &self.structs[struct_].impls {
+            if let Some(method_key) = impl_.methods.get(name.as_ref()) {
+                methods.push(*method_key)
+            }
+        }
+
+        methods
+    }
 }
 
 pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: tc::CollectedTypes<'a, 'b>) -> CollectedPrototypes<'a, 'b> {
@@ -75,6 +89,7 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
     let mut main_key: Option<tc::FunctionKey> = None;
 
     let mut collected_structs: KeyMap<tc::StructKey, StructInfo> = KeyMap::new();
+    let mut methods: KeyMap<tc::MethodKey, MethodInfo> = KeyMap::new();
 
     for &tc::collect_structs::FileInfo { file_ns, ast_file, .. } in file_info.iter() {
         for top_level in &ast_file.top_levels {
@@ -85,12 +100,6 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
 
                     let mut type_parameters: IndexMap<String, tc::TypeParameterKey> = IndexMap::new();
                     for type_param in &func.type_parameters {
-                        // let bound = if let Some(bound) = &type_param.bound {
-                        //     let typ = checker.resolve_type(bound, func_ns, &types);
-                        //     Some(typ)
-                        // } else {
-                        //     None
-                        // };
                         let key = checker.add_type_param(type_param.name.clone(), type_param.loc);
                         type_parameters.insert(type_param.name.clone(), key);
                         checker.add_type(func_ns, type_param.name.clone(), tc::Type::TypeParameter(key));
@@ -145,10 +154,9 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
     for (struct_key, struct_info) in structs {
         let &tc::collect_structs::StructInfo { ref name, struct_ns, super_struct, ref type_parameters, ast_struct } = struct_info;
 
-        let self_type: tc::Type = tc::StructType(struct_key, type_parameters.values().map(|&t| t.into()).collect()).into();
+        let self_type = tc::StructType(struct_key, type_parameters.values().map(|&t| t.into()).collect());
 
         let mut fields: IndexMap<String, FieldInfo> = IndexMap::new();
-        let mut impls: Vec<ImplInfo> = Vec::new();
 
         for item in &ast_struct.items {
             match item {
@@ -158,67 +166,12 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
                         checker.push_error(tc::TypeCheckError::FieldDuplicated(field_name.clone(), name.clone(), *loc, prev.loc));
                     }
                 }
-                ast::StructItem::Impl(ast::Impl::Unbounded { methods: ast_methods, loc }) => {
-                    let mut methods: IndexMap<String, MethodInfo> = IndexMap::new();
-
-                    for func in ast_methods {
-                        let method_ns = checker.add_namespace(Some(struct_ns));
-
-                        let mut type_parameters: IndexMap<String, tc::TypeParameterKey> = IndexMap::new();
-                        for type_param in &func.type_parameters {
-                            // let bound = if let Some(bound) = &type_param.bound {
-                            //     let typ = checker.resolve_type(bound, func_ns, &types);
-                            //     Some(typ)
-                            // } else {
-                            //     None
-                            // };
-                            let key = checker.add_type_param(type_param.name.clone(), type_param.loc);
-                            type_parameters.insert(type_param.name.clone(), key);
-                            checker.add_type(method_ns, type_param.name.clone(), tc::Type::TypeParameter(key));
-                        }
-
-                        let maybe_self = if let Some((name, loc)) = &func.maybe_self {
-                            let (self_decl, _) = checker.add_local(name, self_type.clone(), 0, *loc, method_ns);
-                            Some(self_decl)
-                        } else {
-                            None
-                        };
-
-                        let mut params: IndexMap<String, ParameterInfo> = IndexMap::new();
-                        for param in &func.parameters {
-                            let typ = checker.resolve_type(&param.typ, method_ns, &types).expect_type(checker);
-                            let (decl, prev) = checker.add_local(&param.name, typ.clone(), 0, param.loc, method_ns);
-                            params.insert(param.name.clone(), ParameterInfo { ty: typ, decl, loc: param.loc });
-                        }
-                        let ret = match &func.return_type {
-                            Some(ty) => checker.resolve_type(ty, method_ns, &types).expect_type(checker),
-                            None => tc::Type::Unit
-                        };
-
-                        let prev_method = methods.insert(func.name.clone(), MethodInfo {
-                            type_parameters,
-                            maybe_self,
-                            params,
-                            ret,
-                            ns: method_ns,
-                            ast_method: func
-                        });
-                        if let Some(prev_method) = prev_method {
-                            checker.push_error(tc::TypeCheckError::MethodDuplicated(func.name.clone(), struct_info.name.clone(), func.loc, prev_method.ast_method.loc));
-                        }
-                    }
-                    impls.push(ImplInfo {
-                        methods,
-                        loc: *loc
-                    });
-                }
             }
         }
 
         collected_structs.insert(struct_key, StructInfo {
             type_parameters: type_parameters.clone(),
             fields,
-            impls,
             self_type,
             ast_struct
         });
@@ -228,5 +181,5 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
         checker.push_error(tc::TypeCheckError::NoMainFunction);
     }
 
-    CollectedPrototypes { types, functions, structs: collected_structs, main_function: main_key }
+    CollectedPrototypes { types, functions, structs: collected_structs, methods, main_function: main_key }
 }

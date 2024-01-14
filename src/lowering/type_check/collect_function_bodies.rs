@@ -9,7 +9,7 @@ use crate::util::KeyMap;
 
 
 pub(super) fn collect_function_bodies<'a, 'b>(mut checker: tc::TypeCheck<'a>, collected: tc::collect_functions::CollectedPrototypes<'a, 'b>) -> ResolveResult<'a, hir::HIR<'a>> {
-    let tc::collect_functions::CollectedPrototypes { functions, structs, main_function, .. } = &collected;
+    let tc::collect_functions::CollectedPrototypes { functions, structs, methods: method_info, main_function, .. } = &collected;
 
     let mut hir_functions = KeyMap::new();
     for (func_key, func_info) in functions {
@@ -52,7 +52,8 @@ pub(super) fn collect_function_bodies<'a, 'b>(mut checker: tc::TypeCheck<'a>, co
         let mut impls= Vec::new();
         for impl_ in &struct_info.impls {
             let mut methods = HashMap::new();
-            for (method_name, method_info) in &impl_.methods {
+            for (method_name, method_key) in &impl_.methods {
+                let method_info = &method_info[*method_key];
                 let ret = method_info.ret.clone();
                 let mut context = ResolveContext::create_for_function(&mut checker, &collected, Some(ret.clone()), method_info.ns);
                 let body = context.resolve_block(&method_info.ast_method.body, Some(ret.clone()), method_info.ns);
@@ -598,8 +599,9 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
             },
             ast::Expr::MethodCall { object, method, arguments, loc } => {
                 let resolved_object = self.resolve_expr(object, None);
+                let mut diverges = resolved_object.always_diverges;
 
-                let struct_type = match resolved_object.ty {
+                let StructType(struct_, variant) = match resolved_object.ty {
                     Type::Struct(struct_type) => struct_type,
                     Type::Errored => {
                         return AnnotatedExpr::new_errored(*loc, false);
@@ -610,7 +612,42 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                     }
                 };
 
-                todo!()
+                let possible_methods = self.prototypes.get_method(struct_, method);
+                if possible_methods.is_empty() {
+                    self.push_error(tc::TypeCheckError::NoSuchMethodName { on_type: self.display_type(&StructType(struct_, variant).into()), method: method.clone(), loc: *loc });
+                    return AnnotatedExpr::new_errored(*loc, false);
+                } else if possible_methods.len() > 1 {
+                    self.push_error(tc::TypeCheckError::ConflictingMethods {
+                        on_type: self.display_type(&StructType(struct_, variant).into()), method: method.clone(), loc: *loc,
+                        possible: possible_methods.into_iter().map(|key| self.prototypes.methods[key].ast_method.loc).collect()
+                    });
+                    return AnnotatedExpr::new_errored(*loc, false);
+                }
+                let method_key = possible_methods[0];
+                let method_info = &self.prototypes.methods[method_key];
+
+                let map = self.types.create_subs(StructType(struct_, variant.clone()));
+
+                let mut resolved_arguments = Vec::new();
+                for (param, arg) in method_info.params.values().zip(arguments) {
+                    let resolved_arg = self.resolve_expr(arg, Some(self.checker.subs(&param.ty, &map)));
+                    diverges |= resolved_arg.always_diverges;
+                    resolved_arguments.push(resolved_arg.expr);
+                }
+                let ret = self.checker.subs(&method_info.ret, &map);
+
+                if method_info.params.len() != arguments.len() {
+                    self.push_error(tc::TypeCheckError::MismatchedArguments { expected: method_info.params.len(), got: arguments.len(), loc: *loc });
+                    return AnnotatedExpr::new_errored(*loc, diverges);
+                }
+
+                AnnotatedExpr {
+                    expr: hir::Expr::MethodCall {
+                        object: Box::new(resolved_object.expr), obj_type: StructType(struct_, variant), method: method_key, arguments: resolved_arguments, loc: *loc
+                    },
+                    ty: ret,
+                    always_diverges: diverges
+                }
             }
             ast::Expr::GenericCall { .. } => todo!(),
             ast::Expr::BinOp { .. } => todo!(),

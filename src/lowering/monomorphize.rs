@@ -104,7 +104,7 @@ impl Monomorphize {
         let struct_ = &hir.structs[hir_struct];
 
         let super_struct: Option<mir::StructKey>;
-        if let Some((super_key, super_type_args, _)) = &struct_.super_struct {
+        if let Some((hir::StructType(super_key, super_type_args), _)) = &struct_.super_struct {
             let type_args: Vec<mir::Type> = super_type_args.iter().map(|t| self.lower_type(t, &generic_map, hir)).collect();
             let key = self.queue_struct(*super_key, &type_args, hir);
             super_struct = Some(key);

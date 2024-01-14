@@ -39,7 +39,13 @@ impl<'a> File<'a> {
 #[derive(Debug, Eq, PartialEq)]
 pub enum TopLevel<'a> {
     Function(Function<'a>),
-    Struct(Struct<'a>)
+    Struct(Struct<'a>),
+    Impl(Impl<'a>)
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum Impl<'a> {
+    Unbounded { for_type: Type<'a>, methods: Vec<Method<'a>>, loc: Location<'a> }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -71,12 +77,6 @@ pub struct Struct<'a> {
 #[derive(Debug, Eq, PartialEq)]
 pub enum StructItem<'a> {
     Field { name: String, typ: Box<Type<'a>>, loc: Location<'a> },
-    Impl(Impl<'a>)
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub enum Impl<'a> {
-    Unbounded { methods: Vec<Method<'a>>, loc: Location<'a> }
 }
 
 #[derive(Debug, Eq, PartialEq)]

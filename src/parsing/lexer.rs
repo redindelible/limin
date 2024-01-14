@@ -22,6 +22,7 @@ pub enum TokenType {
     Minus,
     Fn,
     Let,
+    For,
     Return,
     Struct,
     Impl,
@@ -53,6 +54,7 @@ const BASIC_TOKENS: phf::Map<char, TokenType> = phf_map! {
 const KEYWORDS: phf::Map<&str, TokenType> = phf_map! {
     "fn" => TokenType::Fn,
     "let" => TokenType::Let,
+    "for" => TokenType::For,
     "return" => TokenType::Return,
     "struct" => TokenType::Struct,
     "new" => TokenType::New,
@@ -83,6 +85,7 @@ impl TokenType {
             TokenType::Minus => "'-'",
             TokenType::Fn => "'fn'",
             TokenType::Let => "'let'",
+            TokenType::For => "'for'",
             TokenType::Return => "'return'",
             TokenType::Struct => "'struct'",
             TokenType::Impl => "'impl'",

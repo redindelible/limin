@@ -11,7 +11,7 @@ use crate::parsing::ast;
 use crate::util::{KeyMap, map_join, pluralize};
 use crate::error::Message;
 use crate::lowering::hir;
-use crate::lowering::hir::{Type, NameKey, StructKey, FunctionKey, TypeParameterKey, InferenceVariableKey, NameInfo, TypeParameterInfo, InferenceVariableInfo, FunctionType, StructType};
+use crate::lowering::hir::{Type, NameKey, StructKey, FunctionKey, TypeParameterKey, InferenceVariableKey, NameInfo, TypeParameterInfo, InferenceVariableInfo, FunctionType, StructType, MethodKey};
 use crate::source::Location;
 
 use crate::lowering::type_check::collect_structs::CollectedTypes;
@@ -104,6 +104,8 @@ pub enum TypeCheckError<'a> {
     ExpectedStructName { got: String, loc: Location<'a> },
     ExpectedStruct { got: DisplayType<'a>, loc: Location<'a> },
     NoSuchFieldName { field: String, typ: String, loc: Location<'a> },
+    NoSuchMethodName { on_type: DisplayType<'a>, method: String, loc: Location<'a> },
+    ConflictingMethods { on_type: DisplayType<'a>, method: String, loc: Location<'a>, possible: Vec<Location<'a>> },
     MissingFields { fields: Vec<String>, typ: String, loc: Location<'a> },
     CouldNotInferTypeParameter(String, Location<'a>),
     CouldNotInferParameters(Location<'a>),
@@ -198,7 +200,15 @@ impl<'a> Message for TypeCheckError<'a> {
                 Self::show_location(loc, to)
             }
             TypeCheckError::NoSuchFieldName { field, typ, loc } => {
-                writeln!(to, "Error: '{}' Does not contain a field named '{}'.", typ, field)?;
+                writeln!(to, "Error: '{}' does not contain a field named '{}'.", typ, field)?;
+                Self::show_location(loc, to)
+            }
+            TypeCheckError::NoSuchMethodName { on_type, method, loc } => {
+                writeln!(to, "Error: '{}' does not have a method named '{}'.", on_type.render(), method)?;
+                Self::show_location(loc, to)
+            }
+            TypeCheckError::ConflictingMethods { on_type, method, loc, .. } => {
+                writeln!(to, "Error: Method '{}' is ambiguous for '{}'.", method, on_type.render())?;
                 Self::show_location(loc, to)
             }
             TypeCheckError::MissingFields { fields, typ, loc } => {
@@ -476,7 +486,7 @@ impl<'a> TypeCheck<'a> {
         }
     }
 
-    pub fn subs(&self, ty: &Type,  map: &HashMap<TypeParameterKey, Type>) -> Type {
+    pub fn subs(&self, ty: &Type, map: &HashMap<TypeParameterKey, Type>) -> Type {
         match ty {
             Type::Never => Type::Never,
             Type::Unit => Type::Unit,
