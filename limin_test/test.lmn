@@ -9,6 +9,6 @@ impl for Foo {
 }
 
 fn main() -> i32 {
-    let foo = new Foo { a: 0 };
+    let foo = new Foo { a: 32 };
     return foo.get_a();
 }

@@ -11,7 +11,7 @@ use crate::parsing::ast;
 use crate::util::{KeyMap, map_join, pluralize};
 use crate::error::Message;
 use crate::lowering::hir;
-use crate::lowering::hir::{Type, NameKey, StructKey, FunctionKey, TypeParameterKey, InferenceVariableKey, NameInfo, TypeParameterInfo, InferenceVariableInfo, FunctionType, StructType, MethodKey};
+use crate::lowering::hir::{Type, NameKey, StructKey, FunctionKey, TypeParameterKey, ImplKey, InferenceVariableKey, NameInfo, TypeParameterInfo, InferenceVariableInfo, FunctionType, StructType, MethodKey};
 use crate::source::Location;
 
 use crate::lowering::type_check::collect_structs::CollectedTypes;

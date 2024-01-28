@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use indexmap::IndexMap;
 use crate::parsing::ast;
-use crate::lowering::type_check as tc;
+use crate::lowering::{hir, type_check as tc};
 use crate::source::Location;
 use crate::util::KeyMap;
 
@@ -18,9 +19,12 @@ pub(super) struct FieldInfo<'a> {
     pub loc: Location<'a>
 }
 
-pub(super) struct ImplInfo<'a> {
+pub(super) struct ImplInfo<'a, 'b> {
+    pub for_type: tc::Type,
+
     pub methods: IndexMap<String, tc::MethodKey>,
-    pub loc: Location<'a>
+    pub loc: Location<'a>,
+    pub ast_impl: &'b ast::Impl<'a>,
 }
 
 pub(super) struct MethodInfo<'a, 'b> {
@@ -64,23 +68,86 @@ pub(super) struct CollectedPrototypes<'a, 'b> {
     pub types: tc::CollectedTypes<'a, 'b>,
     pub functions: KeyMap<tc::FunctionKey, FunctionInfo<'a, 'b>>,
     pub structs: KeyMap<tc::StructKey, StructInfo<'a, 'b>>,
+    pub impls: KeyMap<tc::ImplKey, ImplInfo<'a, 'b>>,
     pub methods: KeyMap<tc::MethodKey, MethodInfo<'a, 'b>>,
     pub main_function: Option<tc::FunctionKey>,
 }
 
-impl<'a, 'b> CollectedPrototypes<'a, 'b> {
-    pub fn get_method(&self, struct_: tc::StructKey, name: impl AsRef<str>) -> Vec<tc::MethodKey> {
-        let mut methods = Vec::new();
 
-        for impl_ in &self.structs[struct_].impls {
-            if let Some(method_key) = impl_.methods.get(name.as_ref()) {
-                methods.push(*method_key)
+impl<'a, 'b> CollectedPrototypes<'a, 'b> {
+    fn unify(&self, check_ty: &tc::Type, impl_ty: &tc::Type, inference_map: &mut HashMap<tc::InferenceVariableKey, tc::Type>) -> bool {
+        use tc::{Type, StructType, FunctionType};
+
+        match (check_ty, impl_ty) {
+            (Type::Unit, Type::Unit) => true,
+            (Type::Boolean, Type::Boolean) => true,
+            (Type::SignedInteger(a_bits), Type::UnsignedInteger(b_bits)) => a_bits == b_bits,
+            (Type::UnsignedInteger(a_bits), Type::UnsignedInteger(b_bits)) => a_bits == b_bits,
+            (Type::Struct(StructType(a_struct, a_variant)), Type::Struct(StructType(b_struct, b_variant))) => {
+                if a_struct != b_struct {
+                    return false;
+                }
+                if a_variant.len() != b_variant.len() {
+                    return false;
+                }
+
+                a_variant.iter().zip(b_variant).all(|(a, b)| self.unify(a, b, inference_map))
+            }
+
+            (Type::Function(FunctionType(a_params, a_ret)), Type::Function(FunctionType(b_params, b_ret))) => {
+                if a_params.len() != b_params.len() {
+                    return false;
+                }
+
+                a_params.iter().zip(b_params).all(|(a, b)| self.unify(a, b, inference_map)) && self.unify(a_ret, b_ret, inference_map)
+            }
+            (Type::TypeParameter(a_key), Type::TypeParameter(b_key)) => {
+                a_key == b_key
+            }
+            (Type::InferenceVariable(a_key), impl_ty) => {
+                unreachable!("Shouldn't be allowed")
+            }
+            (check_ty, Type::InferenceVariable(key)) => {
+                if let Some(inferred_ty) = inference_map.get(key) {
+                    self.unify(check_ty, &inferred_ty.clone(), inference_map)
+                } else {
+                    inference_map.insert(*key, check_ty.clone());
+                    true
+                }
+            }
+            _ => false
+        }
+    }
+
+    pub fn get_impls(&self, for_type: &tc::Type) -> Vec<tc::ImplKey> {
+        let mut impls = Vec::new();
+
+        for (impl_key, impl_info) in &self.impls {
+            let mut type_parameters = HashMap::new();
+            if self.unify(for_type, &impl_info.for_type, &mut type_parameters) {
+                impls.push(impl_key);
             }
         }
 
-        methods
+        impls
+    }
+
+    pub fn get_method(&self, for_type: &tc::Type, method: &str) -> Vec<tc::MethodKey> {
+        let mut keys = Vec::new();
+
+        for (impl_key, impl_info) in &self.impls {
+            let mut type_parameters = HashMap::new();
+            if self.unify(for_type, &impl_info.for_type, &mut type_parameters) {
+                if let Some(key) = impl_info.methods.get(method) {
+                    keys.push(*key)
+                }
+            }
+        }
+
+        keys
     }
 }
+
 
 pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: tc::CollectedTypes<'a, 'b>) -> CollectedPrototypes<'a, 'b> {
     let tc::CollectedTypes { file_info, structs, .. } = &types;
@@ -89,6 +156,8 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
     let mut main_key: Option<tc::FunctionKey> = None;
 
     let mut collected_structs: KeyMap<tc::StructKey, StructInfo> = KeyMap::new();
+
+    let mut impls: KeyMap<tc::ImplKey, ImplInfo> = KeyMap::new();
     let mut methods: KeyMap<tc::MethodKey, MethodInfo> = KeyMap::new();
 
     for &tc::collect_structs::FileInfo { file_ns, ast_file, .. } in file_info.iter() {
@@ -146,6 +215,62 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
                         }
                     }
                 }
+
+                ast::TopLevel::Impl(ast_impl @ ast::Impl::Inherent { ref for_type, methods: ref ast_methods, ref loc }) => {
+                    let impl_ns = checker.add_namespace(Some(file_ns));
+                    let for_type = checker.resolve_type(for_type, file_ns, &types).expect_type(checker);
+
+                    let impl_methods = ast_methods.iter().map(|method| {
+                        let method_ns = checker.add_namespace(Some(impl_ns));
+
+                        let type_parameters = method.type_parameters.iter().map(|tp| {
+                            let key = checker.add_type_param(tp.name.clone(), tp.loc);
+                            checker.add_type(method_ns, tp.name.clone(), tc::Type::TypeParameter(key));
+                            (tp.name.clone(), key)
+                        }).collect();
+
+                        let maybe_self = if let Some((name, loc)) = &method.maybe_self {
+                            let (self_key, _) = checker.add_local(name, for_type.clone(), 0, *loc, method_ns);
+                            Some(self_key)
+                        } else {
+                            None
+                        };
+
+                        let params = method.parameters.iter().map(|param| {
+                            let ty = checker.resolve_type(&param.typ, method_ns, &types).expect_type(checker);
+                            let (decl, prev) = checker.add_local(&param.name, ty.clone(), 0, param.loc, method_ns);
+                            (param.name.clone(), ParameterInfo {
+                                ty,
+                                decl,
+                                loc: param.loc
+                            })
+                        }).collect();
+
+                        let ret = match &method.return_type {
+                            Some(ty) => checker.resolve_type(ty, method_ns, &types).expect_type(checker),
+                            None => tc::Type::Unit
+                        };
+
+                        let method_key = methods.add(MethodInfo {
+                            type_parameters,
+                            maybe_self,
+                            params,
+                            ret,
+                            ns: method_ns,
+                            ast_method: method
+                        });
+
+                        (method.name.clone(), method_key)
+                    }).collect();
+
+                    impls.add(ImplInfo {
+                        for_type,
+                        methods: impl_methods,
+                        loc: *loc,
+                        ast_impl
+                    });
+                }
+
                 _ => { }
             }
         }
@@ -181,5 +306,5 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
         checker.push_error(tc::TypeCheckError::NoMainFunction);
     }
 
-    CollectedPrototypes { types, functions, structs: collected_structs, methods, main_function: main_key }
+    CollectedPrototypes { types, functions, structs: collected_structs, impls, methods, main_function: main_key }
 }

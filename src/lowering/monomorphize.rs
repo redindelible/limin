@@ -22,6 +22,11 @@ enum QueuedResolve {
         hir_key: hir::StructKey,
         mir_key: mir::StructKey,
         map: TypeMap
+    },
+    Method {
+        hir_key: hir::MethodKey,
+        mir_key: mir::FunctionKey,
+        map: TypeMap
     }
 }
 
@@ -35,6 +40,7 @@ struct Monomorphize {
 
     structs: KeyMap<hir::StructKey, StructInfo>,
     functions: KeyMap<hir::FunctionKey, FunctionInfo>,
+    methods: KeyMap<hir::MethodKey, MethodInfo>,
 
     locals_map: HashMap<hir::NameKey, mir::LocalKey>,
 
@@ -52,6 +58,10 @@ struct StructInfo {
     variants: HashMap<Vec<mir::Type>, mir::StructKey>
 }
 
+struct MethodInfo {
+    variants: HashMap<Vec<mir::Type>, mir::FunctionKey>
+}
+
 impl Monomorphize {
     fn new() -> Monomorphize {
         Monomorphize {
@@ -63,6 +73,7 @@ impl Monomorphize {
             function_bodies: SecondaryMap::new(),
             functions: KeyMap::new(),
             structs: KeyMap::new(),
+            methods: KeyMap::new(),
             resolve_queue: RefCell::new(VecDeque::new()),
             locals_map: HashMap::new(),
             current_level: 0,
@@ -85,6 +96,9 @@ impl Monomorphize {
                 }
                 QueuedResolve::Struct { hir_key, mir_key, map } => {
                     self.resolve_struct(hir_key, mir_key, map, &hir);
+                }
+                QueuedResolve::Method { hir_key, mir_key, map} => {
+                    self.resolve_method(hir_key, mir_key, map, &hir)
                 }
             }
         }
@@ -130,6 +144,24 @@ impl Monomorphize {
 
         let mut params = Vec::new();
         for param in &hir.functions[hir_func].params {
+            params.push((param.name.clone(), self.locals_map[&param.decl]));
+        }
+
+        self.function_bodies.insert(mir_func, mir::FunctionBody { params, body });
+    }
+
+    fn resolve_method(&mut self, hir_method: hir::MethodKey, mir_func: mir::FunctionKey, generic_map: TypeMap, hir: &hir::HIR) {
+        self.current_level = 0;
+        self.used_blocks = vec![IndexSet::new()];
+        let method = &hir.methods[hir_method];
+
+        let body = self.lower_block(&method.body, &generic_map, hir);
+
+        let mut params = Vec::new();
+        if let Some(self_) = &method.maybe_self {
+            params.push(("self".into(), self.locals_map[self_]));
+        }
+        for param in &hir.methods[hir_method].params {
             params.push((param.name.clone(), self.locals_map[&param.decl]));
         }
 
@@ -224,6 +256,18 @@ impl Monomorphize {
                 let fn_type = self.function_prototypes[key].fn_type.clone();
                 mir::Expr::Call(fn_type, Box::new(callee), arguments.iter().map(|arg| self.lower_expr(arg, map, hir)).collect())
             },
+            hir::Expr::MethodCall { object, obj_type, method, arguments, .. } => {
+                let method_key = self.queue_method(*method, &[], hir);
+                let callee = mir::Expr::LoadFunction(method_key);
+                let fn_type = self.function_prototypes[method_key].fn_type.clone();
+
+                let mut mir_arguments = Vec::new();
+                mir_arguments.push(self.lower_expr(object, map, hir));
+                for argument in arguments {
+                    mir_arguments.push(self.lower_expr(argument, map, hir));
+                }
+                mir::Expr::Call(fn_type, Box::new(callee), mir_arguments)
+            }
             hir::Expr::IfElse { cond, then_do, else_do, yield_type, .. } => {
                 mir::Expr::IfElse {
                     cond: Box::new(self.lower_expr(cond, map, hir)),
@@ -359,6 +403,55 @@ impl Monomorphize {
         });
         self.functions[func].variants.insert(variant.to_vec(), key);
         self.resolve_queue.borrow_mut().push_back(QueuedResolve::Function { hir_key: func, mir_key: key, map: generic_map });
+        key
+    }
+
+    fn queue_method(&mut self, method: hir::MethodKey, variant: &[mir::Type], hir: &hir::HIR) -> mir::FunctionKey {
+        let proto = &hir.methods[method];
+
+        if !self.methods.contains_key(method) {
+            self.methods.insert(method, MethodInfo {
+                variants: HashMap::new()
+            });
+        }
+
+        if let Some(key) = self.methods[method].variants.get(variant) {
+            return *key;
+        }
+
+        let name = if variant.is_empty() {
+            format!("{}", &proto.name)
+        } else {
+            format!(
+                "{}<{}>",
+                &proto.name,
+                map_join(variant, |t| self.name_of(t))
+            )
+        };
+
+        let mut generic_map: TypeMap = HashMap::new();
+        for (type_param, typ) in proto.type_params.iter().zip(variant.iter()) {
+            generic_map.insert(*type_param, typ.clone());
+        }
+
+        let mut params = Vec::new();
+        if let Some(self_) = &proto.maybe_self {
+            let self_type = self.lower_type(&hir.impls[proto.in_impl].for_type, &generic_map, hir);
+            params.push(self_type);
+        }
+        for param in proto.params.clone() {
+            let typ = self.lower_type(&param.typ, &generic_map, hir);
+            params.push(typ);
+        }
+        let ret = Box::new(self.lower_type(&proto.ret, &generic_map, hir));
+        let fn_type = mir::FunctionType { params, ret };
+
+        let key = self.function_prototypes.insert(mir::FunctionPrototype {
+            name,
+            fn_type
+        });
+        self.methods[method].variants.insert(variant.to_vec(), key);
+        self.resolve_queue.borrow_mut().push_back(QueuedResolve::Method { hir_key: method, mir_key: key, map: generic_map });
         key
     }
 

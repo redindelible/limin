@@ -45,7 +45,7 @@ pub enum TopLevel<'a> {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Impl<'a> {
-    Unbounded { for_type: Type<'a>, methods: Vec<Method<'a>>, loc: Location<'a> }
+    Inherent { for_type: Type<'a>, methods: Vec<Method<'a>>, loc: Location<'a> }
 }
 
 #[derive(Debug, Eq, PartialEq)]

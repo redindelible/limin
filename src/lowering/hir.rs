@@ -10,6 +10,7 @@ declare_key_type! {
     pub struct StructKey;
     pub struct FunctionKey;
     pub struct MethodKey;
+    pub struct ImplKey;
     pub struct TypeParameterKey;
     pub struct InferenceVariableKey;
 }
@@ -104,6 +105,8 @@ pub struct HIR<'a> {
 
     pub structs: KeyMap<StructKey, Struct<'a>>,
     pub functions: KeyMap<FunctionKey, Function<'a>>,
+    pub methods: KeyMap<MethodKey, Method<'a>>,
+    pub impls: KeyMap<ImplKey, Impl<'a>>
 }
 
 pub struct Struct<'ir> {
@@ -111,19 +114,22 @@ pub struct Struct<'ir> {
     pub type_params: Vec<TypeParameterKey>,
     pub super_struct: Option<(StructType, Location<'ir>)>,
     pub fields: IndexMap<String, StructField<'ir>>,
-    pub impls: Vec<Impl<'ir>>,
     pub loc: Location<'ir>
 }
 
 pub struct Impl<'ir> {
     pub impl_trait: Option<()>,
     pub bounds: Vec<()>,
-    pub methods: HashMap<String, Method<'ir>>,
+    pub for_type: Type,
+
+    pub methods: HashMap<String, MethodKey>,
 
     pub loc: Location<'ir>
 }
 
 pub struct Method<'ir> {
+    pub in_impl: ImplKey,
+
     pub name: String,
     pub type_params: Vec<TypeParameterKey>,
     pub maybe_self: Option<NameKey>,

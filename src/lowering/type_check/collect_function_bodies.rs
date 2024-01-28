@@ -9,7 +9,14 @@ use crate::util::KeyMap;
 
 
 pub(super) fn collect_function_bodies<'a, 'b>(mut checker: tc::TypeCheck<'a>, collected: tc::collect_functions::CollectedPrototypes<'a, 'b>) -> ResolveResult<'a, hir::HIR<'a>> {
-    let tc::collect_functions::CollectedPrototypes { functions, structs, methods: method_info, main_function, .. } = &collected;
+    let tc::collect_functions::CollectedPrototypes {
+        functions,
+        structs,
+        impls,
+        methods: method_info,
+        main_function,
+        ..
+    } = &collected;
 
     let mut hir_functions = KeyMap::new();
     for (func_key, func_info) in functions {
@@ -49,53 +56,58 @@ pub(super) fn collect_function_bodies<'a, 'b>(mut checker: tc::TypeCheck<'a>, co
             });
         }
 
-        let mut impls= Vec::new();
-        for impl_ in &struct_info.impls {
-            let mut methods = HashMap::new();
-            for (method_name, method_key) in &impl_.methods {
-                let method_info = &method_info[*method_key];
-                let ret = method_info.ret.clone();
-                let mut context = ResolveContext::create_for_function(&mut checker, &collected, Some(ret.clone()), method_info.ns);
-                let body = context.resolve_block(&method_info.ast_method.body, Some(ret.clone()), method_info.ns);
-
-                let mut parameters = Vec::new();
-                for (param_name, param_info) in &method_info.params {
-                    parameters.push(hir::Parameter {
-                        name: param_name.clone(),
-                        typ: param_info.ty.clone(),
-                        decl: param_info.decl,
-                        loc: param_info.loc
-                    });
-                }
-
-                methods.insert(method_name.clone(), hir::Method {
-                    name: method_name.clone(),
-                    type_params: method_info.type_parameters.values().copied().collect(),
-                    maybe_self: method_info.maybe_self,
-                    params: parameters,
-                    ret,
-                    body,
-                    loc: method_info.ast_method.loc
-                });
-            }
-
-            impls.push(hir::Impl {
-                impl_trait: None,
-                bounds: vec![],
-                methods,
-                loc: impl_.loc
-            });
-        }
-
         hir_structs.insert(struct_key, hir::Struct {
             name: struct_info.ast_struct.name.clone(),
             type_params: struct_info.type_parameters.values().copied().collect(),
             super_struct: None,
             fields,
-            impls,
             loc: struct_info.ast_struct.loc
         });
     }
+
+    let mut hir_impls= KeyMap::new();
+    let mut hir_methods = KeyMap::new();
+    for (impl_key, impl_) in impls {
+        let mut methods = HashMap::new();
+        for (method_name, method_key) in &impl_.methods {
+            let method_info = &method_info[*method_key];
+            let ret = method_info.ret.clone();
+            let mut context = ResolveContext::create_for_function(&mut checker, &collected, Some(ret.clone()), method_info.ns);
+            let body = context.resolve_block(&method_info.ast_method.body, Some(ret.clone()), method_info.ns);
+
+            let mut parameters = Vec::new();
+            for (param_name, param_info) in &method_info.params {
+                parameters.push(hir::Parameter {
+                    name: param_name.clone(),
+                    typ: param_info.ty.clone(),
+                    decl: param_info.decl,
+                    loc: param_info.loc
+                });
+            }
+
+            let method_key = hir_methods.add(hir::Method {
+                in_impl: impl_key,
+                name: method_name.clone(),
+                type_params: method_info.type_parameters.values().copied().collect(),
+                maybe_self: method_info.maybe_self,
+                params: parameters,
+                ret,
+                body,
+                loc: method_info.ast_method.loc
+            });
+
+            methods.insert(method_name.clone(), method_key);
+        }
+
+        hir_impls.insert(impl_key, hir::Impl {
+            impl_trait: None,
+            bounds: vec![],
+            for_type: impl_.for_type.clone(),
+            methods,
+            loc: impl_.loc
+        });
+    }
+
 
     let tc::TypeCheck { name, names, type_parameters, inference_variables, errors, .. } = checker;
 
@@ -113,7 +125,9 @@ pub(super) fn collect_function_bodies<'a, 'b>(mut checker: tc::TypeCheck<'a>, co
         type_parameters,
         inference_variables,
         structs: hir_structs,
-        functions: hir_functions
+        functions: hir_functions,
+        impls: hir_impls,
+        methods: hir_methods
     };
 
     return ResolveResult::Success(hir)
@@ -247,19 +261,17 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                 }
                 return ResolveResult::Success(());
             }
-            (Type::TypeParameter(a_key), Type::TypeParameter(b_key)) => {
-                if a_key == b_key {
-                    return ResolveResult::Success(());
-                } else {
-                    return failure(self);
-                }
-            }
             (&Type::InferenceVariable(key), b) => {
                 let infer_info = self.checker.query_inference_variable_mut(key);
                 if let Some(typ) = &infer_info.ty {
                     let ty = typ.clone();
                     return self.equate_types(&ty, b, loc);
                 } else {
+                    if let &Type::InferenceVariable(b_key) = b {
+                        if b_key == key {
+                            return ResolveResult::Success(());
+                        }
+                    }
                     infer_info.ty = Some(b.clone());
                     return ResolveResult::Success(());
                 }
@@ -270,6 +282,11 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                     let ty = typ.clone();
                     return self.equate_types(a, &ty, loc);
                 } else {
+                    if let &Type::InferenceVariable(a_key) = a {
+                        if a_key == key {
+                            return ResolveResult::Success(());
+                        }
+                    }
                     infer_info.ty = Some(a.clone());
                     return ResolveResult::Success(());
                 }
@@ -318,7 +335,6 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
 
                     for (from, to) in from_variant.iter().zip(to_variant) {
                         if self.equate_types(from, to, expr.loc()).is_failure() {
-                            // dbg!(from, to);
                             self.push_error(failure(self));
                             return AnnotatedExpr::new_errored(expr.loc(), false);
                         }
@@ -370,7 +386,6 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                 }
             },
             (_, _) => {
-                // dbg!(&ty, to_ty);
                 self.push_error(failure(self));
                 return AnnotatedExpr::new_errored(expr.loc(), always_diverges);
             }
@@ -601,7 +616,7 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                 let resolved_object = self.resolve_expr(object, None);
                 let mut diverges = resolved_object.always_diverges;
 
-                let StructType(struct_, variant) = match resolved_object.ty {
+                let object_struct_type = match resolved_object.ty {
                     Type::Struct(struct_type) => struct_type,
                     Type::Errored => {
                         return AnnotatedExpr::new_errored(*loc, false);
@@ -611,14 +626,15 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                         return AnnotatedExpr::new_errored(*loc, false);
                     }
                 };
+                let object_type = object_struct_type.clone().into();
 
-                let possible_methods = self.prototypes.get_method(struct_, method);
+                let possible_methods = self.prototypes.get_method(&object_type, method);
                 if possible_methods.is_empty() {
-                    self.push_error(tc::TypeCheckError::NoSuchMethodName { on_type: self.display_type(&StructType(struct_, variant).into()), method: method.clone(), loc: *loc });
+                    self.push_error(tc::TypeCheckError::NoSuchMethodName { on_type: self.display_type(&object_type), method: method.clone(), loc: *loc });
                     return AnnotatedExpr::new_errored(*loc, false);
                 } else if possible_methods.len() > 1 {
                     self.push_error(tc::TypeCheckError::ConflictingMethods {
-                        on_type: self.display_type(&StructType(struct_, variant).into()), method: method.clone(), loc: *loc,
+                        on_type: self.display_type(&object_type), method: method.clone(), loc: *loc,
                         possible: possible_methods.into_iter().map(|key| self.prototypes.methods[key].ast_method.loc).collect()
                     });
                     return AnnotatedExpr::new_errored(*loc, false);
@@ -626,7 +642,7 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                 let method_key = possible_methods[0];
                 let method_info = &self.prototypes.methods[method_key];
 
-                let map = self.types.create_subs(StructType(struct_, variant.clone()));
+                let map = self.types.create_subs(object_struct_type.clone());
 
                 let mut resolved_arguments = Vec::new();
                 for (param, arg) in method_info.params.values().zip(arguments) {
@@ -643,7 +659,7 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
 
                 AnnotatedExpr {
                     expr: hir::Expr::MethodCall {
-                        object: Box::new(resolved_object.expr), obj_type: StructType(struct_, variant), method: method_key, arguments: resolved_arguments, loc: *loc
+                        object: Box::new(resolved_object.expr), obj_type: object_struct_type, method: method_key, arguments: resolved_arguments, loc: *loc
                     },
                     ty: ret,
                     always_diverges: diverges

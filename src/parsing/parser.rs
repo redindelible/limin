@@ -217,7 +217,7 @@ impl<'a> Parser<'a> {
         }
         let end = self.expect(TokenType::RightBrace)?;
         let loc = start.loc + end.loc;
-        Ok(TopLevel::Impl(Impl::Unbounded { for_type, methods, loc }))
+        Ok(TopLevel::Impl(Impl::Inherent { for_type, methods, loc }))
     }
 
     fn parse_method(&mut self) -> ParseResult<Method<'a>> {
