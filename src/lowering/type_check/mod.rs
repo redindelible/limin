@@ -2,7 +2,6 @@ mod collect_struct_prototypes;
 mod collect_functions;
 mod collect_function_bodies;
 mod collect_structs;
-mod collect_types;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -11,7 +10,7 @@ use crate::parsing::ast;
 use crate::util::{KeyMap, map_join, pluralize};
 use crate::error::Message;
 use crate::lowering::hir;
-use crate::lowering::hir::{Type, NameKey, StructKey, FunctionKey, TypeParameterKey, ImplKey, InferenceVariableKey, NameInfo, TypeParameterInfo, InferenceVariableInfo, FunctionType, StructType, MethodKey};
+use crate::lowering::hir::{Type, NameKey, StructKey, TraitKey, FunctionKey, TypeParameterKey, ImplKey, InferenceVariableKey, NameInfo, TypeParameterInfo, InferenceVariableInfo, FunctionType, StructType, TraitType, MethodKey};
 use crate::source::Location;
 
 use crate::lowering::type_check::collect_structs::CollectedTypes;
@@ -27,8 +26,7 @@ pub fn resolve_types(ast: ast::AST) -> Result<hir::HIR, Vec<TypeCheckError>> {
     checker.add_type(root, "bool".to_owned(), Type::Boolean);
 
     let collected_struct_prototypes = collect_struct_prototypes::collect_struct_prototypes(&mut checker, &ast);
-    let collected_structs = collect_structs::collect_structs(&mut checker, collected_struct_prototypes);
-    let collected_types = collect_types::collect_types(&mut checker, collected_structs);
+    let collected_types = collect_structs::collect_structs(&mut checker, collected_struct_prototypes);
     let collected_functions = collect_functions::collect_functions(&mut checker, collected_types);
     let collected_bodies = collect_function_bodies::collect_function_bodies(checker, collected_functions);
     collected_bodies.into_result()
@@ -252,6 +250,7 @@ struct Namespace {
     names: HashMap<String, NameKey>,
     types: HashMap<String, Type>,
     structs: HashMap<String, StructKey>,
+    traits: HashMap<String, TraitKey>,
     namespaces: HashMap<String, NamespaceKey>,
 }
 
@@ -262,6 +261,7 @@ impl Namespace {
             names: HashMap::new(),
             types: HashMap::new(),
             structs: HashMap::new(),
+            traits: HashMap::new(),
             namespaces: HashMap::new(),
         }
     }
@@ -415,6 +415,10 @@ impl<'a> TypeCheck<'a> {
         self.namespaces[ns].structs.insert(name.into(), key)
     }
 
+    pub fn add_trait(&mut self, name: impl Into<String>, key: TraitKey, ns: NamespaceKey) -> Option<TraitKey> {
+        self.namespaces[ns].traits.insert(name.into(), key)
+    }
+
     pub fn add_namespace(&mut self, parent: Option<NamespaceKey>) -> NamespaceKey {
         self.namespaces.insert(Namespace::new(parent))
     }
@@ -425,6 +429,16 @@ impl<'a> TypeCheck<'a> {
 
     pub fn query_inference_variable_mut<'s>(&'s mut self, key: InferenceVariableKey) -> &'s mut InferenceVariableInfo<'a> {
         &mut self.inference_variables[key]
+    }
+
+    pub fn resolve_trait(&self, name: impl AsRef<str>, ns: NamespaceKey) -> Option<TraitKey> {
+        if let Some(&t) = self.namespaces[ns].traits.get(name.as_ref()) {
+            Some(t)
+        } else if let Some(parent) = self.namespaces[ns].parent {
+            self.resolve_trait(name, parent)
+        } else {
+            None
+        }
     }
 
     pub fn resolve_struct(&self, name: impl AsRef<str>, ns: NamespaceKey) -> Option<StructKey> {
@@ -513,6 +527,9 @@ impl<'a> TypeCheck<'a> {
             },
             Type::Struct(StructType(struct_, variant)) => {
                 StructType(*struct_, variant.iter().map(|t| self.subs(t, map)).collect()).into()
+            },
+            Type::Trait(TraitType(trait_, variant)) => {
+                TraitType(*trait_, variant.iter().map(|t| self.subs(t, map)).collect()).into()
             }
         }
     }
@@ -794,9 +811,10 @@ mod test {
         ");
         let ast = parse_one(&s);
 
-        assert!(resolve_types(ast).is_err_and(|e|
-            e.render_to_string().contains("Error: 'Thing' Does not contain a field named 'foo'.")
-        ));
+        let types = resolve_types(ast);
+        let Err(errs) = types else { panic!() };
+        let rendered = errs.render_to_string();
+        assert!(rendered.contains("Error: 'Thing' does not contain a field named 'foo'."), "Actual Message: {:?}", rendered);
     }
 
     #[test]

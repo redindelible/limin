@@ -40,12 +40,33 @@ impl<'a> File<'a> {
 pub enum TopLevel<'a> {
     Function(Function<'a>),
     Struct(Struct<'a>),
-    Impl(Impl<'a>)
+    Impl(Impl<'a>),
+    Trait(Trait<'a>)
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum Impl<'a> {
-    Inherent { for_type: Type<'a>, methods: Vec<Method<'a>>, loc: Location<'a> }
+pub struct Trait<'a> {
+    pub name: String,
+    pub type_parameters: Vec<TypeParameter<'a>>,
+    pub method_prototypes: Vec<MethodPrototype<'a>>,
+    pub loc: Location<'a>
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct MethodPrototype<'a> {
+    pub name: String,
+    pub has_self: bool,
+    pub parameters: Vec<Parameter<'a>>,
+    pub return_type: Option<Box<Type<'a>>>,
+    pub loc: Location<'a>
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct Impl<'a> {
+    pub trait_: Option<String>,
+    pub for_type: Type<'a>,
+    pub methods: Vec<Method<'a>>,
+    pub loc: Location<'a>
 }
 
 #[derive(Debug, Eq, PartialEq)]

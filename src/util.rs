@@ -123,10 +123,10 @@ mod key_map {
             self.items.iter().map(|(k, t)| (*k, t))
         }
 
-        pub fn map<O>(self, mut f: impl FnMut(T) -> O) -> KeyMap<K, O> {
+        pub fn map<O>(self, mut f: impl FnMut(K, T) -> O) -> KeyMap<K, O> {
             let mut new_items = IndexMap::with_capacity(self.items.len());
             for (key, value) in self.items {
-                new_items.insert(key, f(value));
+                new_items.insert(key, f(key, value));
             }
             KeyMap { next_key: self.next_key, items: new_items }
         }

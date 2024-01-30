@@ -4,6 +4,7 @@ use indexmap::IndexMap;
 new_key_type! {
     pub struct FunctionKey;
     pub struct StructKey;
+    pub struct TraitKey;
     pub struct LocalKey;
     pub struct BlockKey;
 }
@@ -73,6 +74,18 @@ impl MIR {
             Type::Integer(_) => false,
         }
     }
+}
+
+pub struct TraitPrototype {
+    pub name: String
+}
+
+pub struct TraitBody {
+    pub methods: IndexMap<String, MethodPrototype>
+}
+
+pub struct MethodPrototype {
+    pub fn_type: FunctionType
 }
 
 pub struct StructPrototype {

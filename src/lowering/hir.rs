@@ -8,6 +8,7 @@ use crate::util::{KeyMap, declare_key_type};
 declare_key_type! {
     pub struct NameKey;
     pub struct StructKey;
+    pub struct TraitKey;
     pub struct FunctionKey;
     pub struct MethodKey;
     pub struct ImplKey;
@@ -66,6 +67,7 @@ pub enum Type {
     SignedInteger(u8),
     UnsignedInteger(u8),
     Struct(StructType),
+    Trait(TraitType),
     Function(FunctionType),
     TypeParameter(TypeParameterKey),
     InferenceVariable(InferenceVariableKey)
@@ -75,11 +77,20 @@ pub enum Type {
 pub struct StructType(pub StructKey, pub Vec<Type>);
 
 #[derive(Clone, Debug)]
+pub struct TraitType(pub TraitKey, pub Vec<Type>);
+
+#[derive(Clone, Debug)]
 pub struct FunctionType(pub Vec<Type>, pub Box<Type>);
 
 impl From<StructType> for Type {
     fn from(value: StructType) -> Self {
         Type::Struct(value)
+    }
+}
+
+impl From<TraitType> for Type {
+    fn from(value: TraitType) -> Self {
+        Type::Trait(value)
     }
 }
 
@@ -104,9 +115,23 @@ pub struct HIR<'a> {
     pub inference_variables: KeyMap<InferenceVariableKey, InferenceVariableInfo<'a>>,
 
     pub structs: KeyMap<StructKey, Struct<'a>>,
+    pub traits: KeyMap<TraitKey, Trait<'a>>,
     pub functions: KeyMap<FunctionKey, Function<'a>>,
     pub methods: KeyMap<MethodKey, Method<'a>>,
     pub impls: KeyMap<ImplKey, Impl<'a>>
+}
+
+pub struct Trait<'ir> {
+    pub name: String,
+    pub type_params: Vec<TypeParameterKey>,
+    pub methods: IndexMap<String, MethodPrototype<'ir>>
+}
+
+pub struct MethodPrototype<'ir> {
+    pub has_self: bool,
+    pub params: Vec<Type>,
+    pub ret: Type,
+    pub loc: Location<'ir>
 }
 
 pub struct Struct<'ir> {

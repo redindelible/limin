@@ -23,6 +23,11 @@ enum QueuedResolve {
         mir_key: mir::StructKey,
         map: TypeMap
     },
+    // Trait {
+    //     hir_key: hir::TraitKey,
+    //     mir_key: mir::TraitKey,
+    //     map: TypeMap
+    // },
     Method {
         hir_key: hir::MethodKey,
         mir_key: mir::FunctionKey,
@@ -35,10 +40,13 @@ struct Monomorphize {
     locals: SlotMap<mir::LocalKey, mir::LocalInfo>,
     struct_prototypes: SlotMap<mir::StructKey, mir::StructPrototype>,
     struct_bodies: SecondaryMap<mir::StructKey, mir::StructBody>,
+    // trait_prototypes: SlotMap<mir::TraitKey, mir::TraitPrototype>,
+    // trait_bodies: SecondaryMap<mir::TraitKey, mir::TraitBody>,
     function_prototypes: SlotMap<mir::FunctionKey, mir::FunctionPrototype>,
     function_bodies: SecondaryMap<mir::FunctionKey, mir::FunctionBody>,
 
     structs: KeyMap<hir::StructKey, StructInfo>,
+    traits: KeyMap<hir::TraitKey, TraitInfo>,
     functions: KeyMap<hir::FunctionKey, FunctionInfo>,
     methods: KeyMap<hir::MethodKey, MethodInfo>,
 
@@ -58,6 +66,10 @@ struct StructInfo {
     variants: HashMap<Vec<mir::Type>, mir::StructKey>
 }
 
+struct TraitInfo {
+    variants: HashMap<Vec<mir::Type>, mir::TraitKey>
+}
+
 struct MethodInfo {
     variants: HashMap<Vec<mir::Type>, mir::FunctionKey>
 }
@@ -69,10 +81,13 @@ impl Monomorphize {
             locals: SlotMap::with_key(),
             struct_prototypes: SlotMap::with_key(),
             struct_bodies: SecondaryMap::new(),
+            // trait_prototypes: SlotMap::with_key(),
+            // trait_bodies: SecondaryMap::new(),
             function_prototypes: SlotMap::with_key(),
             function_bodies: SecondaryMap::new(),
             functions: KeyMap::new(),
             structs: KeyMap::new(),
+            traits: KeyMap::new(),
             methods: KeyMap::new(),
             resolve_queue: RefCell::new(VecDeque::new()),
             locals_map: HashMap::new(),
@@ -113,6 +128,22 @@ impl Monomorphize {
             blocks: self.blocks,
         }
     }
+
+    // fn resolve_trait(&mut self, hir_trait: hir::TraitKey, mir_trait: mir::TraitKey, generic_map: TypeMap, hir: &hir::HIR) {
+    //     let mut methods = IndexMap::new();
+    //     for (name, method) in &hir.traits[hir_trait].methods {
+    //         let mut params = Vec::new();
+    //         if method.has_self {
+    //
+    //         }
+    //
+    //         methods.insert(name.clone(), mir::MethodPrototype {
+    //
+    //         })
+    //     }
+    //
+    //     self.trait_bodies.insert(mir_trait, mir::TraitBody { methods });
+    // }
 
     fn resolve_struct(&mut self, hir_struct: hir::StructKey, mir_struct: mir::StructKey, generic_map: TypeMap, hir: &hir::HIR) {
         let struct_ = &hir.structs[hir_struct];
@@ -332,6 +363,34 @@ impl Monomorphize {
         }
     }
 
+    // fn queue_trait(&mut self, trait_: hir::TraitKey, variant: &[mir::Type], hir: &hir::HIR) -> mir::TraitKey {
+    //     let hir_trait = &hir.traits[trait_];
+    //
+    //     if !self.traits.contains_key(trait_) {
+    //         self.traits.insert(trait_, TraitInfo { variants: HashMap::new() });
+    //     }
+    //
+    //     if let Some(key) = self.traits[trait_].variants.get(variant) {
+    //         return *key;
+    //     }
+    //
+    //     let name = if variant.is_empty() {
+    //         format!("{}", &hir_trait.name)
+    //     } else {
+    //         format!("{}<{}>", &hir_trait.name, map_join(variant, |t| self.name_of(t)))
+    //     };
+    //
+    //     let mut generic_map: TypeMap = HashMap::new();
+    //     for (type_param, typ) in hir_trait.type_params.iter().zip(variant.iter()) {
+    //         generic_map.insert(*type_param, typ.clone());
+    //     }
+    //
+    //     let key = self.trait_prototypes.insert(mir::TraitPrototype { name: name.clone() });
+    //     self.traits[trait_].variants.insert(variant.to_vec(), key);
+    //     self.resolve_queue.borrow_mut().push_back(QueuedResolve::Trait { hir_key: trait_, mir_key: key, map: generic_map });
+    //     key
+    // }
+
     fn queue_struct(&mut self, struct_: hir::StructKey, variant: &[mir::Type], hir: &hir::HIR) -> mir::StructKey {
         let hir_struct = &hir.structs[struct_];
 
@@ -463,6 +522,7 @@ impl Monomorphize {
             hir::Type::SignedInteger(bits) => mir::Type::Integer(*bits),
             hir::Type::UnsignedInteger(bits) => mir::Type::Integer(*bits),
             hir::Type::TypeParameter(key) => map[key].clone(),
+            hir::Type::Trait(trait_type) => todo!(),
             hir::Type::Struct(struct_type) => mir::Type::Struct(self.lower_struct_type(struct_type, map, hir)),
             hir::Type::Function(fn_type) => mir::Type::Function(self.lower_fn_type(fn_type, map, hir)),
             hir::Type::InferenceVariable(key) => {

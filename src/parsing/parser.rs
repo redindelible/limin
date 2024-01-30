@@ -149,11 +149,80 @@ impl<'a> Parser<'a> {
             TokenType::Struct => self.parse_struct(),
             TokenType::Fn => self.parse_function(),
             TokenType::Impl => self.parse_impl(),
+            TokenType::Trait => self.parse_trait(),
             _ => {
                 self.errors.push(ParserError::UnexpectedToken(self.curr(), vec![TokenType::Struct, TokenType::Fn]));
                 Err(0)
             }
         }
+    }
+
+    fn parse_trait(&mut self) -> ParseResult<TopLevel<'a>> {
+        let start = self.expect(TokenType::Trait)?;
+        let name = self.expect(TokenType::Identifier)?;
+
+        let type_params = if self.curr().typ == TokenType::LeftAngle {
+            let (type_parameters, _) = self.delimited_parse(TokenType::LeftAngle, TokenType::RightAngle, Self::parse_type_parameter)?;
+            type_parameters
+        } else {
+            vec![]
+        };
+
+        let mut methods = Vec::new();
+        self.expect(TokenType::LeftBrace)?;
+        while self.curr().typ != TokenType::RightBrace {
+            let item = self.parse_method_prototype()?;
+            methods.push(item);
+        }
+        self.expect(TokenType::RightBrace)?;
+
+        Ok(TopLevel::Trait(Trait {
+            name: name.text.to_owned(),
+            type_parameters: type_params,
+            method_prototypes: methods,
+            loc: start.loc + name.loc
+        }))
+    }
+
+    fn parse_method_prototype(&mut self) -> ParseResult<MethodPrototype<'a>> {
+        let start = self.expect(TokenType::Fn)?;
+        let name = self.expect(TokenType::Identifier)?;
+
+        self.expect(TokenType::LeftParenthesis)?;
+        let mut maybe_self: Option<(String, Location<'a>)> = None;
+        let mut parameters: Vec<Parameter<'a>> = Vec::new();
+        while self.curr().typ != TokenType::RightParenthesis {
+            let name = self.expect(TokenType::Identifier)?;
+            if self.curr().typ != TokenType::Colon && parameters.len() == 0 && maybe_self.is_none() {
+                maybe_self = Some((name.text.to_owned(), name.loc));
+            } else {
+                self.expect(TokenType::Colon)?;
+                let typ = Box::new(self.parse_type()?);
+                parameters.push(Parameter { name: name.text.to_owned(), loc: name.loc + typ.loc(), typ });
+            }
+            if self.curr().typ == TokenType::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(TokenType::RightParenthesis)?;
+
+        let return_type = if self.matches_symbol(TokenType::Minus, TokenType::RightAngle) {
+            self.expect_symbol(TokenType::Minus, TokenType::RightAngle, "->")?;
+            Some(Box::new(self.parse_type()?))
+        } else {
+            None
+        };
+        self.expect(TokenType::Semicolon)?;
+
+        Ok(MethodPrototype {
+            name: name.text.to_owned(),
+            has_self: maybe_self.is_some(),
+            parameters,
+            return_type,
+            loc: start.loc + name.loc
+        })
     }
 
     fn parse_struct(&mut self) -> ParseResult<TopLevel<'a>> {
@@ -208,6 +277,14 @@ impl<'a> Parser<'a> {
 
     fn parse_impl(&mut self) -> ParseResult<TopLevel<'a>> {
         let start = self.expect(TokenType::Impl)?;
+
+        let trait_ = if self.curr().typ == TokenType::Identifier {
+            let trait_name = self.expect(TokenType::Identifier)?;
+            Some(trait_name.text.to_owned())
+        } else {
+            None
+        };
+
         self.expect(TokenType::For)?;
         let for_type = self.parse_type()?;
         self.expect(TokenType::LeftBrace)?;
@@ -217,7 +294,7 @@ impl<'a> Parser<'a> {
         }
         let end = self.expect(TokenType::RightBrace)?;
         let loc = start.loc + end.loc;
-        Ok(TopLevel::Impl(Impl::Inherent { for_type, methods, loc }))
+        Ok(TopLevel::Impl(Impl { trait_, for_type, methods, loc }))
     }
 
     fn parse_method(&mut self) -> ParseResult<Method<'a>> {

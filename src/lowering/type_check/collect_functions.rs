@@ -5,6 +5,22 @@ use crate::lowering::{hir, type_check as tc};
 use crate::source::Location;
 use crate::util::KeyMap;
 
+pub(super) struct TraitInfo<'a, 'b> {
+    pub type_parameters: IndexMap<String, tc::TypeParameterKey>,
+    pub methods: IndexMap<String, MethodPrototype<'a>>,
+
+    pub self_type: tc::TraitType,
+    pub ast_trait: &'b ast::Trait<'a>
+}
+
+pub(super) struct MethodPrototype<'a> {
+    pub name: String,
+    pub has_self: bool,
+    pub params: Vec<tc::Type>,
+    pub ret: tc::Type,
+    pub loc: Location<'a>
+}
+
 pub(super) struct StructInfo<'a, 'b> {
     pub type_parameters: IndexMap<String, tc::TypeParameterKey>,
     pub fields: IndexMap<String, FieldInfo<'a>>,
@@ -20,6 +36,7 @@ pub(super) struct FieldInfo<'a> {
 }
 
 pub(super) struct ImplInfo<'a, 'b> {
+    pub trait_: Option<tc::TraitKey>,
     pub for_type: tc::Type,
 
     pub methods: IndexMap<String, tc::MethodKey>,
@@ -68,6 +85,7 @@ pub(super) struct CollectedPrototypes<'a, 'b> {
     pub types: tc::CollectedTypes<'a, 'b>,
     pub functions: KeyMap<tc::FunctionKey, FunctionInfo<'a, 'b>>,
     pub structs: KeyMap<tc::StructKey, StructInfo<'a, 'b>>,
+    pub traits: KeyMap<tc::TraitKey, TraitInfo<'a, 'b>>,
     pub impls: KeyMap<tc::ImplKey, ImplInfo<'a, 'b>>,
     pub methods: KeyMap<tc::MethodKey, MethodInfo<'a, 'b>>,
     pub main_function: Option<tc::FunctionKey>,
@@ -76,7 +94,7 @@ pub(super) struct CollectedPrototypes<'a, 'b> {
 
 impl<'a, 'b> CollectedPrototypes<'a, 'b> {
     fn unify(&self, check_ty: &tc::Type, impl_ty: &tc::Type, inference_map: &mut HashMap<tc::InferenceVariableKey, tc::Type>) -> bool {
-        use tc::{Type, StructType, FunctionType};
+        use tc::{Type, StructType, TraitType, FunctionType};
 
         match (check_ty, impl_ty) {
             (Type::Unit, Type::Unit) => true,
@@ -85,6 +103,16 @@ impl<'a, 'b> CollectedPrototypes<'a, 'b> {
             (Type::UnsignedInteger(a_bits), Type::UnsignedInteger(b_bits)) => a_bits == b_bits,
             (Type::Struct(StructType(a_struct, a_variant)), Type::Struct(StructType(b_struct, b_variant))) => {
                 if a_struct != b_struct {
+                    return false;
+                }
+                if a_variant.len() != b_variant.len() {
+                    return false;
+                }
+
+                a_variant.iter().zip(b_variant).all(|(a, b)| self.unify(a, b, inference_map))
+            }
+            (Type::Trait(TraitType(a_trait, a_variant)), Type::Trait(TraitType(b_trait, b_variant))) => {
+                if a_trait != b_trait {
                     return false;
                 }
                 if a_variant.len() != b_variant.len() {
@@ -150,17 +178,75 @@ impl<'a, 'b> CollectedPrototypes<'a, 'b> {
 
 
 pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: tc::CollectedTypes<'a, 'b>) -> CollectedPrototypes<'a, 'b> {
-    let tc::CollectedTypes { file_info, structs, .. } = &types;
+    let tc::CollectedTypes { file_info, structs, traits, .. } = &types;
 
     let mut functions: KeyMap<tc::FunctionKey, FunctionInfo> = KeyMap::new();
     let mut main_key: Option<tc::FunctionKey> = None;
 
     let mut collected_structs: KeyMap<tc::StructKey, StructInfo> = KeyMap::new();
+    for (struct_key, struct_info) in structs {
+        let &tc::collect_structs::StructInfo {
+            ref name, struct_ns,
+            ref type_parameters, ast_struct, ..
+        } = struct_info;
+
+        let self_type = tc::StructType(struct_key, type_parameters.values().map(|&t| t.into()).collect());
+
+        let mut fields: IndexMap<String, FieldInfo> = IndexMap::new();
+
+        for item in &ast_struct.items {
+            match item {
+                ast::StructItem::Field { name: field_name, typ, loc } => {
+                    let resolved = checker.resolve_type(typ, struct_ns, &types).expect_type(checker);
+                    if let Some(prev) = fields.insert(field_name.clone(), FieldInfo { ty: resolved, loc: *loc}) {
+                        checker.push_error(tc::TypeCheckError::FieldDuplicated(field_name.clone(), name.clone(), *loc, prev.loc));
+                    }
+                }
+            }
+        }
+
+        collected_structs.insert(struct_key, StructInfo {
+            type_parameters: type_parameters.clone(),
+            fields,
+            self_type,
+            ast_struct
+        });
+    }
+
+    let mut collected_traits = KeyMap::new();
+    for (trait_key, trait_info) in traits {
+        let self_type = tc::TraitType(trait_key, trait_info.type_parameters.values().map(|&t| t.into()).collect());
+
+        let methods = trait_info.ast_trait.method_prototypes.iter().map(|method| {
+            let params = method.parameters.iter().map(
+                |param| checker.resolve_type(&param.typ, trait_info.trait_ns, &types).expect_type(checker)
+            ).collect();
+
+            let ret = method.return_type.as_ref().map_or(tc::Type::Unit,
+                |typ| checker.resolve_type(typ, trait_info.trait_ns, &types).expect_type(checker)
+            );
+
+            (method.name.clone(), MethodPrototype {
+                name: method.name.clone(),
+                has_self: method.has_self,
+                params,
+                ret,
+                loc: trait_info.ast_trait.loc
+            })
+        }).collect();
+
+        collected_traits.insert(trait_key, TraitInfo {
+            type_parameters: trait_info.type_parameters.clone(),
+            methods,
+            self_type,
+            ast_trait: trait_info.ast_trait
+        });
+    }
 
     let mut impls: KeyMap<tc::ImplKey, ImplInfo> = KeyMap::new();
     let mut methods: KeyMap<tc::MethodKey, MethodInfo> = KeyMap::new();
 
-    for &tc::collect_structs::FileInfo { file_ns, ast_file, .. } in file_info.iter() {
+    for &tc::collect_struct_prototypes::FileInfo { file_ns, ast_file } in file_info.iter() {
         for top_level in &ast_file.top_levels {
             match top_level {
                 ast::TopLevel::Function(func) => {
@@ -216,7 +302,17 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
                     }
                 }
 
-                ast::TopLevel::Impl(ast_impl @ ast::Impl::Inherent { ref for_type, methods: ref ast_methods, ref loc }) => {
+                ast::TopLevel::Impl(ast_impl @ ast::Impl { ref trait_, ref for_type, methods: ref ast_methods, ref loc }) => {
+                    let trait_ = if let Some(trait_) = trait_ {
+                        if let Some(trait_) = checker.resolve_trait(trait_, file_ns) {
+                            Some(trait_)
+                        } else {
+                            todo!()
+                        }
+                    } else {
+                        None
+                    };
+
                     let impl_ns = checker.add_namespace(Some(file_ns));
                     let for_type = checker.resolve_type(for_type, file_ns, &types).expect_type(checker);
 
@@ -264,6 +360,7 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
                     }).collect();
 
                     impls.add(ImplInfo {
+                        trait_,
                         for_type,
                         methods: impl_methods,
                         loc: *loc,
@@ -276,35 +373,9 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
         }
     }
 
-    for (struct_key, struct_info) in structs {
-        let &tc::collect_structs::StructInfo { ref name, struct_ns, super_struct, ref type_parameters, ast_struct } = struct_info;
-
-        let self_type = tc::StructType(struct_key, type_parameters.values().map(|&t| t.into()).collect());
-
-        let mut fields: IndexMap<String, FieldInfo> = IndexMap::new();
-
-        for item in &ast_struct.items {
-            match item {
-                ast::StructItem::Field { name: field_name, typ, loc } => {
-                    let resolved = checker.resolve_type(typ, struct_ns, &types).expect_type(checker);
-                    if let Some(prev) = fields.insert(field_name.clone(), FieldInfo { ty: resolved, loc: *loc}) {
-                        checker.push_error(tc::TypeCheckError::FieldDuplicated(field_name.clone(), name.clone(), *loc, prev.loc));
-                    }
-                }
-            }
-        }
-
-        collected_structs.insert(struct_key, StructInfo {
-            type_parameters: type_parameters.clone(),
-            fields,
-            self_type,
-            ast_struct
-        });
-    }
-
     if main_key.is_none() {
         checker.push_error(tc::TypeCheckError::NoMainFunction);
     }
 
-    CollectedPrototypes { types, functions, structs: collected_structs, impls, methods, main_function: main_key }
+    CollectedPrototypes { types, functions, structs: collected_structs, traits: collected_traits, impls, methods, main_function: main_key }
 }

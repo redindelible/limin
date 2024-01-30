@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use indexmap::IndexMap;
 use crate::parsing::ast;
-use crate::lowering::hir::{self, FunctionType, InferenceVariableKey, StructType, Type};
+use crate::lowering::hir::{self, FunctionType, InferenceVariableKey, StructType, TraitType, Type};
 use crate::lowering::type_check as tc;
 use crate::lowering::type_check::ResolveResult;
 use crate::source::{HasLoc, Location};
@@ -12,6 +12,7 @@ pub(super) fn collect_function_bodies<'a, 'b>(mut checker: tc::TypeCheck<'a>, co
     let tc::collect_functions::CollectedPrototypes {
         functions,
         structs,
+        traits,
         impls,
         methods: method_info,
         main_function,
@@ -62,6 +63,22 @@ pub(super) fn collect_function_bodies<'a, 'b>(mut checker: tc::TypeCheck<'a>, co
             super_struct: None,
             fields,
             loc: struct_info.ast_struct.loc
+        });
+    }
+
+    let mut hir_traits = KeyMap::new();
+    for (trait_key, trait_info) in traits {
+        hir_traits.insert(trait_key, hir::Trait {
+            name: trait_info.ast_trait.name.clone(),
+            type_params: trait_info.type_parameters.iter().map(|(_, &key)| key).collect(),
+            methods: trait_info.methods.iter().map(|(name, method)| {
+                (name.clone(), hir::MethodPrototype {
+                    has_self: method.has_self,
+                    params: method.params.clone(),
+                    ret: method.ret.clone(),
+                    loc: method.loc
+                })
+            }).collect()
         });
     }
 
@@ -125,6 +142,7 @@ pub(super) fn collect_function_bodies<'a, 'b>(mut checker: tc::TypeCheck<'a>, co
         type_parameters,
         inference_variables,
         structs: hir_structs,
+        traits: hir_traits,
         functions: hir_functions,
         impls: hir_impls,
         methods: hir_methods
@@ -215,6 +233,14 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                     loc: struct_info.ast_struct.loc
                 }
             },
+            Type::Trait(TraitType(trait_key, variant)) => {
+                let trait_info = &self.types.traits[*trait_key];
+                DisplayType::Struct {
+                    name: trait_info.name.clone(),
+                    variant: variant.iter().map(|t| self.display_type(t)).collect(),
+                    loc: trait_info.ast_trait.loc
+                }
+            }
             Type::Function(FunctionType(params, ret)) => DisplayType::Function {
                 params: params.iter().map(|t| self.display_type(t)).collect(),
                 ret: Box::new(self.display_type(ret))
@@ -261,6 +287,13 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                 }
                 return ResolveResult::Success(());
             }
+            (Type::TypeParameter(a_key), Type::TypeParameter(b_key)) => {
+                if a_key == b_key {
+                    return ResolveResult::Success(())
+                } else {
+                    return failure(self);
+                }
+            }
             (&Type::InferenceVariable(key), b) => {
                 let infer_info = self.checker.query_inference_variable_mut(key);
                 if let Some(typ) = &infer_info.ty {
@@ -292,7 +325,6 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                 }
             }
             _ => {
-                dbg!(a, b);
                 todo!()
             }
         }
