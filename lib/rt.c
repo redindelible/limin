@@ -17,6 +17,7 @@ struct ObjectHeader {
     struct TypeInfo* info;
     struct ObjectHeader* next;
     uint8_t mark;
+    uint8_t object[];
 };
 
 struct Frame {
@@ -36,7 +37,11 @@ struct GCState {
 struct GCState gc_state;
 
 
-void limin_mark_object(struct ObjectHeader* obj) {
+#define TO_HEADER(ptr) ((struct ObjectHeader*) ((void*)(ptr) - sizeof(struct ObjectHeader)))
+#define TO_OBJECT(ptr) ((void*)(ptr) + sizeof(struct ObjectHeader))
+
+void limin_mark_object(void* obj_ptr) {
+    struct ObjectHeader* obj = TO_HEADER(obj_ptr);
     if (obj == NULL || obj->mark == 2 || obj->mark == gc_state.current_black) {
         // already marked, continue
     } else {
@@ -53,13 +58,7 @@ void* limin_create_object(struct TypeInfo* type, struct Frame* frame) {
     obj->mark = 2;
     obj->next = gc_state.gray;
     gc_state.gray = obj;
-    return obj;
-}
-
-void limin_trace_stack(struct ObjectHeader* stack, uint64_t count) {
-    for (uint64_t i = 0; i < count; i++) {
-        limin_mark_object(&stack[i]);
-    }
+    return TO_OBJECT(obj);
 }
 
 static void process_next() {
@@ -69,9 +68,19 @@ static void process_next() {
     }
     struct ObjectHeader* next = gc_state.gray;
     gc_state.gray = next->next;
-    next->info->trace(next);
+    next->info->trace(next->object);
 
     next->mark = gc_state.current_black;
     next->next = gc_state.black;
     gc_state.black = next;
+}
+
+void limin_trace_none(void* obj) {
+
+}
+
+void limin_trace_gc(void** obj_ptr) {
+    void* obj = *obj_ptr;
+    struct ObjectHeader* header = TO_HEADER(obj);
+    header->info->trace(obj);
 }

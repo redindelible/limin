@@ -18,6 +18,9 @@ use crate::lowering::type_check::collect_struct_prototypes::CollectedStructProto
 use crate::lowering::type_check::collect_functions::CollectedPrototypes;
 
 
+pub type TypeMap = HashMap<TypeParameterKey, Type>;
+
+
 pub fn resolve_types(ast: ast::AST) -> Result<hir::HIR, Vec<TypeCheckError>> {
     let mut checker = TypeCheck::new(ast.name.clone());
     let root = checker.root();
@@ -39,6 +42,8 @@ pub enum DisplayType<'a> {
     Boolean,
     Errored,
     Integer { is_signed: bool, bits: u8 },
+    Gc(Box<DisplayType<'a>>),
+    Ref(Box<DisplayType<'a>>),
     Struct { name: String, variant: Vec<DisplayType<'a>>, loc: Location<'a> },
     Function { params: Vec<DisplayType<'a>>, ret: Box<DisplayType<'a>> },
     TypeParameter { name: String, bound: Option<Box<DisplayType<'a>>> },
@@ -60,6 +65,12 @@ impl DisplayType<'_> {
                     format!("{name}<{}>", map_join(variant, Self::render))
                 }
             },
+            DisplayType::Gc(inner) => {
+                format!("*{}", inner.render())
+            }
+            DisplayType::Ref(inner) => {
+                format!("&{}", inner.render())
+            }
             DisplayType::Function { params, ret } => {
                 let rendered: Vec<String> = params.iter().map(|t| t.render()).collect();
                 format!("({}) -> {}", rendered.join(", "), ret.render())
@@ -278,6 +289,13 @@ pub enum ResolveResult<'a, T> {
 }
 
 impl<'a, T> ResolveResult<'a, T> {
+    fn map<O>(self, f: impl FnOnce(T) -> O) -> ResolveResult<'a, O> {
+        match self {
+            ResolveResult::Success(t) => ResolveResult::Success(f(t)),
+            ResolveResult::Failure(errs) => ResolveResult::Failure(errs)
+        }
+    }
+
     fn collect_results<O: Default + Extend<T>>(iter: impl IntoIterator<Item=ResolveResult<'a, T>>) -> ResolveResult<'a, O> {
         let mut items = O::default();
         let mut errors = Vec::new();
@@ -469,6 +487,9 @@ impl<'a> TypeCheck<'a> {
                 }
                 return ResolveResult::Failure(vec![TypeCheckError::CouldNotResolveType(name.clone(), *loc)]);
             }
+            ast::Type::Gc { ty, .. } => {
+                self.resolve_type(ty, in_ns, ctxt).map(|ty| Type::Gc(Box::new(ty)))
+            }
             ast::Type::Function { parameters, ret, .. } => {
                 let parameters: ResolveResult<'a, Vec<Type>> = ResolveResult::collect_results(parameters.iter().map(|p| self.resolve_type(p, in_ns, ctxt)));
                 let ret = self.resolve_type(ret, in_ns, ctxt);
@@ -521,6 +542,12 @@ impl<'a> TypeCheck<'a> {
                 } else {
                     Type::InferenceVariable(*key)
                 }
+            }
+            Type::Gc(inner) => {
+                Type::Gc(Box::new(self.subs(inner, map)))
+            }
+            Type::Ref(inner) => {
+                Type::Ref(Box::new(self.subs(inner, map)))
             }
             Type::Function(FunctionType(params, ret)) => {
                 FunctionType(params.iter().map(|t| self.subs(t, map)).collect(), Box::new(self.subs(ret, map))).into()

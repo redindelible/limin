@@ -42,6 +42,7 @@ pub struct Struct {
     pub(super) fields: Vec<StructField>
 }
 
+#[derive(Clone)]
 pub(super) struct StructField {
     pub(super) name: String,
     pub(super) ty: Type
@@ -59,16 +60,19 @@ pub enum Instruction {
     Return,
     ReturnVoid,
     Pop,
+    DerefGc,
     BlockValue(BlockValue),
     BlockVoid(BlockVoid),
     BlockDiverge(BlockDiverge),
     CreateTuple(usize),
     GetElement(usize),
     Splat,
-    CreateZeroInitStruct(StructID),
+    CreateZeroInitGcStruct(StructID),
     CreateStruct(StructID, Vec<String>),
+    CreateNew,
     GetField(StructID, String),
-    SetField(StructID, String),
+    GetGcField(StructID, String),
+    SetGcField(StructID, String),
     Call(usize),
     CallVoid(usize),
     IfElseValue { then_do: BlockValueOrDiverge, else_do: BlockValueOrDiverge, ty: Type },
@@ -163,25 +167,19 @@ pub struct BlockDiverge {
     pub(super) instructions: Vec<Instruction>,
 }
 
-// impl Block {
-//     pub fn new(instructions: Vec<Instruction>, yield_ty: Option<Type>, diverges: bool) -> Block {
-//         if diverges {
-//             assert!(yield_ty.is_none());
-//         }
-//         Block { instructions, yield_type: yield_ty, diverges }
-//     }
-//
-//     pub fn yield_type(&self) -> Option<Type> {
-//         self.yield_type.clone()
-//     }
-// }
-
 #[derive(Eq, PartialEq, Clone, Hash, Debug)]
 pub enum Type {
-    AnyRef,
+    AnyGc,
     Boolean,
     Int32,
     Function(Vec<Type>, Option<Box<Type>>),
-    StructRef(StructID),
-    Tuple(Vec<Type>)
+    Struct(StructID),
+    Tuple(Vec<Type>),
+    Gc(Box<Type>)
+}
+
+impl Type {
+    pub fn gc_struct(struct_: StructID) -> Type {
+        Type::Gc(Box::new(Type::Struct(struct_)))
+    }
 }

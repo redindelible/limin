@@ -80,7 +80,7 @@ impl Lowering {
                 } else {
                     builder.return_void();
                 }
-                builder.parameter("$closure".into(), lir::Type::AnyRef);
+                builder.parameter("$closure".into(), lir::Type::AnyGc);
 
                 let mut parameter_locals: HashMap<mir::LocalKey, lir::LocalID> = HashMap::new();
                 for (i, param_type) in function_proto.fn_type.params.iter().enumerate() {
@@ -102,7 +102,7 @@ impl Lowering {
                                 if info.is_closed {
                                     builder.load_variable(fn_lowering.block_captures[&info.block].obj);
                                     builder.load_variable(local);
-                                    builder.set_field(fn_lowering.block_captures[&info.block].capture_ty, (fn_lowering.block_captures[&info.block].captures[&key].clone(), lowered));
+                                    builder.set_gc_field(fn_lowering.block_captures[&info.block].capture_ty, (fn_lowering.block_captures[&info.block].captures[&key].clone(), lowered));
                                 } else {
                                     fn_lowering.locals_mapping.insert(function_body.params[i].1, local);
                                 }
@@ -141,11 +141,18 @@ impl Lowering {
                 } else if mir.is_empty(ty) {
                     Lowered::Empty
                 } else {
-                    Lowered::Some(lir::Type::StructRef(self.struct_mapping[key]))
+                    Lowered::Some(lir::Type::Struct(self.struct_mapping[key]))
                 }
             },
+            mir::Type::Gc(inner) => {
+                Lowered::Some(match self.lower_type(mir, inner) {
+                    Lowered::Empty | Lowered::Unit => lir::Type::AnyGc,
+                    Lowered::Some(inner) => lir::Type::Gc(Box::new(inner))
+                })
+            }
+            mir::Type::Ref(inner) => { todo!() }
             mir::Type::Function(mir::FunctionType { params, ret }) => {
-                let mut lowered_params = vec![lir::Type::AnyRef];
+                let mut lowered_params = vec![lir::Type::AnyGc];
                 lowered_params.extend(params.iter().filter_map(|ty|
                     match self.lower_type(mir, ty) {
                         Lowered::Unit => None,
@@ -156,7 +163,7 @@ impl Lowering {
                 let lowered_ret = self.lower_type(mir, ret).to_option();
                 Lowered::Some(lir::Type::Tuple(vec![
                     lir::Type::Function(lowered_params, lowered_ret.map(Box::new)),
-                    lir::Type::AnyRef
+                    lir::Type::AnyGc
                 ]))
             }
         }
@@ -224,8 +231,8 @@ impl<'a> FunctionLowering<'a> {
                 }
             });
 
-            builder.create_zero_init_struct(capture_ty);
-            let capture = builder.declare_variable(lir::Type::StructRef(capture_ty));
+            builder.create_zero_init_gc_struct(capture_ty);
+            let capture = builder.declare_variable(lir::Type::gc_struct(capture_ty));
 
             self.block_captures.insert(block_key, CaptureInfo { obj: capture, capture_ty, captures });
         };
@@ -250,7 +257,7 @@ impl<'a> FunctionLowering<'a> {
                         Lowered::Some(ty) => {
                             if mir.locals[*local].is_closed {
                                 builder.load_variable(self.block_captures[&mir.locals[*local].block].obj);
-                                builder.set_field(self.block_captures[&mir.locals[*local].block].capture_ty, (self.block_captures[&mir.locals[*local].block].captures[local].clone(), ty.clone()));
+                                builder.set_gc_field(self.block_captures[&mir.locals[*local].block].capture_ty, (self.block_captures[&mir.locals[*local].block].captures[local].clone(), ty.clone()));
                             } else {
                                 let id = builder.declare_variable(ty);
                                 self.locals_mapping.insert(*local, id);
@@ -294,7 +301,7 @@ impl<'a> FunctionLowering<'a> {
                         Lowered::Some(ty) => {
                             let capture_info = &self.block_captures[&mir.locals[*local].block];
                             builder.load_variable(capture_info.obj);
-                            builder.get_field(capture_info.capture_ty, (capture_info.captures[local].clone(), ty.clone()));
+                            builder.get_gc_field(capture_info.capture_ty, (capture_info.captures[local].clone(), ty.clone()));
                             Lowered::Some(ty)
                         }
                     }
@@ -309,10 +316,29 @@ impl<'a> FunctionLowering<'a> {
                 let id = self.lowering.function_mapping[func];
                 builder.load_function(id, fty.clone());
                 builder.load_null();
-                builder.create_tuple(vec![fty, lir::Type::AnyRef]);
+                builder.create_tuple(vec![fty, lir::Type::AnyGc]);
                 Lowered::Some(ty)
             }
-            mir::Expr::New(struct_key, fields) => {
+            mir::Expr::DerefGc(value) => {
+                match self.lower_expr(builder, value, mir) {
+                    Lowered::Unit => Lowered::Unit,
+                    Lowered::Empty => panic!(),
+                    Lowered::Some(value) => {
+                        match value {
+                            lir::Type::Gc(contained) => {
+                                builder.deref_gc(contained.as_ref().clone());
+                                Lowered::Some(*contained)
+                            }
+                            lir::Type::AnyGc => {
+                                builder.pop(lir::Type::AnyGc);
+                                Lowered::Unit
+                            }
+                            _ => panic!()
+                        }
+                    }
+                }
+            }
+            mir::Expr::CreateStruct(struct_key, fields) => {
                 if mir.is_zero_sized(&mir::Type::Struct(*struct_key)) {
                     for (_, field_expr) in fields {
                         match self.lower_expr(builder, field_expr, mir) {
@@ -334,7 +360,20 @@ impl<'a> FunctionLowering<'a> {
                     let id = self.lowering.struct_mapping[struct_key];
                     builder.statepoint();
                     builder.create_struct(id, field_tys);
-                    Lowered::Some(lir::Type::StructRef(id))
+                    Lowered::Some(lir::Type::Struct(id))
+                }
+            }
+            mir::Expr::New(value) => {
+                match self.lower_expr(builder, value, mir) {
+                    Lowered::Unit => {
+                        builder.load_null();
+                        Lowered::Some(lir::Type::AnyGc)
+                    },
+                    Lowered::Empty => panic!(),
+                    Lowered::Some(value) => {
+                        builder.create_new(value.clone());
+                        Lowered::Some(lir::Type::Gc(Box::new(value)))
+                    }
                 }
             }
             mir::Expr::GetAttr(struct_key, obj, field) => {
@@ -365,7 +404,7 @@ impl<'a> FunctionLowering<'a> {
                 }
 
                 let mir::FunctionType { params, ret } = fn_type;
-                let mut param_types = vec![lir::Type::AnyRef];
+                let mut param_types = vec![lir::Type::AnyGc];
                 for param in params {
                     match self.lower_type(mir, param) {
                         Lowered::Unit => (),
@@ -376,7 +415,7 @@ impl<'a> FunctionLowering<'a> {
 
                 match self.lower_type(mir, ret) {
                     result @ (Lowered::Unit | Lowered::Empty) => {
-                        builder.splat(vec![lir::Type::Function(param_types.clone(), None), lir::Type::AnyRef]);
+                        builder.splat(vec![lir::Type::Function(param_types.clone(), None), lir::Type::AnyGc]);
                         for arg in arguments {
                             match self.lower_expr(builder, arg, mir) {
                                 Lowered::Empty => {
@@ -392,7 +431,7 @@ impl<'a> FunctionLowering<'a> {
                     Lowered::Some(ret_type) => {
                         builder.splat(vec![
                             lir::Type::Function(param_types.clone(), Some(Box::new(ret_type.clone()))),
-                            lir::Type::AnyRef
+                            lir::Type::AnyGc
                         ]);
                         for arg in arguments {
                             match self.lower_expr(builder, arg, mir) {
@@ -496,7 +535,7 @@ impl<'a> FunctionLowering<'a> {
                 let name = format!("{}_closure_{}_captures", &self.fn_name, self.closure_count);
                 builder.lir_builder.define_struct(closure_ty, name, |builder| {
                     for (i, closed) in closed_blocks.iter().enumerate() {
-                        builder.field(format!("{i}"), lir::Type::StructRef(self.block_captures[closed].capture_ty));
+                        builder.field(format!("{i}"), lir::Type::gc_struct(self.block_captures[closed].capture_ty));
                     }
                 });
 
@@ -510,7 +549,7 @@ impl<'a> FunctionLowering<'a> {
                         Lowered::Some(ret_ty) => builder.return_type(ret_ty)
                     }
 
-                    let closure = builder.parameter("$closure".into(), lir::Type::AnyRef);
+                    let closure = builder.parameter("$closure".into(), lir::Type::AnyGc);
 
                     let mut parameter_locals: HashMap<mir::LocalKey, lir::LocalID> = HashMap::new();
                     for param in parameters.iter() {
@@ -528,9 +567,9 @@ impl<'a> FunctionLowering<'a> {
                         for (i, closed) in closed_blocks.iter().enumerate() {
                             let capture_info = &self.block_captures[closed];
                             builder.load_variable(closure);
-                            builder.downcast_ref(lir::Type::StructRef(closure_ty));
-                            builder.get_field(closure_ty, (format!("{i}"), lir::Type::StructRef(capture_info.capture_ty)));
-                            let local = builder.declare_variable(lir::Type::StructRef(capture_info.capture_ty));
+                            builder.downcast_gc(lir::Type::gc_struct(closure_ty));
+                            builder.get_gc_field(closure_ty, (format!("{i}"), lir::Type::gc_struct(capture_info.capture_ty)));
+                            let local = builder.declare_variable(lir::Type::gc_struct(capture_info.capture_ty));
                             closure_lowering.block_captures.insert(*closed, CaptureInfo {
                                 obj: local,
                                 capture_ty: capture_info.capture_ty,
@@ -551,7 +590,7 @@ impl<'a> FunctionLowering<'a> {
                                         if info.is_closed {
                                             builder.load_variable(closure_lowering.block_captures[&info.block].obj);
                                             builder.load_variable(local);
-                                            builder.set_field(closure_lowering.block_captures[&info.block].capture_ty, (closure_lowering.block_captures[&info.block].captures[&param.key].clone(), lowered));
+                                            builder.set_gc_field(closure_lowering.block_captures[&info.block].capture_ty, (closure_lowering.block_captures[&info.block].captures[&param.key].clone(), lowered));
                                         } else {
                                             closure_lowering.locals_mapping.insert(param.key, local);
                                         }
@@ -576,19 +615,19 @@ impl<'a> FunctionLowering<'a> {
                 for (i, closed) in closed_blocks.iter().enumerate() {
                     let capture_info = &self.block_captures[closed];
                     builder.load_variable(capture_info.obj);
-                    field_names.push((format!("{i}"), lir::Type::StructRef(capture_info.capture_ty)));
+                    field_names.push((format!("{i}"), lir::Type::gc_struct(capture_info.capture_ty)));
                 }
                 builder.create_struct(closure_ty, field_names);
-                builder.upcast_ref(lir::Type::StructRef(closure_ty));
+                builder.upcast_gc(lir::Type::gc_struct(closure_ty));
 
                 builder.create_tuple(vec![
                     sig.clone(),
-                    lir::Type::AnyRef
+                    lir::Type::AnyGc
                 ]);
 
                 Lowered::Some(lir::Type::Tuple(vec![
                     sig,
-                    lir::Type::AnyRef
+                    lir::Type::AnyGc
                 ]))
             }
             mir::Expr::CoerceFromNever(expr) => {
@@ -605,15 +644,6 @@ impl<'a> FunctionLowering<'a> {
                     Lowered::Some(_) => todo!()
                 }
             }
-            // mir::Expr::Cast { expr, cast_type } => {
-            //     match cast_type {
-            //         mir::CastType::StructToSuper { from, to } => {
-            //             self.lower_expr(builder, expr, mir);
-            //             builder.cast_ref(self.lowering.struct_mapping[from], self.lowering.struct_mapping[to]);
-            //             Some(lir::Type::StructRef(self.lowering.struct_mapping[to]))
-            //         }
-            //     }
-            // }
         }
     }
 

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use indexmap::IndexMap;
 use crate::parsing::ast;
-use crate::lowering::hir::{self, FunctionType, InferenceVariableKey, StructType, TraitType, Type};
+use crate::lowering::hir::{self, Coercion, FunctionType, InferenceVariableKey, StructType, TraitType, Type};
 use crate::lowering::type_check as tc;
 use crate::lowering::type_check::ResolveResult;
 use crate::source::{HasLoc, Location};
@@ -225,6 +225,8 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
             Type::Errored => DisplayType::Errored,
             Type::SignedInteger(bits) => DisplayType::Integer { is_signed: true, bits: *bits },
             Type::UnsignedInteger(bits) => DisplayType::Integer { is_signed: false, bits: *bits },
+            Type::Gc(inner) => DisplayType::Gc(Box::new(self.display_type(inner))),
+            Type::Ref(inner) => DisplayType::Ref(Box::new(self.display_type(inner))),
             Type::Struct(StructType(struct_key, variant)) => {
                 let struct_info= &self.types.structs[*struct_key];
                 DisplayType::Struct {
@@ -329,6 +331,10 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
             }
         }
     }
+
+    // fn coerce_to_struct_ref(&mut self, expr: AnnotatedExpr<'a>) -> AnnotatedExpr<'a> {
+    //     let AnnotatedExpr { expr, ty, always_diverges } = expr;
+    // }
 
     fn coerce_to_type(&mut self, expr: AnnotatedExpr<'a>, to_ty: &Type) -> AnnotatedExpr<'a> {
         let AnnotatedExpr { expr, ty, always_diverges } = expr;
@@ -498,13 +504,15 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
         }
     }
 
+    // fn resolve_method(&mut self, )
+
     fn resolve_expr(&mut self, expr: &'b ast::Expr<'a>, yield_type: ExpectedType) -> AnnotatedExpr<'a> {
         let resolved_expr = match expr {
-            &ast::Expr::Integer { number, loc } => {
-                AnnotatedExpr { expr: hir::Expr::Integer(number, loc), ty: Type::SignedInteger(32), always_diverges: false }
+            ast::Expr::Integer { number, loc } => {
+                AnnotatedExpr { expr: hir::Expr::Integer(*number, *loc), ty: Type::SignedInteger(32), always_diverges: false }
             }
-            &ast::Expr::Bool { value, loc} => {
-                AnnotatedExpr { expr: hir::Expr::Bool(value, loc), ty: Type::Boolean, always_diverges: false }
+            ast::Expr::Bool { value, loc} => {
+                AnnotatedExpr { expr: hir::Expr::Bool(*value, *loc), ty: Type::Boolean, always_diverges: false }
             }
             ast::Expr::Name { name, loc } => {
                 let resolved = self.resolve_name(name);
@@ -555,7 +563,7 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                     }
                 }
             }
-            ast::Expr::New { struct_, arguments, loc, .. } => {
+            ast::Expr::CreateStruct { struct_, arguments, loc, .. } => {
                 let mut diverges = false;
                 let Some(struct_key) = self.checker.resolve_struct(struct_, self.namespace) else {
                     self.push_error(tc::TypeCheckError::ExpectedStructName { got: struct_.clone(), loc: *loc });
@@ -612,21 +620,48 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
 
                 AnnotatedExpr {
                     ty: struct_type.clone().into(),
-                    expr: hir::Expr::New { struct_type, fields: resolved_fields, loc: *loc },
+                    expr: hir::Expr::CreateStruct { struct_type, fields: resolved_fields, loc: *loc },
                     always_diverges: diverges
                 }
             }
-            ast::Expr::GetAttr { obj, attr, loc } => {
-                let resolved_obj = self.resolve_expr(obj, None);
-
-                let struct_type = match resolved_obj.ty {
-                    Type::Struct(struct_type) => struct_type,
-                    Type::Errored => {
-                        return AnnotatedExpr::new_errored(*loc, false);
+            ast::Expr::New { value, loc } => {
+                let resolved_value = match &yield_type {
+                    Some(Type::Gc(inner)) => {
+                        self.resolve_expr(value, Some(inner.as_ref().clone()))
                     }
-                    ty => {
-                        self.push_error(tc::TypeCheckError::ExpectedStruct { got: self.display_type(&ty), loc: *loc });
-                        return AnnotatedExpr::new_errored(*loc, false);
+                    Some(_) => {
+                        self.resolve_expr(value, None)
+                    }
+                    None => {
+                        self.resolve_expr(value, None)
+                    }
+                };
+
+                AnnotatedExpr {
+                    ty: Type::Gc(Box::new(resolved_value.ty)),
+                    expr: hir::Expr::New { value: Box::new(resolved_value.expr), loc: *loc },
+                    always_diverges: resolved_value.always_diverges
+                }
+            }
+            ast::Expr::GetAttr { obj, attr, loc } => {
+                let AnnotatedExpr { expr, ty, mut always_diverges } = self.resolve_expr(obj, None);
+
+                let mut object_ty = ty;
+                let mut coercions = Vec::new();
+                let struct_type = loop {
+                    match object_ty {
+                        Type::Struct(struct_type) => break struct_type,
+                        Type::Gc(inner) => {
+                            coercions.push(Coercion::DerefGc);
+                            object_ty = *inner;
+                        }
+                        Type::Errored => {
+                            return AnnotatedExpr::new_errored(*loc, false);
+                        }
+                        ty => {
+                            self.push_error(tc::TypeCheckError::ExpectedStruct { got: self.display_type(&ty), loc: *loc });
+                            return AnnotatedExpr::new_errored(*loc, false);
+                        }
                     }
                 };
 
@@ -639,62 +674,61 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                 let field_ty = self.checker.subs(&field_info.ty, &map);
 
                 AnnotatedExpr {
-                    expr: hir::Expr::GetAttr { obj: Box::new(resolved_obj.expr), obj_type: struct_type, field_ty: field_ty.clone(), attr: attr.clone(), loc: *loc },
+                    expr: hir::Expr::GetAttr { obj: Box::new(expr), coercions, obj_type: struct_type, field_ty: field_ty.clone(), attr: attr.clone(), loc: *loc },
                     ty: field_ty,
-                    always_diverges: resolved_obj.always_diverges
+                    always_diverges
                 }
             },
             ast::Expr::MethodCall { object, method, arguments, loc } => {
-                let resolved_object = self.resolve_expr(object, None);
-                let mut diverges = resolved_object.always_diverges;
+                let AnnotatedExpr { expr, ty, mut always_diverges } = self.resolve_expr(object, None);
 
-                let object_struct_type = match resolved_object.ty {
-                    Type::Struct(struct_type) => struct_type,
-                    Type::Errored => {
+                let mut object_type = ty;
+                let mut coercions = Vec::new();
+                let (method_key, type_map) = loop {
+                    let mut possible_methods = self.prototypes.get_method(&object_type, method);
+                    if possible_methods.is_empty() {
+                        match object_type {
+                            Type::Gc(inner) => {
+                                coercions.push(Coercion::DerefGc);
+                                object_type = *inner;
+                            }
+                            Type::Errored => return AnnotatedExpr::new_errored(*loc, always_diverges),
+                            other => {
+                                self.push_error(tc::TypeCheckError::NoSuchMethodName { on_type: self.display_type(&other), method: method.clone(), loc: *loc });
+                                return AnnotatedExpr::new_errored(*loc, false);
+                            }
+                        }
+                    } else if possible_methods.len() > 1 {
+                        self.push_error(tc::TypeCheckError::ConflictingMethods {
+                            on_type: self.display_type(&object_type), method: method.clone(), loc: *loc,
+                            possible: possible_methods.into_iter().map(|(key, _)| self.prototypes.methods[key].ast_method.loc).collect()
+                        });
                         return AnnotatedExpr::new_errored(*loc, false);
-                    }
-                    ty => {
-                        self.push_error(tc::TypeCheckError::ExpectedStruct { got: self.display_type(&ty), loc: *loc });
-                        return AnnotatedExpr::new_errored(*loc, false);
+                    } else {
+                        break possible_methods.remove(0);
                     }
                 };
-                let object_type = object_struct_type.clone().into();
-
-                let possible_methods = self.prototypes.get_method(&object_type, method);
-                if possible_methods.is_empty() {
-                    self.push_error(tc::TypeCheckError::NoSuchMethodName { on_type: self.display_type(&object_type), method: method.clone(), loc: *loc });
-                    return AnnotatedExpr::new_errored(*loc, false);
-                } else if possible_methods.len() > 1 {
-                    self.push_error(tc::TypeCheckError::ConflictingMethods {
-                        on_type: self.display_type(&object_type), method: method.clone(), loc: *loc,
-                        possible: possible_methods.into_iter().map(|key| self.prototypes.methods[key].ast_method.loc).collect()
-                    });
-                    return AnnotatedExpr::new_errored(*loc, false);
-                }
-                let method_key = possible_methods[0];
                 let method_info = &self.prototypes.methods[method_key];
-
-                let map = self.types.create_subs(object_struct_type.clone());
 
                 let mut resolved_arguments = Vec::new();
                 for (param, arg) in method_info.params.values().zip(arguments) {
-                    let resolved_arg = self.resolve_expr(arg, Some(self.checker.subs(&param.ty, &map)));
-                    diverges |= resolved_arg.always_diverges;
+                    let resolved_arg = self.resolve_expr(arg, Some(self.checker.subs(&param.ty, &type_map)));
+                    always_diverges |= resolved_arg.always_diverges;
                     resolved_arguments.push(resolved_arg.expr);
                 }
-                let ret = self.checker.subs(&method_info.ret, &map);
+                let ret = self.checker.subs(&method_info.ret, &type_map);
 
                 if method_info.params.len() != arguments.len() {
                     self.push_error(tc::TypeCheckError::MismatchedArguments { expected: method_info.params.len(), got: arguments.len(), loc: *loc });
-                    return AnnotatedExpr::new_errored(*loc, diverges);
+                    return AnnotatedExpr::new_errored(*loc, always_diverges);
                 }
 
                 AnnotatedExpr {
                     expr: hir::Expr::MethodCall {
-                        object: Box::new(resolved_object.expr), obj_type: object_struct_type, method: method_key, arguments: resolved_arguments, loc: *loc
+                        object: Box::new(expr), coercions, method: method_key, arguments: resolved_arguments, loc: *loc
                     },
                     ty: ret,
-                    always_diverges: diverges
+                    always_diverges
                 }
             }
             ast::Expr::GenericCall { .. } => todo!(),

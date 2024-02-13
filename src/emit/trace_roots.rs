@@ -56,11 +56,12 @@ impl RootTracer {
 
     fn is_managed(ty: &lir::Type) -> bool {
         match ty {
-            lir::Type::AnyRef => true,
+            lir::Type::AnyGc => true,
+            lir::Type::Gc(_) => false,
             lir::Type::Boolean => false,
             lir::Type::Int32 => false,
             lir::Type::Function(_, _) => false,
-            lir::Type::StructRef(_) => true,
+            lir::Type::Struct(_) => false,
             lir::Type::Tuple(tys) => tys.iter().any(Self::is_managed)
         }
     }
@@ -252,7 +253,7 @@ impl RootTracer {
                 }
                 Instruction::LoadNull => {
                     instructions.push(ilir::Instruction::LoadNull {
-                        store: self.push(lir::Type::AnyRef)
+                        store: self.push(lir::Type::AnyGc)
                     });
                 }
                 Instruction::Return => {
@@ -319,10 +320,25 @@ impl RootTracer {
                         stores
                     });
                 }
-                Instruction::CreateZeroInitStruct(struct_id) => {
-                    instructions.push(ilir::Instruction::CreateZeroInitStruct {
+                Instruction::DerefGc => {
+                    let pointer = self.tracer.pop();
+                    let lir::Type::Gc(pointee) = self.tracer.ann(pointer).ty.clone() else { panic!() };
+
+                    instructions.push(ilir::Instruction::DerefGc { pointer: self.stack_loc(pointer), pointee: pointee.as_ref().clone(),  store: self.push(*pointee) })
+                }
+                Instruction::CreateNew => {
+                    let object = self.tracer.pop();
+                    let object_ty = self.tracer.ann(object).ty.clone();
+                    
+                    instructions.push(ilir::Instruction::CreateNew {
+                        object: self.stack_loc(object),
+                        store: self.push(lir::Type::Gc(Box::new(object_ty)))
+                    })
+                },
+                Instruction::CreateZeroInitGcStruct(struct_id) => {
+                    instructions.push(ilir::Instruction::CreateZeroInitGcStruct {
                         id: *struct_id,
-                        store: self.push(lir::Type::StructRef(*struct_id))
+                        store: self.push(lir::Type::gc_struct(*struct_id))
                     })
                 }
                 Instruction::CreateStruct(struct_id, field_arguments) => {
@@ -335,7 +351,7 @@ impl RootTracer {
                     instructions.push(ilir::Instruction::CreateStruct {
                         id: *struct_id,
                         fields,
-                        store: self.push(lir::Type::StructRef(*struct_id))
+                        store: self.push(lir::Type::Struct(*struct_id))
                     });
                 }
                 Instruction::GetField(struct_id, field_name) => {
@@ -348,16 +364,26 @@ impl RootTracer {
                         store: self.push(found.ty.clone())
                     });
                 }
-                Instruction::SetField(struct_id, field_name) => {
+                Instruction::GetGcField(struct_id, field_name) => {
+                    let obj = self.pop();
+                    let (idx, found) = lir.structs[struct_id].fields.iter().enumerate().find(|(_, field)| &field.name == field_name).unwrap();
+                    instructions.push(ilir::Instruction::GetGcField {
+                        id: *struct_id,
+                        obj,
+                        field: idx,
+                        store: self.push(found.ty.clone())
+                    });
+                },
+                Instruction::SetGcField(struct_id, field_name) => {
                     let value = self.pop();
                     let obj = self.pop();
                     let (idx, _) = lir.structs[struct_id].fields.iter().enumerate().find(|(_, field)| &field.name == field_name).unwrap();
-                    instructions.push(ilir::Instruction::SetField {
+                    instructions.push(ilir::Instruction::SetGcField {
                         obj,
                         id: *struct_id,
                         field: idx,
                         value,
-                        store: self.push(lir::Type::StructRef(*struct_id))
+                        store: self.push(lir::Type::gc_struct(*struct_id))
                     });
                 }
                 Instruction::Call(num_args) => {

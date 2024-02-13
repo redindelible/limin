@@ -34,6 +34,8 @@ impl MIR {
             Type::Never => false,
             Type::Boolean => false,
             Type::Integer(_) => false,
+            Type::Gc(_) => false,
+            Type::Ref(_) => false,
             Type::Struct(key) => {
                 if visited.contains(key) {
                     return true;
@@ -72,6 +74,8 @@ impl MIR {
             Type::Unit => false,
             Type::Boolean => false,
             Type::Integer(_) => false,
+            Type::Gc(_) => false,
+            Type::Ref(_) => false,
         }
     }
 }
@@ -131,6 +135,8 @@ pub enum Type {
     Never,
     Boolean,
     Integer(u8),
+    Gc(Box<Type>),
+    Ref(Box<Type>),
     Struct(StructKey),
     Function(FunctionType)
 }
@@ -170,7 +176,9 @@ pub enum Expr {
     // StoreLocal(LocalKey, Box<Expr>),
     GetAttr(StructKey, Box<Expr>, String),
     Call(FunctionType, Box<Expr>, Vec<Expr>),
-    New(StructKey, IndexMap<String, Expr>),
+    CreateStruct(StructKey, IndexMap<String, Expr>),
+    New(Box<Expr>),
+    DerefGc(Box<Expr>),
     Block(BlockKey),
     IfElse { cond: Box<Expr>, then_do: Box<Expr>, else_do: Box<Expr>, yield_type: Type },
     Closure { parameters: Vec<ClosureParameter>, fn_type: FunctionType, body: BlockKey, closed_blocks: Vec<BlockKey> },

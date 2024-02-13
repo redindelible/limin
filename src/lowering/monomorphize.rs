@@ -257,9 +257,17 @@ impl Monomorphize {
                     }
                 }
             },
-            hir::Expr::GetAttr { obj, attr, obj_type, .. } => {
+            hir::Expr::GetAttr { obj, coercions, attr, obj_type, .. } => {
                 let struct_ = self.lower_struct_type(obj_type, map, hir);
-                mir::Expr::GetAttr(struct_, Box::new(self.lower_expr(obj, map, hir)), attr.clone())
+                let mut receiver = self.lower_expr(obj, map, hir);
+                for coercion in coercions {
+                    match coercion {
+                        hir::Coercion::DerefGc => {
+                            receiver = mir::Expr::DerefGc(Box::new(receiver));
+                        }
+                    }
+                }
+                mir::Expr::GetAttr(struct_, Box::new(receiver), attr.clone())
             },
             hir::Expr::Call { callee, callee_type, arguments, .. } => {
                 let callee = self.lower_expr(callee, map, hir);
@@ -269,7 +277,7 @@ impl Monomorphize {
 
                 mir::Expr::Call(fn_type, Box::new(callee), arguments)
             },
-            hir::Expr::New { struct_type: hir::StructType(struct_, variant), fields: hir_fields, .. } => {
+            hir::Expr::CreateStruct { struct_type: hir::StructType(struct_, variant), fields: hir_fields, .. } => {
                 let variant: Vec<_> = variant.iter().map(|t| self.lower_type(t, map, hir)).collect();
                 let key = self.queue_struct(*struct_, &variant, hir);
 
@@ -278,7 +286,10 @@ impl Monomorphize {
                     fields.insert(field_name.clone(), self.lower_expr(expr, map, hir));
                 }
 
-                mir::Expr::New(key, fields)
+                mir::Expr::CreateStruct(key, fields)
+            }
+            hir::Expr::New { value, .. } => {
+                mir::Expr::New(Box::new(self.lower_expr(value, map, hir)))
             }
             hir::Expr::GenericCall { callee, generic, arguments, .. } => {
                 let generic: Vec<mir::Type> = generic.iter().map(|t| self.lower_type(t, map, hir)).collect();
@@ -287,13 +298,21 @@ impl Monomorphize {
                 let fn_type = self.function_prototypes[key].fn_type.clone();
                 mir::Expr::Call(fn_type, Box::new(callee), arguments.iter().map(|arg| self.lower_expr(arg, map, hir)).collect())
             },
-            hir::Expr::MethodCall { object, obj_type, method, arguments, .. } => {
+            hir::Expr::MethodCall { object, coercions, method, arguments, .. } => {
                 let method_key = self.queue_method(*method, &[], hir);
                 let callee = mir::Expr::LoadFunction(method_key);
                 let fn_type = self.function_prototypes[method_key].fn_type.clone();
 
                 let mut mir_arguments = Vec::new();
-                mir_arguments.push(self.lower_expr(object, map, hir));
+                let mut receiver = self.lower_expr(object, map, hir);
+                for coercion in coercions {
+                    match coercion {
+                        hir::Coercion::DerefGc => {
+                            receiver = mir::Expr::DerefGc(Box::new(receiver));
+                        }
+                    }
+                }
+                mir_arguments.push(receiver);
                 for argument in arguments {
                     mir_arguments.push(self.lower_expr(argument, map, hir));
                 }
@@ -522,6 +541,8 @@ impl Monomorphize {
             hir::Type::SignedInteger(bits) => mir::Type::Integer(*bits),
             hir::Type::UnsignedInteger(bits) => mir::Type::Integer(*bits),
             hir::Type::TypeParameter(key) => map[key].clone(),
+            hir::Type::Gc(inner) => mir::Type::Gc(Box::new(self.lower_type(inner, map, hir))),
+            hir::Type::Ref(inner) => mir::Type::Ref(Box::new(self.lower_type(inner, map, hir))),
             hir::Type::Trait(trait_type) => todo!(),
             hir::Type::Struct(struct_type) => mir::Type::Struct(self.lower_struct_type(struct_type, map, hir)),
             hir::Type::Function(fn_type) => mir::Type::Function(self.lower_fn_type(fn_type, map, hir)),
@@ -554,6 +575,8 @@ impl Monomorphize {
             mir::Type::Unit => "()".into(),
             mir::Type::Boolean => "bool".into(),
             mir::Type::Integer(bits) => format!("i{bits}"),
+            mir::Type::Gc(inner) => format!("*{}", self.name_of(inner)),
+            mir::Type::Ref(inner) => format!("&{}", self.name_of(inner)),
             mir::Type::Struct(struct_) => self.struct_prototypes[*struct_].name.clone(),
             mir::Type::Function(mir::FunctionType { params, ret }) => format!(
                 "({}) -> {}",

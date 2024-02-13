@@ -63,6 +63,7 @@ pub struct MethodPrototype<'a> {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Impl<'a> {
+    pub type_parameters: Vec<TypeParameter<'a>>,
     pub trait_: Option<String>,
     pub for_type: Type<'a>,
     pub methods: Vec<Method<'a>>,
@@ -150,13 +151,14 @@ pub enum Expr<'a> {
     Integer { number: u64, loc: Location<'a> },
     Bool { value: bool, loc: Location<'a> },
     Block(Block<'a>),
-    New { struct_: String, type_args: Option<Vec<Type<'a>>>, arguments: Vec<NewArgument<'a>>, loc: Location<'a> },
+    New { value: Box<Expr<'a>>, loc: Location<'a> },
+    CreateStruct { struct_: String, type_args: Option<Vec<Type<'a>>>, arguments: Vec<StructArgument<'a>>, loc: Location<'a> },
     IfElse { cond: Box<Expr<'a>>, then_do: Box<Expr<'a>>, else_do: Box<Expr<'a>>, loc: Location<'a> },
     Closure { parameters: Vec<ClosureParameter<'a>>, body: Box<Expr<'a>>, loc: Location<'a> }
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub struct NewArgument<'a> {
+pub struct StructArgument<'a> {
     pub name: String,
     pub name_loc: Location<'a>,
     pub argument: Box<Expr<'a>>
@@ -180,6 +182,7 @@ impl<'a> HasLoc<'a> for Expr<'a> {
             Expr::MethodCall { loc, .. } => *loc,
             Expr::Integer { loc, .. } => *loc,
             Expr::Block(Block{ loc, .. }) => *loc,
+            Expr::CreateStruct { loc, .. } => *loc,
             Expr::New { loc, .. } => *loc,
             Expr::Bool { loc, .. } => *loc,
             Expr::IfElse { loc, .. } => *loc,
@@ -192,7 +195,8 @@ impl<'a> HasLoc<'a> for Expr<'a> {
 pub enum Type<'a> {
     Name { name: String, loc: Location<'a> },
     Function { parameters: Vec<Type<'a>>, ret: Box<Type<'a>>, loc: Location<'a> },
-    Generic { name: String, type_args: Vec<Type<'a>>, loc: Location<'a> }
+    Generic { name: String, type_args: Vec<Type<'a>>, loc: Location<'a> },
+    Gc { ty: Box<Type<'a>>, loc: Location<'a> }
 }
 
 impl<'s> HasLoc<'s> for Type<'s> {
@@ -200,7 +204,8 @@ impl<'s> HasLoc<'s> for Type<'s> {
         match self {
             Type::Name { loc, .. } => *loc,
             Type::Function { loc, .. } => *loc,
-            Type::Generic { loc, .. } => *loc
+            Type::Generic { loc, .. } => *loc,
+            Type::Gc { loc, .. } => *loc
         }
     }
 }

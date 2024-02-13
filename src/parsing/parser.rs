@@ -278,6 +278,8 @@ impl<'a> Parser<'a> {
     fn parse_impl(&mut self) -> ParseResult<TopLevel<'a>> {
         let start = self.expect(TokenType::Impl)?;
 
+        let mut type_parameters = Vec::new();
+
         let trait_ = if self.curr().typ == TokenType::Identifier {
             let trait_name = self.expect(TokenType::Identifier)?;
             Some(trait_name.text.to_owned())
@@ -294,7 +296,7 @@ impl<'a> Parser<'a> {
         }
         let end = self.expect(TokenType::RightBrace)?;
         let loc = start.loc + end.loc;
-        Ok(TopLevel::Impl(Impl { trait_, for_type, methods, loc }))
+        Ok(TopLevel::Impl(Impl { type_parameters, trait_, for_type, methods, loc }))
     }
 
     fn parse_method(&mut self) -> ParseResult<Method<'a>> {
@@ -451,18 +453,18 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_comparison(&mut self) -> ParseResult<Expr<'a>> {
-        let mut left = self.parse_call()?;
+        let mut left = self.parse_new()?;
         loop {
             match self.curr().typ {
                 TokenType::LeftAngle => {
                     self.advance();
-                    let right = self.parse_call()?;
+                    let right = self.parse_new()?;
                     let loc = left.loc() + right.loc();
                     left = Expr::BinOp { left: Box::new(left), op: BinOp::LessThan, right: Box::new(right), loc };
                 },
                 TokenType::RightAngle => {
                     self.advance();
-                    let right = self.parse_call()?;
+                    let right = self.parse_new()?;
                     let loc = left.loc() + right.loc();
                     left = Expr::BinOp { left: Box::new(left), op: BinOp::GreaterThan, right: Box::new(right), loc };
                 }
@@ -470,6 +472,16 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(left)
+    }
+
+    fn parse_new(&mut self) -> ParseResult<Expr<'a>> {
+        if self.curr().typ == TokenType::New {
+            let start = self.expect(TokenType::New)?;
+            let value = Box::new(self.parse_new()?);
+            Ok(Expr::New { loc: start.loc + value.loc(), value })
+        } else {
+            self.parse_call()
+        }
     }
 
     fn parse_call(&mut self) -> ParseResult<Expr<'a>> {
@@ -539,29 +551,27 @@ impl<'a> Parser<'a> {
 
     fn parse_terminal(&mut self) -> ParseResult<Expr<'a>> {
         match self.curr().typ {
-            TokenType::New => {
-                let start = self.advance();
-                let struct_ = self.expect(TokenType::Identifier)?.text.into();
-                let type_args = if self.curr().typ == TokenType::LeftAngle {
-                    let (type_args, _) = self.delimited_parse(TokenType::LeftAngle, TokenType::RightAngle, Self::parse_type)?;
-                    Some(type_args)
-                } else {
-                    None
-                };
-
-                let (fields, loc) = self.delimited_parse(TokenType::LeftBrace, TokenType::RightBrace, |this| {
-                    let name = this.expect(TokenType::Identifier)?;
-                    this.expect(TokenType::Colon)?;
-                    let argument = this.parse_expr()?;
-                    let loc = name.loc + argument.loc();
-                    Ok(NewArgument { name: name.text.to_owned(), argument: Box::new(argument), name_loc: loc })
-                })?;
-                let loc = loc + start.loc;
-                Ok(Expr::New { struct_, type_args, arguments: fields, loc})
-            },
             TokenType::Identifier => {
                 let tok = self.advance();
-                Ok(Expr::Name { name: tok.text.to_owned(), loc: tok.loc })
+
+                if self.curr().typ == TokenType::LeftBrace {
+                    let (fields, loc) = self.delimited_parse(TokenType::LeftBrace, TokenType::RightBrace, |this| {
+                        let name = this.expect(TokenType::Identifier)?;
+                        this.expect(TokenType::Colon)?;
+                        let argument = this.parse_expr()?;
+                        let loc = name.loc + argument.loc();
+                        Ok(StructArgument { name: name.text.to_owned(), argument: Box::new(argument), name_loc: loc })
+                    })?;
+
+                    Ok(Expr::CreateStruct {
+                        struct_: tok.text.to_owned(),
+                        type_args: None,
+                        arguments: fields,
+                        loc: tok.loc + loc
+                    })
+                } else {
+                    Ok(Expr::Name { name: tok.text.to_owned(), loc: tok.loc })
+                }
             },
             TokenType::Integer => {
                 let tok = self.advance();
@@ -596,7 +606,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type(&mut self) -> ParseResult<Type<'a>> {
-        Ok(self.parse_type_terminal()?)
+        if self.curr().typ == TokenType::Star {
+            let start = self.expect(TokenType::Star)?;
+            let right = Box::new(self.parse_type()?);
+            Ok(Type::Gc { loc: start.loc + right.loc(), ty: right })
+        } else {
+            self.parse_type_terminal()
+        }
     }
 
     fn parse_type_terminal(&mut self) -> ParseResult<Type<'a>> {

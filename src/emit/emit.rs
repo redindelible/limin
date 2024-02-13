@@ -9,7 +9,6 @@ use crate::emit::trace_roots::trace_roots;
 use crate::util;
 
 const FRAME_HEADER_COUNT: u32 = 3;
-const STRUCT_HEADER_COUNT: u32 = 3;
 const FUNCTION_EXTRA_COUNT: usize = 1;
 
 pub fn emit_llvm(lir: lir::LIR) -> llvm::Module {
@@ -70,11 +69,9 @@ impl Mangler {
 }
 
 struct StructInfo {
-    type_ref: llvm::StructRef,
-
-    trace_fn: llvm::FunctionRef,
-    trace_obj_ptr: llvm::ParameterRef,
-    type_info: llvm::GlobalRef
+    name: String,
+    fields: Vec<lir::StructField>,
+    type_ref: llvm::StructRef
 }
 
 struct FunctionInfo {
@@ -90,6 +87,11 @@ struct LLVMEmitter {
 
     create_obj_fn: llvm::ValueRef,
     mark_obj_fn: llvm::ValueRef,
+    trace_none_fn: llvm::FunctionRef,
+    trace_gc_fn: llvm::FunctionRef,
+
+    module: llvm::Module,
+    type_infos: HashMap<lir::Type, llvm::GlobalRef>
 }
 
 impl LLVMEmitter {
@@ -117,73 +119,52 @@ impl LLVMEmitter {
             CCC
         ).willreturn().nounwind().to_value();
 
+        let trace_none_fn = module.add_function(
+            "limin_trace_none",
+            llvm::Types::void(),
+            vec![
+                llvm::ParameterRef::new("obj", llvm::Types::ptr()).nofree().noalias().nocapture()
+            ],
+            CCC
+        ).willreturn().nounwind();
+
+        let trace_gc_fn = module.add_function(
+            "limin_trace_gc",
+            llvm::Types::void(),
+            vec![
+                llvm::ParameterRef::new("obj", llvm::Types::ptr()).nofree().noalias().nocapture()
+            ],
+            CCC
+        ).willreturn().nounwind();
+
         let mut emit = LLVMEmitter {
             struct_mapping: IndexMap::new(),
             function_mapping: IndexMap::new(),
             mangling: Mangler::new(),
 
             create_obj_fn,
-            mark_obj_fn
+            mark_obj_fn,
+            trace_none_fn,
+            trace_gc_fn,
+
+            module,
+            type_infos: HashMap::new()
         };
 
         for (struct_id, struct_) in &lir.structs {
             let name = emit.mangling.mangle(["struct", &struct_.name]);
-            let struct_ref = module.types.add_struct(&name);
-            let trace_obj_ptr = llvm::ParameterRef::new("obj", llvm::Types::ptr());
-            let trace_fn = module.add_function(
-                emit.mangling.mangle(["trace", &name]),
-                llvm::Types::void(),
-                vec![trace_obj_ptr.clone()],
-                CCC
-            );
+            let struct_ref = emit.module.types.add_struct(&name);
 
-            let info = module.add_global_constant(emit.mangling.mangle([&name, "info"]), llvm::Types::zeroinit(
-                llvm::Types::struct_(vec![llvm::Types::ptr(), llvm::Types::int(64)])
-            ));
             emit.struct_mapping.insert(*struct_id, StructInfo {
-                type_ref: struct_ref,
-                trace_fn,
-                trace_obj_ptr,
-                type_info: info,
+                name,
+                fields: struct_.fields.clone(),
+                type_ref: struct_ref
             });
         }
 
         for (struct_id, struct_) in &lir.structs {
             let struct_ref = emit.struct_mapping[struct_id].type_ref.clone();
-            let obj_ptr = emit.struct_mapping[struct_id].trace_obj_ptr.clone().to_value();
-            let mut trace_builder = llvm::Builder::new(&emit.struct_mapping[struct_id].trace_fn);
-
-            let mut fields = vec![
-                llvm::Types::ptr(),
-                llvm::Types::ptr(),
-                llvm::Types::int(8),
-            ];
-            debug_assert_eq!(fields.len() as u32, STRUCT_HEADER_COUNT);
-            for (i, field) in struct_.fields.iter().enumerate() {
-                let field_ty = emit.emit_type(&field.ty, lir);
-                fields.push(field_ty.clone());
-
-                let field_ptr = trace_builder.gep(None, struct_ref.as_type_ref(), obj_ptr.clone(), vec![
-                    GEPIndex::ConstantIndex(0),
-                    GEPIndex::ConstantIndex(i as u32 + STRUCT_HEADER_COUNT),
-                ]).to_value();
-                let field_loaded = trace_builder.load(None, field_ty, field_ptr).to_value();
-                emit.emit_type_tracer(field_loaded, &field.ty, &mut trace_builder);
-            }
-            struct_ref.set_fields(fields);
-
-            trace_builder.ret_void();
-        }
-
-        for (struct_id, _) in &lir.structs {
-            let struct_ref = emit.struct_mapping[struct_id].type_ref.clone();
-
-            let trace = llvm::Types::function_constant(&emit.struct_mapping[struct_id].trace_fn);
-            let size = llvm::Types::int_constant(64, struct_ref.as_type_ref().size() as u64);
-            emit.struct_mapping[struct_id].type_info.initialize(llvm::Types::struct_constant(vec![
-                trace,
-                size
-            ]));
+            struct_ref.set_fields(struct_.fields.iter().map(|field| emit.emit_type(&field.ty, lir)).collect());
         }
 
         for (func_id, func) in &lir.functions {
@@ -206,7 +187,7 @@ impl LLVMEmitter {
                 let ty = emit.emit_type(&param.ty, lir);
                 llvm::ParameterRef::new(name, ty)
             }));
-            let func_ref = module.add_function(&name, ret, parameters, CCC);
+            let func_ref = emit.module.add_function(&name, ret, parameters, CCC);
 
             emit.function_mapping.insert(*func_id, FunctionInfo {
                 function_ref: func_ref,
@@ -218,7 +199,7 @@ impl LLVMEmitter {
             emit.emit_function(*func_id, lir);
         }
 
-        let main = module.add_function("main", llvm::Types::int(32), vec![], CCC);
+        let main = emit.module.add_function("main", llvm::Types::int(32), vec![], CCC);
         let main_builder = llvm::Builder::new(&main);
         let exit_code = main_builder.call(
             None, CCC, llvm::Types::int(32),
@@ -227,7 +208,7 @@ impl LLVMEmitter {
         ).to_value();
         main_builder.ret(exit_code);
 
-        module
+        emit.module
     }
 
     fn get_frame_info<'a>(&self, id: lir::FunctionID, func: &'a ilir::Function, lir: &'a lir::LIR, builder: &mut llvm::Builder) -> FramesInfo<'a> {
@@ -284,6 +265,109 @@ impl LLVMEmitter {
             unmanaged,
             func
         }
+    }
+
+    fn get_type_info(&mut self, ty: &lir::Type, lir: &lir::LIR) -> llvm::GlobalRef {
+        if let Some(info) = self.type_infos.get(ty) {
+            return info.clone();
+        }
+
+        let info = match ty {
+            lir::Type::Boolean => {
+                self.module.add_global_constant(self.mangling.mangle(["bool", "info"]), llvm::Types::struct_constant(vec![
+                    llvm::Types::function_constant(&self.trace_none_fn),
+                    llvm::Types::int_constant(64, 1),
+                ]))
+            },
+            lir::Type::Int32 => {
+                self.module.add_global_constant(self.mangling.mangle(["int32", "info"]), llvm::Types::struct_constant(vec![
+                    llvm::Types::function_constant(&self.trace_none_fn),
+                    llvm::Types::int_constant(64, 4),
+                ]))
+            },
+            lir::Type::AnyGc => {
+                self.module.add_global_constant(self.mangling.mangle(["anygc", "info"]), llvm::Types::struct_constant(vec![
+                    llvm::Types::function_constant(&self.trace_gc_fn),
+                    llvm::Types::int_constant(64, 8),  // todo pointers are sometimes other sizes
+                ]))
+            },
+            lir::Type::Gc(_) => {
+                self.module.add_global_constant(self.mangling.mangle(["gc", "info"]), llvm::Types::struct_constant(vec![
+                    llvm::Types::function_constant(&self.trace_gc_fn),
+                    llvm::Types::int_constant(64, 8),  // todo pointers are sometimes other sizes
+                ]))
+            },
+            lir::Type::Tuple(items) => {
+                let tuple_struct = llvm::Types::struct_(items.iter().map(|item| self.emit_type(item, lir)).collect());
+
+                let trace_obj_ptr = llvm::ParameterRef::new("obj", llvm::Types::ptr());
+                let trace_fn = self.module.add_function(
+                    self.mangling.mangle(["trace", "tuple"]),
+                    llvm::Types::void(),
+                    vec![trace_obj_ptr.clone()],
+                    CCC
+                );
+
+                let obj_ptr = trace_obj_ptr.to_value();
+
+                let mut trace_builder = llvm::Builder::new(&trace_fn);
+
+                for (i, item) in items.iter().enumerate() {
+                    let item_ty = self.emit_type(item, lir);
+
+                    let item_ptr = trace_builder.gep(None, tuple_struct.clone(), obj_ptr.clone(), vec![
+                        GEPIndex::ConstantIndex(0),
+                        GEPIndex::ConstantIndex(i as u32),
+                    ]).to_value();
+                    let field_loaded = trace_builder.load(None, item_ty, item_ptr).to_value();
+                    self.emit_type_tracer(field_loaded, item, &mut trace_builder, lir);
+                }
+
+                trace_builder.ret_void();
+
+                self.module.add_global_constant(self.mangling.mangle(["tuple", "info"]), llvm::Types::struct_constant(vec![
+                    llvm::Types::function_constant(&trace_fn),
+                    llvm::Types::int_constant(64, tuple_struct.size() as u64),
+                ]))
+            }
+            lir::Type::Struct(struct_id) => {
+                let struct_ref = self.struct_mapping[struct_id].type_ref.clone();
+                let name = lir.structs[struct_id].name.clone();
+                let trace_obj_ptr = llvm::ParameterRef::new("obj", llvm::Types::ptr());
+                let trace_fn = self.module.add_function(
+                    self.mangling.mangle(["trace", &name]),
+                    llvm::Types::void(),
+                    vec![trace_obj_ptr.clone()],
+                    CCC
+                );
+
+                let obj_ptr = trace_obj_ptr.to_value();
+
+                let mut trace_builder = llvm::Builder::new(&trace_fn);
+
+                for (i, field) in lir.structs[struct_id].fields.iter().enumerate() {
+                    let field_ty = self.emit_type(&field.ty, lir);
+
+                    let field_ptr = trace_builder.gep(None, struct_ref.as_type_ref(), obj_ptr.clone(), vec![
+                        GEPIndex::ConstantIndex(0),
+                        GEPIndex::ConstantIndex(i as u32),
+                    ]).to_value();
+                    let field_loaded = trace_builder.load(None, field_ty, field_ptr).to_value();
+                    self.emit_type_tracer(field_loaded, &field.ty, &mut trace_builder, lir);
+                }
+
+                trace_builder.ret_void();
+
+                self.module.add_global_constant(self.mangling.mangle([&name, "info"]), llvm::Types::struct_constant(vec![
+                    llvm::Types::function_constant(&trace_fn),
+                    llvm::Types::int_constant(64, struct_ref.as_type_ref().size() as u64),
+                ]))
+            }
+            lir::Type::Function(_, _) => todo!()
+        };
+
+        self.type_infos.insert(ty.clone(), info.clone());
+        info
     }
 
     fn emit_function(&mut self, id: lir::FunctionID, lir: &lir::LIR) {
@@ -404,52 +488,78 @@ impl LLVMEmitter {
                         builder.store(store, value);
                     }
                 }
-                Instruction::CreateZeroInitStruct { id, store } => {
-                    let type_info = self.struct_mapping[id].type_info.clone().to_value();
+                Instruction::CreateZeroInitGcStruct { id, store } => {
+                    let type_info = self.get_type_info(&lir::Type::Struct(*id), lir).to_value();
+
                     let frame_ptr = frames_info.frame_ptr.clone();
                     let obj_ptr = builder.call(None, CCC, llvm::Types::ptr(), &self.create_obj_fn, vec![
                         type_info,
                         frame_ptr
                     ]).to_value();
+                    let store = frames_info.get_location_ptr(builder, store);
+                    builder.store(store, obj_ptr);
+                }
+                Instruction::CreateNew { object, store } => {
+                    let object_ty = frames_info.get_ty(object);
+                    let type_info = self.get_type_info(object_ty, lir).to_value();
+                    let frame_ptr = frames_info.frame_ptr.clone();
+                    let obj_ptr = builder.call(None, CCC, llvm::Types::ptr(), &self.create_obj_fn, vec![
+                        type_info,
+                        frame_ptr
+                    ]).to_value();
+
+                    let object = frames_info.get_location_ptr(builder, object);
+                    let object = builder.load(None, self.emit_type(object_ty, lir), object).to_value();
+                    builder.store(&obj_ptr, object);
                     let store = frames_info.get_location_ptr(builder, store);
                     builder.store(store, obj_ptr);
                 }
                 Instruction::CreateStruct { id, fields, store } => {
-                    let type_info = self.struct_mapping[id].type_info.clone().to_value();
-                    let frame_ptr = frames_info.frame_ptr.clone();
-                    let obj_ptr = builder.call(None, CCC, llvm::Types::ptr(), &self.create_obj_fn, vec![
-                        type_info,
-                        frame_ptr
-                    ]).to_value();
+                    let struct_info = &self.struct_mapping[id];
+
+                    let mut built_struct = llvm::Types::zeroinit(struct_info.type_ref.as_type_ref()).to_value();
                     for (idx, field) in fields.iter().enumerate() {
-                        let ptr = builder.gep(None, self.struct_mapping[id].type_ref.as_type_ref(), obj_ptr.clone(), vec![
-                            GEPIndex::ConstantIndex(0),
-                            GEPIndex::ConstantIndex(idx as u32 + STRUCT_HEADER_COUNT)
-                        ]).to_value();
-                        let field_value_ptr = frames_info.get_location_ptr(builder, field);
-                        let field_value = builder.load(None, self.emit_type(frames_info.get_ty(field), lir), field_value_ptr).to_value();
-                        builder.store(ptr, field_value);
+                        let value_ptr = frames_info.get_location_ptr(builder, field);
+                        let value = builder.load(None, self.emit_type(&struct_info.fields[idx].ty, lir), value_ptr).to_value();
+                        built_struct = builder.insertvalue(None, &built_struct, value, vec![idx as u32]).to_value();
                     }
+
                     let store = frames_info.get_location_ptr(builder, store);
-                    builder.store(store, obj_ptr);
+                    builder.store(store, built_struct);
+                }
+                Instruction::DerefGc { pointer, pointee, store } => {
+                    let pointer_loc = frames_info.get_location_ptr(builder, pointer);
+                    let pointer = builder.load(None, llvm::Types::ptr(), pointer_loc).to_value();
+                    let pointee = builder.load(None, self.emit_type(pointee, lir), pointer).to_value();
+                    let store = frames_info.get_location_ptr(builder, store);
+                    builder.store(store, pointee);
                 }
                 Instruction::GetField { obj, id, field, store } => {
+                    let struct_type = self.struct_mapping[id].type_ref.as_type_ref();
+
+                    let obj_loc = frames_info.get_location_ptr(builder, obj);
+                    let obj = builder.load(None, struct_type, obj_loc).to_value();
+                    let value = builder.extractvalue(None, &obj, vec![*field as u32]).to_value();
+                    let store = frames_info.get_location_ptr(builder, store);
+                    builder.store(store, value);
+                }
+                Instruction::GetGcField { obj, id, field, store } => {
                     let obj_loc = frames_info.get_location_ptr(builder, obj);
                     let obj = builder.load(None, llvm::Types::ptr(), obj_loc).to_value();
                     let field_ptr = builder.gep(None, self.struct_mapping[id].type_ref.as_type_ref(), obj, vec![
                         GEPIndex::ConstantIndex(0),
-                        GEPIndex::ConstantIndex(*field as u32 + STRUCT_HEADER_COUNT),
+                        GEPIndex::ConstantIndex(*field as u32),
                     ]).to_value();
                     let field = builder.load(None, self.emit_type(frames_info.get_ty(store), lir), field_ptr).to_value();
                     let store = frames_info.get_location_ptr(builder, store);
                     builder.store(store, field);
                 }
-                Instruction::SetField { obj, id, field, value, store } => {
+                Instruction::SetGcField { obj, id, field, value, store } => {
                     let obj_loc = frames_info.get_location_ptr(builder, obj);
                     let obj = builder.load(None, llvm::Types::ptr(), obj_loc).to_value();
                     let field_ptr = builder.gep(None, self.struct_mapping[id].type_ref.as_type_ref(), obj.clone(), vec![
                         GEPIndex::ConstantIndex(0),
-                        GEPIndex::ConstantIndex(*field as u32 + STRUCT_HEADER_COUNT),
+                        GEPIndex::ConstantIndex(*field as u32),
                     ]).to_value();
 
                     let value_loc = frames_info.get_location_ptr(builder, value);
@@ -573,14 +683,17 @@ impl LLVMEmitter {
         use llvm::Types;
 
         match ty {
-            Type::AnyRef => Types::ptr(),
+            Type::AnyGc => Types::ptr(),
             Type::Boolean => Types::int(1),
             Type::Int32 => Types::int(32),
             Type::Function(_, _) => {
                 Types::ptr()
             },
-            Type::StructRef(_) => {
+            Type::Gc(_) => {
                 Types::ptr()
+            }
+            Type::Struct(struct_id) => {
+                Types::struct_(lir.structs[struct_id].fields.iter().map(|field| self.emit_type(&field.ty, lir)).collect())
             }
             Type::Tuple(items) => {
                 Types::struct_(items.iter().map(|ty| self.emit_type(ty, lir)).collect())
@@ -588,11 +701,11 @@ impl LLVMEmitter {
         }
     }
 
-    fn emit_type_tracer(&self, value: llvm::ValueRef, ty: &lir::Type, builder: &mut llvm::Builder) {
+    fn emit_type_tracer(&self, value: llvm::ValueRef, ty: &lir::Type, builder: &mut llvm::Builder, lir: &lir::LIR) {
         use lir::Type;
 
         match ty {
-            Type::AnyRef => {
+            Type::AnyGc => {
                 builder.call_void(CCC, &self.mark_obj_fn, vec![
                     value
                 ]);
@@ -602,15 +715,21 @@ impl LLVMEmitter {
             Type::Function(_, _) => {
                 todo!()
             }
-            Type::StructRef(_) => {
+            Type::Gc(_) => {
                 builder.call_void(CCC, &self.mark_obj_fn, vec![
                     value
                 ]);
             }
+            Type::Struct(struct_id) => {
+                for (i, field) in lir.structs[struct_id].fields.iter().enumerate() {
+                    let inside_value = builder.extractvalue(None, &value, vec![i as u32]).to_value();
+                    self.emit_type_tracer(inside_value, &field.ty, builder, lir);
+                }
+            }
             Type::Tuple(tys) => {
                 for (i, ty) in tys.iter().enumerate() {
                     let inside_value = builder.extractvalue(None, &value, vec![i as u32]).to_value();
-                    self.emit_type_tracer(inside_value, ty, builder);
+                    self.emit_type_tracer(inside_value, ty, builder, lir);
                 }
             }
         }

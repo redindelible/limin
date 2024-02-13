@@ -716,7 +716,7 @@ impl Builder {
     }
 
     pub fn insertvalue(&self, name: Option<String>, base: &ValueRef, value: ValueRef, indices: Vec<u32>) -> InstrRef {
-        assert!(matches!(base.ty().as_ref(), Type::Struct(_)), "Actual Type: {:?}", base.ty());
+        assert!(matches!(base.ty().as_ref(), Type::NamedStruct(_) | Type::Struct(_)), "Actual Type: {:?}", base.ty());
         let name = name.unwrap_or_else(|| self.next_register());
         let instr_ref = InstrRef::new(Instruction::InsertValue { name, base: Rc::clone(base), value, indices });
         self.curr.instructions.borrow_mut().push(instr_ref.clone());

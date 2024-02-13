@@ -36,6 +36,7 @@ pub(super) struct FieldInfo<'a> {
 }
 
 pub(super) struct ImplInfo<'a, 'b> {
+    pub type_parameters: IndexMap<String, tc::TypeParameterKey>,
     pub trait_: Option<tc::TraitKey>,
     pub for_type: tc::Type,
 
@@ -93,7 +94,7 @@ pub(super) struct CollectedPrototypes<'a, 'b> {
 
 
 impl<'a, 'b> CollectedPrototypes<'a, 'b> {
-    fn unify(&self, check_ty: &tc::Type, impl_ty: &tc::Type, inference_map: &mut HashMap<tc::InferenceVariableKey, tc::Type>) -> bool {
+    fn unify(&self, check_ty: &tc::Type, impl_ty: &tc::Type, inference_map: &mut HashMap<tc::TypeParameterKey, Option<tc::Type>>) -> bool {
         use tc::{Type, StructType, TraitType, FunctionType};
 
         match (check_ty, impl_ty) {
@@ -129,45 +130,56 @@ impl<'a, 'b> CollectedPrototypes<'a, 'b> {
 
                 a_params.iter().zip(b_params).all(|(a, b)| self.unify(a, b, inference_map)) && self.unify(a_ret, b_ret, inference_map)
             }
-            (Type::TypeParameter(a_key), Type::TypeParameter(b_key)) => {
-                a_key == b_key
-            }
-            (Type::InferenceVariable(a_key), impl_ty) => {
-                unreachable!("Shouldn't be allowed")
-            }
-            (check_ty, Type::InferenceVariable(key)) => {
-                if let Some(inferred_ty) = inference_map.get(key) {
-                    self.unify(check_ty, &inferred_ty.clone(), inference_map)
+            (a_type, Type::TypeParameter(b_key)) => {
+                if let Some(maybe_defined) = inference_map.get_mut(b_key) {
+                    if let Some(defined) = maybe_defined {
+                        return self.unify(a_type, &defined.clone(), inference_map);
+                    } else {
+                        *maybe_defined = Some(a_type.clone());
+                        return true;
+                    }
                 } else {
-                    inference_map.insert(*key, check_ty.clone());
-                    true
+                    if let Type::TypeParameter(a_key) = a_type {
+                        return a_key == b_key
+                    } else {
+                        false
+                    }
                 }
             }
             _ => false
         }
     }
 
-    pub fn get_impls(&self, for_type: &tc::Type) -> Vec<tc::ImplKey> {
-        let mut impls = Vec::new();
+    // pub fn get_impls(&self, for_type: &tc::Type) -> Vec<tc::ImplKey> {
+    //     let mut impls = Vec::new();
+    //
+    //     for (impl_key, impl_info) in &self.impls {
+    //         let mut type_parameters = HashMap::new();
+    //         if self.unify(for_type, &impl_info.for_type, &mut type_parameters) {
+    //             impls.push(impl_key);
+    //         }
+    //     }
+    //
+    //     impls
+    // }
 
-        for (impl_key, impl_info) in &self.impls {
-            let mut type_parameters = HashMap::new();
-            if self.unify(for_type, &impl_info.for_type, &mut type_parameters) {
-                impls.push(impl_key);
-            }
-        }
-
-        impls
-    }
-
-    pub fn get_method(&self, for_type: &tc::Type, method: &str) -> Vec<tc::MethodKey> {
+    pub fn get_method(&self, for_type: &tc::Type, method: &str) -> Vec<(tc::MethodKey, tc::TypeMap)> {
         let mut keys = Vec::new();
 
         for (impl_key, impl_info) in &self.impls {
-            let mut type_parameters = HashMap::new();
-            if self.unify(for_type, &impl_info.for_type, &mut type_parameters) {
+            let mut inference_map = HashMap::new();
+            for tp in impl_info.type_parameters.values() {
+                inference_map.insert(*tp, None);
+            }
+
+            if self.unify(for_type, &impl_info.for_type, &mut inference_map) {
+                let mut type_map = HashMap::new();
+                for (tp, typ) in inference_map {
+                    type_map.insert(tp, typ.unwrap());
+                }
+
                 if let Some(key) = impl_info.methods.get(method) {
-                    keys.push(*key)
+                    keys.push((*key, type_map))
                 }
             }
         }
@@ -302,7 +314,15 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
                     }
                 }
 
-                ast::TopLevel::Impl(ast_impl @ ast::Impl { ref trait_, ref for_type, methods: ref ast_methods, ref loc }) => {
+                ast::TopLevel::Impl(ast_impl @ ast::Impl { ref type_parameters, ref trait_, ref for_type, methods: ref ast_methods, ref loc }) => {
+                    let impl_ns = checker.add_namespace(Some(file_ns));
+
+                    let type_parameters = type_parameters.iter().map(|tp| {
+                        let key = checker.add_type_param(tp.name.clone(), tp.loc);
+                        checker.add_type(impl_ns, tp.name.clone(), tc::Type::TypeParameter(key));
+                        (tp.name.clone(), key)
+                    }).collect();
+
                     let trait_ = if let Some(trait_) = trait_ {
                         if let Some(trait_) = checker.resolve_trait(trait_, file_ns) {
                             Some(trait_)
@@ -313,7 +333,6 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
                         None
                     };
 
-                    let impl_ns = checker.add_namespace(Some(file_ns));
                     let for_type = checker.resolve_type(for_type, file_ns, &types).expect_type(checker);
 
                     let impl_methods = ast_methods.iter().map(|method| {
@@ -360,6 +379,7 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
                     }).collect();
 
                     impls.add(ImplInfo {
+                        type_parameters,
                         trait_,
                         for_type,
                         methods: impl_methods,

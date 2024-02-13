@@ -1,19 +1,11 @@
 
-trait I32Holder {
-    fn get_i32(self) -> i32;
-}
 
 struct Foo {
     a: i32;
 }
 
-impl I32Holder for Foo {
-    fn get_i32(self) -> i32 {
-        return self.a;
-    }
-}
 
 fn main() -> i32 {
-    let foo = new Foo { a: 32 };
-    return foo.get_i32();
+    let twelve = new Foo { a: 12 };
+    return twelve.a;
 }

@@ -66,11 +66,26 @@ pub enum Type {
     Boolean,
     SignedInteger(u8),
     UnsignedInteger(u8),
+    Gc(Box<Type>),
+    Ref(Box<Type>),
     Struct(StructType),
     Trait(TraitType),
     Function(FunctionType),
     TypeParameter(TypeParameterKey),
     InferenceVariable(InferenceVariableKey)
+}
+
+impl Type {
+    // fn create_subs(&self) -> HashMap<TypeParameterKey, Type> {
+    //     match self {
+    //         Type::Errored => HashMap::new(),
+    //         Type::Unit => HashMap::new(),
+    //         Type::Never => HashMap::new(),
+    //         Type::Boolean => HashMap::new(),
+    //         Type::SignedInteger(_) => HashMap::new(),
+    //         Type::UnsignedInteger(_) => HashMap::new(),
+    //     }
+    // }
 }
 
 #[derive(Clone, Debug)]
@@ -203,6 +218,11 @@ pub struct Block<'ir> {
     pub loc: Location<'ir>
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum Coercion {
+    DerefGc
+}
+
 #[derive(Debug)]
 pub enum Expr<'ir> {
     Name(NameKey, Location<'ir>),
@@ -211,17 +231,18 @@ pub enum Expr<'ir> {
     Unit(Location<'ir>),
     Never(Location<'ir>),
     Block(Block<'ir>),
-    GetAttr { obj: Box<Expr<'ir>>, obj_type: StructType, field_ty: Type, attr: String, loc: Location<'ir> },
+    GetAttr { obj: Box<Expr<'ir>>, coercions: Vec<Coercion>, obj_type: StructType, field_ty: Type, attr: String, loc: Location<'ir> },
     Call { callee: Box<Expr<'ir>>, callee_type: FunctionType, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
     GenericCall { generic: Vec<Type>, callee: FunctionKey, arguments: Vec<Expr<'ir>>, ret_type: Type, loc: Location<'ir>},
-    MethodCall { object: Box<Expr<'ir>>, obj_type: StructType, method: MethodKey, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
-    Errored { loc: Location<'ir> },
-    New { struct_type: StructType, fields: IndexMap<String, Box<Expr<'ir>>>, loc: Location<'ir> },
+    MethodCall { object: Box<Expr<'ir>>, coercions: Vec<Coercion>, method: MethodKey, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
+    CreateStruct { struct_type: StructType, fields: IndexMap<String, Box<Expr<'ir>>>, loc: Location<'ir> },
+    New { value: Box<Expr<'ir>>, loc: Location<'ir> },
     IfElse { cond: Box<Expr<'ir>>, then_do: Box<Expr<'ir>>, else_do: Box<Expr<'ir>>, yield_type: Type, loc: Location<'ir> },
     Closure { parameters: Vec<Parameter<'ir>>, body: Block<'ir>, fn_type: FunctionType, loc: Location<'ir> },
 
     CoerceFromNever(Box<Expr<'ir>>, Type),
-    SignExtend(Box<Expr<'ir>>, u8)
+    SignExtend(Box<Expr<'ir>>, u8),
+    Errored { loc: Location<'ir> },
 }
 
 impl<'a> Expr<'a> {
@@ -237,6 +258,7 @@ impl<'a> Expr<'a> {
             Expr::GenericCall { loc, .. } => *loc,
             Expr::MethodCall { loc, .. } => *loc,
             Expr::Errored { loc, .. } => *loc,
+            Expr::CreateStruct { loc, .. } => *loc,
             Expr::New { loc, .. } => *loc,
             Expr::IfElse { loc, .. } => *loc,
             Expr::Closure { loc, .. } => *loc,

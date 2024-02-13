@@ -176,26 +176,26 @@ impl<'a> BlockBuilder<'a> {
         }
     }
 
-    pub fn upcast_ref(&mut self, from_type: lir::Type) {
-        if !matches!(&from_type, lir::Type::StructRef(_)) {
+    pub fn upcast_gc(&mut self, from_type: lir::Type) {
+        if !matches!(&from_type, lir::Type::Gc(_)) {
             panic!();
         }
         self.pop_type(&from_type);
-        self.push_type(lir::Type::AnyRef);
+        self.push_type(lir::Type::AnyGc);
     }
 
-    pub fn downcast_ref(&mut self, to_type: lir::Type) {
-        if !matches!(&to_type, lir::Type::StructRef(_)) {
+    pub fn downcast_gc(&mut self, to_type: lir::Type) {
+        if !matches!(&to_type, lir::Type::Gc(_)) {
             panic!();
         }
-        self.pop_type(&lir::Type::AnyRef);
+        self.pop_type(&lir::Type::AnyGc);
         self.push_type(to_type);
     }
 
-    pub fn cast_ref(&mut self, from_type: lir::StructID, to_type: lir::StructID) {
-        self.pop_type(&lir::Type::StructRef(from_type));
-        self.push_type(lir::Type::StructRef(to_type));
-    }
+    // pub fn cast_ref(&mut self, from_type: lir::StructID, to_type: lir::StructID) {
+    //     self.pop_type(&lir::Type::StructRef(from_type));
+    //     self.push_type(lir::Type::StructRef(to_type));
+    // }
 
     pub fn declare_variable(&mut self, ty: lir::Type) -> lir::LocalID {
         self.pop_type(&ty);
@@ -228,7 +228,7 @@ impl<'a> BlockBuilder<'a> {
     }
 
     pub fn load_null(&mut self) {
-        self.push_type(lir::Type::AnyRef);
+        self.push_type(lir::Type::AnyGc);
         self.instructions.push(lir::Instruction::LoadNull);
     }
 
@@ -248,9 +248,9 @@ impl<'a> BlockBuilder<'a> {
         }
     }
 
-    pub fn create_zero_init_struct(&mut self, struct_: lir::StructID) {
-        self.push_type(lir::Type::StructRef(struct_));
-        self.instructions.push(lir::Instruction::CreateZeroInitStruct(struct_));
+    pub fn create_zero_init_gc_struct(&mut self, struct_: lir::StructID) {
+        self.push_type(lir::Type::gc_struct(struct_));
+        self.instructions.push(lir::Instruction::CreateZeroInitGcStruct(struct_));
     }
 
     pub fn create_struct(&mut self, struct_: lir::StructID, fields: Vec<(String, lir::Type)>) {
@@ -259,22 +259,40 @@ impl<'a> BlockBuilder<'a> {
             self.pop_type(&ty);
             field_names.push(name);
         }
-        self.push_type(lir::Type::StructRef(struct_));
+        self.push_type(lir::Type::Struct(struct_));
         self.instructions.push(lir::Instruction::CreateStruct(struct_, field_names));
     }
 
+    pub fn create_new(&mut self, value: lir::Type) {
+        self.pop_type(&value);
+        self.push_type(lir::Type::Gc(Box::new(value)));
+        self.instructions.push(lir::Instruction::CreateNew);
+    }
+
+    pub fn deref_gc(&mut self, contained: lir::Type) {
+        self.pop_type(&lir::Type::Gc(Box::new(contained.clone())));
+        self.push_type(contained);
+        self.instructions.push(lir::Instruction::DerefGc);
+    }
+
     pub fn get_field(&mut self, struct_: lir::StructID, field: (String, lir::Type)) {
-        self.pop_type(&lir::Type::StructRef(struct_));
+        self.pop_type(&lir::Type::Struct(struct_));
         self.push_type(field.1);
         self.instructions.push(lir::Instruction::GetField(struct_, field.0));
     }
 
-    pub fn set_field(&mut self, struct_: lir::StructID, field: (String, lir::Type)) {
+    pub fn get_gc_field(&mut self, struct_: lir::StructID, field: (String, lir::Type)) {
+        self.pop_type(&lir::Type::gc_struct(struct_));
+        self.push_type(field.1);
+        self.instructions.push(lir::Instruction::GetGcField(struct_, field.0));
+    }
+
+    pub fn set_gc_field(&mut self, struct_: lir::StructID, field: (String, lir::Type)) {
         let (field_name, field_type) = field;
         self.pop_type(&field_type);
-        self.pop_type(&lir::Type::StructRef(struct_));
-        self.instructions.push(lir::Instruction::SetField(struct_, field_name));
-        self.push_type(lir::Type::StructRef(struct_));
+        self.pop_type(&lir::Type::gc_struct(struct_));
+        self.instructions.push(lir::Instruction::SetGcField(struct_, field_name));
+        self.push_type(lir::Type::gc_struct(struct_));
     }
 
     pub fn call(&mut self, params: &[lir::Type], ret: lir::Type) {

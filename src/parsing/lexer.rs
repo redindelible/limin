@@ -20,6 +20,7 @@ pub enum TokenType {
     Colon,
     Semicolon,
     Minus,
+    Star,
     Fn,
     Let,
     For,
@@ -50,6 +51,7 @@ const BASIC_TOKENS: phf::Map<char, TokenType> = phf_map! {
     '-' => TokenType::Minus,
     ',' => TokenType::Comma,
     '.' => TokenType::Period,
+    '*' => TokenType::Star
 };
 
 const KEYWORDS: phf::Map<&str, TokenType> = phf_map! {
@@ -85,6 +87,7 @@ impl TokenType {
             TokenType::Colon => "':'",
             TokenType::Semicolon => "';'",
             TokenType::Minus => "'-'",
+            TokenType::Star => "'*'",
             TokenType::Fn => "'fn'",
             TokenType::Let => "'let'",
             TokenType::For => "'for'",
