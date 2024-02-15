@@ -2,7 +2,7 @@ struct Holder<T> {
     held: T;
 }
 
-fn create_Holder<T>(item: T) -> Holder<T> {
+fn create_Holder<T>(item: T) -> *Holder<T> {
     return new Holder { held: item };
 }
 

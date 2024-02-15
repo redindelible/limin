@@ -475,22 +475,27 @@ impl<'a> FunctionLowering<'a> {
                 self.lower_expr(builder, cond, mir).unwrap();
                 match self.lower_type(mir, yield_type) {
                     Lowered::Unit => {
-                        let then_do = builder.build(|mut builder| {
+                        let then_do: lir::BlockVoidOrDiverge = builder.build(|mut builder| {
                             match self.lower_expr(&mut builder, then_do, mir) {
                                 Lowered::Unit => builder.yield_none().into(),
                                 Lowered::Empty => builder.yield_diverges().into(),
                                 Lowered::Some(_) => unreachable!()
                             }
                         });
-                        let else_do = builder.build(|mut builder| {
+                        let else_do: lir::BlockVoidOrDiverge = builder.build(|mut builder| {
                             match self.lower_expr(&mut builder, else_do, mir) {
                                 Lowered::Unit => builder.yield_none().into(),
                                 Lowered::Empty => builder.yield_diverges().into(),
                                 Lowered::Some(_) => unreachable!()
                             }
                         });
-                        builder.if_else_void(then_do, else_do);
-                        Lowered::Unit
+                        if then_do.diverges() && else_do.diverges() {
+                            builder.if_else_diverge(then_do.into_diverges().unwrap(), else_do.into_diverges().unwrap());
+                            Lowered::Empty
+                        } else {
+                            builder.if_else_void(then_do, else_do);
+                            Lowered::Unit
+                        }
                     }
                     Lowered::Empty => {
                         let then_do = builder.build(|mut builder| {
@@ -511,22 +516,27 @@ impl<'a> FunctionLowering<'a> {
                         Lowered::Empty
                     }
                     Lowered::Some(ty) => {
-                        let then_do = builder.build(|mut builder| {
+                        let then_do: lir::BlockValueOrDiverge = builder.build(|mut builder| {
                             match self.lower_expr(&mut builder, then_do, mir) {
                                 Lowered::Unit => unreachable!(),
                                 Lowered::Empty => builder.yield_diverges().into(),
                                 Lowered::Some(ty) => builder.yield_value(ty).into()
                             }
                         });
-                        let else_do = builder.build(|mut builder| {
+                        let else_do: lir::BlockValueOrDiverge = builder.build(|mut builder| {
                             match self.lower_expr(&mut builder, else_do, mir) {
                                 Lowered::Unit => unreachable!(),
                                 Lowered::Empty => builder.yield_diverges().into(),
                                 Lowered::Some(ty) => builder.yield_value(ty).into()
                             }
                         });
-                        builder.if_else_value(ty.clone(), then_do, else_do);
-                        Lowered::Some(ty)
+                        if then_do.diverges() && else_do.diverges() {
+                            builder.if_else_diverge(then_do.into_diverges().unwrap(), else_do.into_diverges().unwrap());
+                            Lowered::Empty
+                        } else {
+                            builder.if_else_value(ty.clone(), then_do, else_do);
+                            Lowered::Some(ty)
+                        }
                     }
                 }
             },
@@ -618,6 +628,7 @@ impl<'a> FunctionLowering<'a> {
                     field_names.push((format!("{i}"), lir::Type::gc_struct(capture_info.capture_ty)));
                 }
                 builder.create_struct(closure_ty, field_names);
+                builder.create_new(lir::Type::Struct(closure_ty));
                 builder.upcast_gc(lir::Type::gc_struct(closure_ty));
 
                 builder.create_tuple(vec![

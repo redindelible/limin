@@ -103,6 +103,13 @@ impl BlockValueOrDiverge {
             BlockValueOrDiverge::Diverge(_) => true
         }
     }
+
+    pub fn into_diverges(self) -> Option<BlockDiverge> {
+        match self {
+            BlockValueOrDiverge::Value(_) => None,
+            BlockValueOrDiverge::Diverge(diverge) => Some(diverge)
+        }
+    }
 }
 
 impl From<BlockValue> for BlockValueOrDiverge {
@@ -135,6 +142,13 @@ impl BlockVoidOrDiverge {
         match self {
             BlockVoidOrDiverge::Void(_) => false,
             BlockVoidOrDiverge::Diverge(_) => true
+        }
+    }
+
+    pub fn into_diverges(self) -> Option<BlockDiverge> {
+        match self {
+            BlockVoidOrDiverge::Void(_) => None,
+            BlockVoidOrDiverge::Diverge(diverge) => Some(diverge)
         }
     }
 }

@@ -1,0 +1,16 @@
+
+struct HoldI32 {
+    num: i32;
+}
+
+fn make_hold(value: bool) -> *HoldI32 {
+    if (value) {
+        return new HoldI32 { num: 1 };
+    } else {
+        return new HoldI32 { num: 0 };
+    }
+}
+
+fn main() -> i32 {
+    return make_hold(true).num;
+}

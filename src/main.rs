@@ -87,9 +87,21 @@ mod test {
     }
 
     #[test]
+    fn test_divergent_if_else() {
+        let output = run_file(Path::new("test/test_files/test_divergent_if_else.lmn"));
+        assert_eq!(output.status.code(), Some(1));
+    }
+
+    #[test]
     fn test_generic_function() {
         let output = run_file(Path::new("test/test_files/test_generic_function.lmn"));
         assert_eq!(output.status.code(), Some(32));
+    }
+
+    #[test]
+    fn test_functions() {
+        let output = run_file(Path::new("test/test_files/test_functions.lmn"));
+        assert_eq!(output.status.code(), Some(13));
     }
 
     #[test]
@@ -102,5 +114,29 @@ mod test {
     fn test_generic_struct() {
         let output = run_file(Path::new("test/test_files/test_generic_struct.lmn"));
         assert_eq!(output.status.code(), Some(32));
+    }
+
+    #[test]
+    fn test_new() {
+        let output = run_file(Path::new("test/test_files/test_new.lmn"));
+        assert_eq!(output.status.code(), Some(32));
+    }
+
+    #[test]
+    fn test_inherent_impl() {
+        let output = run_file(Path::new("test/test_files/test_inherent_impl.lmn"));
+        assert_eq!(output.status.code(), Some(32));
+    }
+
+    #[test]
+    fn test_trait_impl() {
+        let output = run_file(Path::new("test/test_files/test_trait_impl.lmn"));
+        assert_eq!(output.status.code(), Some(24));
+    }
+
+    #[test]
+    fn test_foreign_impl() {
+        let output = run_file(Path::new("test/test_files/test_foreign_impl.lmn"));
+        assert_eq!(output.status.code(), Some(4));
     }
 }

@@ -35,6 +35,7 @@ pub(super) struct FieldInfo<'a> {
     pub loc: Location<'a>
 }
 
+#[derive(Debug)]
 pub(super) struct ImplInfo<'a, 'b> {
     pub type_parameters: IndexMap<String, tc::TypeParameterKey>,
     pub trait_: Option<tc::TraitKey>,
@@ -100,7 +101,7 @@ impl<'a, 'b> CollectedPrototypes<'a, 'b> {
         match (check_ty, impl_ty) {
             (Type::Unit, Type::Unit) => true,
             (Type::Boolean, Type::Boolean) => true,
-            (Type::SignedInteger(a_bits), Type::UnsignedInteger(b_bits)) => a_bits == b_bits,
+            (Type::SignedInteger(a_bits), Type::SignedInteger(b_bits)) => a_bits == b_bits,
             (Type::UnsignedInteger(a_bits), Type::UnsignedInteger(b_bits)) => a_bits == b_bits,
             (Type::Struct(StructType(a_struct, a_variant)), Type::Struct(StructType(b_struct, b_variant))) => {
                 if a_struct != b_struct {
@@ -173,6 +174,7 @@ impl<'a, 'b> CollectedPrototypes<'a, 'b> {
             }
 
             if self.unify(for_type, &impl_info.for_type, &mut inference_map) {
+
                 let mut type_map = HashMap::new();
                 for (tp, typ) in inference_map {
                     type_map.insert(tp, typ.unwrap());

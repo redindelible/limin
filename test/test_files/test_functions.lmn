@@ -9,7 +9,7 @@ fn thirteen() -> i32 {
 }
 
 fn main() -> i32 {
-    let func = if (true) {
+    let func = if (false) {
         twelve
     } else {
         thirteen

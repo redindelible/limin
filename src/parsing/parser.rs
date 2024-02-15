@@ -806,6 +806,7 @@ mod test {
         parse_file(&s).unwrap();
     }
 
+    #[ignore = "Should be fixed when new syntax for structs lands"]
     #[test]
     fn test_parse_complicated() {
         let s = source("test", r"

@@ -1,0 +1,15 @@
+
+struct Box<T> {
+    foo: *T;
+}
+
+fn create_box<T>(item: T) -> Box<T> {
+    return Box { foo: new item };
+}
+
+struct Holder<T> { held: T; }
+
+fn main() -> i32 {
+    let box = create_box(Holder { held: 32 } );
+    return box.foo.held;
+}

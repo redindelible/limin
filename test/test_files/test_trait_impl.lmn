@@ -1,0 +1,18 @@
+
+struct HoldI32 {
+    num: i32;
+}
+
+trait HasI32 {
+    fn read_i32(self) -> i32;
+}
+
+impl HasI32 for HoldI32 {
+    fn read_i32(self) -> i32 {
+        return self.num;
+    }
+}
+
+fn main() -> i32 {
+    return HoldI32 { num: 24 }.read_i32();
+}

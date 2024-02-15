@@ -8,8 +8,8 @@ struct Bar {
 }
 
 struct FooBar {
-    foo: Foo;
-    bar: Bar;
+    foo: *Foo;
+    bar: *Bar;
 }
 
 fn main() -> i32 {

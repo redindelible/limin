@@ -1,0 +1,12 @@
+
+impl for i32 {
+    fn get(self) -> i32 {
+        return self;
+    }
+}
+
+fn main() -> i32 {
+    let num = new 4.get();
+
+    return num.get();
+}

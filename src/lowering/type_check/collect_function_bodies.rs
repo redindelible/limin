@@ -359,6 +359,13 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                     todo!()
                 }
             },
+            (Type::Gc(a_ty), Type::Gc(b_ty)) => {
+                if self.equate_types(a_ty, b_ty, expr.loc()).is_failure() {
+                    self.push_error(failure(self));
+                    return AnnotatedExpr::new_errored(expr.loc(), false);
+                }
+                return AnnotatedExpr { expr, ty, always_diverges };
+            }
             (Type::TypeParameter(a_key), Type::TypeParameter(b_key)) => {
                 if a_key == b_key {
                     return AnnotatedExpr { expr, ty, always_diverges };
@@ -424,6 +431,10 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                 }
             },
             (_, _) => {
+                if std::mem::discriminant(&ty) == std::mem::discriminant(to_ty) {
+                    dbg!(ty, to_ty);
+                    todo!()
+                }
                 self.push_error(failure(self));
                 return AnnotatedExpr::new_errored(expr.loc(), always_diverges);
             }
