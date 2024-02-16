@@ -214,14 +214,14 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        self.expect(TokenType::Semicolon)?;
+        let end = self.expect(TokenType::Semicolon)?;
 
         Ok(MethodPrototype {
             name: name.text.to_owned(),
             has_self: maybe_self.is_some(),
             parameters,
             return_type,
-            loc: start.loc + name.loc
+            loc: start.loc + end.loc
         })
     }
 
@@ -282,7 +282,12 @@ impl<'a> Parser<'a> {
 
         let trait_ = if self.curr().typ == TokenType::Identifier {
             let trait_name = self.expect(TokenType::Identifier)?;
-            Some(trait_name.text.to_owned())
+            let type_args = if self.curr().typ == TokenType::LeftAngle {
+                self.delimited_parse(TokenType::LeftAngle, TokenType::RightAngle, Self::parse_type)?.0
+            } else {
+                vec![]
+            };
+            Some((trait_name.text.to_owned(), type_args))
         } else {
             None
         };
@@ -300,7 +305,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_method(&mut self) -> ParseResult<Method<'a>> {
-        self.expect(TokenType::Fn)?;
+        let start = self.expect(TokenType::Fn)?;
         let name = self.expect(TokenType::Identifier)?;
         let type_parameters = if self.curr().typ == TokenType::LeftAngle {
             let (type_parameters, _) = self.delimited_parse(TokenType::LeftAngle, TokenType::RightAngle, Self::parse_type_parameter)?;
@@ -309,7 +314,7 @@ impl<'a> Parser<'a> {
             vec![]
         };
 
-        let start = self.expect(TokenType::LeftParenthesis)?;
+        self.expect(TokenType::LeftParenthesis)?;
         let mut maybe_self: Option<(String, Location<'a>)> = None;
         let mut parameters: Vec<Parameter<'a>> = Vec::new();
         while self.curr().typ != TokenType::RightParenthesis {

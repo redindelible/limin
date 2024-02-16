@@ -64,7 +64,7 @@ pub struct MethodPrototype<'a> {
 #[derive(Debug, Eq, PartialEq)]
 pub struct Impl<'a> {
     pub type_parameters: Vec<TypeParameter<'a>>,
-    pub trait_: Option<String>,
+    pub trait_: Option<(String, Vec<Type<'a>>)>,
     pub for_type: Type<'a>,
     pub methods: Vec<Method<'a>>,
     pub loc: Location<'a>

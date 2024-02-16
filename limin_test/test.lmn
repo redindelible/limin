@@ -1,11 +1,13 @@
-trait Foo {
-    fn foo(self, other: i32) -> i32;
+trait Foo<T> {
+    fn foo(self) -> T;
 }
 
 struct Bar { }
 
-impl Foo for Bar {
-
+impl Foo<i32> for Bar {
+    fn foo(self) -> bool {
+        return 12;
+    }
 }
 
 fn main() -> i32 {

@@ -598,7 +598,7 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                     }
                 };
 
-                let map = self.types.create_subs(struct_type.clone());
+                let map = self.types.create_struct_subs(struct_type.clone());
 
                 let Some(field_info) = self.prototypes.structs[struct_type.0].fields.get(attr) else {
                     self.push_error(tc::TypeCheckError::NoSuchFieldName { typ: self.types.structs[struct_type.0].name.clone(), field: attr.clone(), loc: *loc });

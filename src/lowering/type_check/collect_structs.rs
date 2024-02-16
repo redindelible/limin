@@ -25,8 +25,12 @@ pub(super) struct CollectedTypes<'a, 'b> {
 }
 
 impl CollectedTypes<'_, '_> {
-    pub fn create_subs(&self, tc::StructType(struct_, variant): tc::StructType) -> HashMap<tc::TypeParameterKey, tc::Type> {
+    pub fn create_struct_subs(&self, tc::StructType(struct_, variant): tc::StructType) -> HashMap<tc::TypeParameterKey, tc::Type> {
         self.structs[struct_].type_parameters.values().copied().zip(variant).collect()
+    }
+    
+    pub fn create_trait_subs(&self, tc::TraitType(trait_, variant): tc::TraitType) -> HashMap<tc::TypeParameterKey, tc::Type> {
+        self.traits[trait_].type_parameters.values().copied().zip(variant).collect()
     }
 }
 

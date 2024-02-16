@@ -618,7 +618,10 @@ impl<'a> TypeCheck<'a> {
                 }
             }
             _ => {
-                todo!()
+                if std::mem::discriminant(a) == std::mem::discriminant(b) {
+                    todo!();
+                }
+                return failure(self);
             }
         }
     }
@@ -965,6 +968,56 @@ mod test {
         let ast = parse_one(&s);
 
         resolve_types(ast).unwrap();
+    }
+
+    #[test]
+    fn test_implementing_generic_trait() {
+        let s = source("<test>", r"
+            trait Foo<T> {
+                fn foo(self) -> T;
+            }
+
+            struct Bar { }
+
+            impl Foo<i32> for Bar {
+                fn foo(self) -> i32 {
+                    return 12;
+                }
+            }
+
+            fn main() -> i32 {
+                return 0;
+            }");
+
+        let ast = parse_one(&s);
+
+        resolve_types(ast).unwrap();
+    }
+
+    #[test]
+    fn test_error_differing_return_types() {
+        let s = source("<test>", r"
+            trait Foo<T> {
+                fn foo(self) -> T;
+            }
+
+            struct Bar { }
+
+            impl Foo<bool> for Bar {
+                fn foo(self) -> i32 {
+                    return 12;
+                }
+            }
+
+            fn main() -> i32 {
+                return 0;
+            }");
+
+        let ast = parse_one(&s);
+
+        assert!(resolve_types(ast).is_err_and(|e|
+            e.render_to_string().contains("Error: The implementation of the method has a different signature than its declaration.")
+        ));
     }
 
     #[test]
