@@ -1,19 +1,13 @@
-
-
-fn twelve() -> i32 {
-    return 12;
+trait Foo {
+    fn foo(self, other: i32) -> i32;
 }
 
-fn thirteen() -> i32 {
-    return 13;
+struct Bar { }
+
+impl Foo for Bar {
+
 }
 
 fn main() -> i32 {
-    let func = if (true) {
-        twelve
-    } else {
-        thirteen
-    };
-    return func();
+    return 0;
 }
-

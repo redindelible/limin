@@ -258,84 +258,6 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
         }
     }
 
-    #[must_use]
-    fn equate_types(&mut self, a: &Type, b: &Type, loc: Location<'a>) -> ResolveResult<'a, ()> {
-        let failure = |s: &Self| ResolveResult::Failure(vec![tc::TypeCheckError::IncompatibleTypes { expected: s.display_type(b), got: s.display_type(a), loc }]);
-
-        match (a, b) {
-            (Type::Errored, _) | (_, Type::Errored) => ResolveResult::Success(()),
-            (Type::Never, Type::Never) => ResolveResult::Success(()),
-            (Type::Boolean, Type::Boolean) => ResolveResult::Success(()),
-            (Type::Unit, Type::Unit) => ResolveResult::Success(()),
-            (Type::SignedInteger(a_bits), Type::SignedInteger(b_bits)) => {
-                if a_bits == b_bits {
-                    ResolveResult::Success(())
-                } else {
-                    failure(self)
-                }
-            },
-            (Type::Struct(StructType(a_struct, a_variant)), Type::Struct(StructType(b_struct, b_variant))) => {
-                if a_struct != b_struct {
-                    return failure(self);
-                }
-                assert_eq!(a_variant.len(), b_variant.len());
-                let mut results = Vec::new();
-                for (a_type_param, b_type_param) in a_variant.into_iter().zip(b_variant) {
-                    results.push(self.equate_types(a_type_param, b_type_param, loc));
-                }
-                let result = ResolveResult::collect_results::<()>(results);
-                if result.is_failure() {
-                    return failure(self);
-                }
-                return ResolveResult::Success(());
-            }
-            (Type::TypeParameter(a_key), Type::TypeParameter(b_key)) => {
-                if a_key == b_key {
-                    return ResolveResult::Success(())
-                } else {
-                    return failure(self);
-                }
-            }
-            (&Type::InferenceVariable(key), b) => {
-                let infer_info = self.checker.query_inference_variable_mut(key);
-                if let Some(typ) = &infer_info.ty {
-                    let ty = typ.clone();
-                    return self.equate_types(&ty, b, loc);
-                } else {
-                    if let &Type::InferenceVariable(b_key) = b {
-                        if b_key == key {
-                            return ResolveResult::Success(());
-                        }
-                    }
-                    infer_info.ty = Some(b.clone());
-                    return ResolveResult::Success(());
-                }
-            }
-            (a, &Type::InferenceVariable(key)) => {
-                let infer_info = self.checker.query_inference_variable_mut(key);
-                if let Some(typ) = &infer_info.ty {
-                    let ty = typ.clone();
-                    return self.equate_types(a, &ty, loc);
-                } else {
-                    if let &Type::InferenceVariable(a_key) = a {
-                        if a_key == key {
-                            return ResolveResult::Success(());
-                        }
-                    }
-                    infer_info.ty = Some(a.clone());
-                    return ResolveResult::Success(());
-                }
-            }
-            _ => {
-                todo!()
-            }
-        }
-    }
-
-    // fn coerce_to_struct_ref(&mut self, expr: AnnotatedExpr<'a>) -> AnnotatedExpr<'a> {
-    //     let AnnotatedExpr { expr, ty, always_diverges } = expr;
-    // }
-
     fn coerce_to_type(&mut self, expr: AnnotatedExpr<'a>, to_ty: &Type) -> AnnotatedExpr<'a> {
         let AnnotatedExpr { expr, ty, always_diverges } = expr;
 
@@ -360,7 +282,7 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                 }
             },
             (Type::Gc(a_ty), Type::Gc(b_ty)) => {
-                if self.equate_types(a_ty, b_ty, expr.loc()).is_failure() {
+                if self.checker.equate_types(a_ty, b_ty, self.types, expr.loc()).is_failure() {
                     self.push_error(failure(self));
                     return AnnotatedExpr::new_errored(expr.loc(), false);
                 }
@@ -379,7 +301,7 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                     assert_eq!(from_variant.len(), to_variant.len());
 
                     for (from, to) in from_variant.iter().zip(to_variant) {
-                        if self.equate_types(from, to, expr.loc()).is_failure() {
+                        if self.checker.equate_types(from, to, self.types, expr.loc()).is_failure() {
                             self.push_error(failure(self));
                             return AnnotatedExpr::new_errored(expr.loc(), false);
                         }
@@ -393,11 +315,11 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
             (Type::Function(FunctionType(a_params, a_ret)), Type::Function(FunctionType(b_params, b_ret))) => {
                 let mut failed = false;
                 for (from, to) in a_params.iter().zip(b_params) {
-                    if self.equate_types(from, to, expr.loc()).is_failure() {
+                    if self.checker.equate_types(from, to, self.types, expr.loc()).is_failure() {
                         failed = true;
                     }
                 }
-                if self.equate_types(a_ret, b_ret, expr.loc()).is_failure() {
+                if self.checker.equate_types(a_ret, b_ret, self.types, expr.loc()).is_failure() {
                     failed = true;
                 }
                 if a_params.len() != b_params.len() {
@@ -655,7 +577,7 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                 }
             }
             ast::Expr::GetAttr { obj, attr, loc } => {
-                let AnnotatedExpr { expr, ty, mut always_diverges } = self.resolve_expr(obj, None);
+                let AnnotatedExpr { expr, ty, always_diverges } = self.resolve_expr(obj, None);
 
                 let mut object_ty = ty;
                 let mut coercions = Vec::new();
@@ -801,7 +723,7 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                     for (param, expected_type) in parameters.iter().zip(params) {
                         if let Some(ty) = &param.typ {
                             let ty = self.resolve_type(ty);
-                            if self.equate_types(&ty, expected_type, *loc).ok(self.checker).is_none() {
+                            if self.checker.equate_types(&ty, expected_type, self.types, *loc).ok(self.checker).is_none() {
                                 failed = true;
                             }
                         }
@@ -921,7 +843,7 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
 
         let ret = self.checker.subs(&info.ret, &map);
         if let Some(ty) = yield_type {
-            let _ = self.equate_types(&ret, ty, loc);
+            let _ = self.checker.equate_types(&ret, ty, self.types, loc);
         }
 
         let mut resolved_arguments = Vec::new();

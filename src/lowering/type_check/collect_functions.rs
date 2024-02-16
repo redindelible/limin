@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use indexmap::IndexMap;
 use crate::parsing::ast;
-use crate::lowering::{hir, type_check as tc};
+use crate::lowering::{type_check as tc};
 use crate::source::Location;
-use crate::util::KeyMap;
+use crate::util::{KeyMap};
 
 pub(super) struct TraitInfo<'a, 'b> {
     pub type_parameters: IndexMap<String, tc::TypeParameterKey>,
@@ -13,6 +13,7 @@ pub(super) struct TraitInfo<'a, 'b> {
     pub ast_trait: &'b ast::Trait<'a>
 }
 
+#[derive(Clone)]
 pub(super) struct MethodPrototype<'a> {
     pub name: String,
     pub has_self: bool,
@@ -335,9 +336,14 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
                         None
                     };
 
+                    let mut required_methods: Option<Vec<String>> = trait_.map(|trait_key| {
+                        collected_traits[trait_key].methods.keys().cloned().collect()
+                    });
+
                     let for_type = checker.resolve_type(for_type, file_ns, &types).expect_type(checker);
 
-                    let impl_methods = ast_methods.iter().map(|method| {
+                    let mut impl_methods = IndexMap::new();
+                    for method in ast_methods.iter() {
                         let method_ns = checker.add_namespace(Some(impl_ns));
 
                         let type_parameters = method.type_parameters.iter().map(|tp| {
@@ -353,7 +359,7 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
                             None
                         };
 
-                        let params = method.parameters.iter().map(|param| {
+                        let params: IndexMap<String, ParameterInfo> = method.parameters.iter().map(|param| {
                             let ty = checker.resolve_type(&param.typ, method_ns, &types).expect_type(checker);
                             let (decl, prev) = checker.add_local(&param.name, ty.clone(), 0, param.loc, method_ns);
                             (param.name.clone(), ParameterInfo {
@@ -368,6 +374,29 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
                             None => tc::Type::Unit
                         };
 
+                        if let Some(trait_key) = trait_ {
+                            if let Some(method_proto) = collected_traits[trait_key].methods.get(&method.name) {
+                                if method_proto.params.len() == params.len()
+                                    && method_proto.has_self == maybe_self.is_some()
+                                    && method_proto.params.iter().zip(params.values())
+                                        .all(|(proto, info)| !checker.equate_types(proto, &info.ty, &types, method.loc).is_failure())
+                                    && !checker.equate_types(&method_proto.ret, &ret, &types, method.loc).is_failure() {
+
+                                    required_methods.as_mut().map(|required| {
+                                        required.retain(|req| req != &method.name);
+                                    });
+                                } else {
+                                    checker.push_error(tc::TypeCheckError::TraitMethodDiffers { got: method.loc, declared: method_proto.loc });
+                                }
+                            } else {
+                                checker.push_error(tc::TypeCheckError::UndeclaredMethod {
+                                    name: method.name.clone(),
+                                    trait_: checker.display_type(&tc::Type::Trait(tc::TraitType(trait_key, vec![])), &types),
+                                    loc: method.loc
+                                });
+                            }
+                        }
+
                         let method_key = methods.add(MethodInfo {
                             type_parameters,
                             maybe_self,
@@ -377,8 +406,22 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
                             ast_method: method
                         });
 
-                        (method.name.clone(), method_key)
-                    }).collect();
+                        let maybe_prev = impl_methods.insert(method.name.clone(), method_key);
+                        if let Some(prev) = maybe_prev {
+                            checker.push_error(tc::TypeCheckError::MethodDuplicated(method.name.clone(), method.loc, methods[prev].ast_method.loc));
+                        }
+                    }
+
+                    if let Some(required) = required_methods {
+                        if !required.is_empty() {
+                            checker.push_error(tc::TypeCheckError::MissingMethods {
+                                methods: required,
+                                trait_: checker.display_type(&tc::Type::Trait(tc::TraitType(trait_.unwrap(), vec![])), &types),
+                                loc: ast_impl.loc
+                            });
+                        }
+                    }
+
 
                     impls.add(ImplInfo {
                         type_parameters,

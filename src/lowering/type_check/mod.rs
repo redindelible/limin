@@ -98,7 +98,7 @@ pub enum TypeCheckError<'a> {
     NameDuplicated(String, Location<'a>, Location<'a>),
     StructDuplicated(String, Location<'a>, Location<'a>),
     FieldDuplicated(String, String, Location<'a>, Location<'a>),
-    MethodDuplicated(String, String, Location<'a>, Location<'a>),
+    MethodDuplicated(String, Location<'a>, Location<'a>),
     CouldNotResolveName(String, Location<'a>),
     CouldNotResolveType(String, Location<'a>),
     IncompatibleTypes { expected: DisplayType<'a>, got: DisplayType<'a>, loc: Location<'a> },
@@ -115,6 +115,9 @@ pub enum TypeCheckError<'a> {
     NoSuchFieldName { field: String, typ: String, loc: Location<'a> },
     NoSuchMethodName { on_type: DisplayType<'a>, method: String, loc: Location<'a> },
     ConflictingMethods { on_type: DisplayType<'a>, method: String, loc: Location<'a>, possible: Vec<Location<'a>> },
+    TraitMethodDiffers { got: Location<'a>, declared: Location<'a> },
+    UndeclaredMethod { name: String, trait_: DisplayType<'a>, loc: Location<'a> },
+    MissingMethods { methods: Vec<String>, trait_: DisplayType<'a>, loc: Location<'a> },
     MissingFields { fields: Vec<String>, typ: String, loc: Location<'a> },
     CouldNotInferTypeParameter(String, Location<'a>),
     CouldNotInferParameters(Location<'a>),
@@ -133,6 +136,31 @@ impl<'a> Message for TypeCheckError<'a> {
                 writeln!(to, " | Note: A name called '{name}' was previously defined here.")?;
                 Self::show_note_location(prev_loc, to)
             }
+            TypeCheckError::TraitMethodDiffers { got, declared } => {
+                writeln!(to, "Error: The implementation of the method has a different signature than its declaration.")?;
+                Self::show_location(got, to)?;
+                writeln!(to, " | Note: The method was declared here.")?;
+                Self::show_note_location(declared, to)
+            }
+            TypeCheckError::UndeclaredMethod { name, trait_, loc } => {
+                writeln!(to, "Error: Trait '{}' does not declare a method named '{}'.", trait_.render(), name)?;
+                Self::show_location(loc, to)
+            }
+            TypeCheckError::MissingMethods { methods, trait_, loc } => {
+                if methods.len() == 1 {
+                    writeln!(to, "Error: Implementation is missing a method declared in the implementing trait.")?;
+                    Self::show_location(loc, to)?;
+                    writeln!(to, " | Note: Trait '{}' requires that the method '{}' be implemented.", trait_.render(), methods[0])
+                } else {
+                    writeln!(to, "Error: Implementation is missing methods declared in the implementing trait.")?;
+                    Self::show_location(loc, to)?;
+                    writeln!(to, " | Note: Trait '{}' requires that the following methods be implemented:", trait_.render())?;
+                    for method in methods {
+                        writeln!(to, " |  * '{}'", method)?;
+                    }
+                    Ok(())
+                }
+            }
             TypeCheckError::StructDuplicated(name, loc, prev_loc) => {
                 writeln!(to, "Error: A struct called '{name}' was already defined in this scope.")?;
                 Self::show_location(loc, to)?;
@@ -145,10 +173,10 @@ impl<'a> Message for TypeCheckError<'a> {
                 writeln!(to, " | Note: A field called '{name}' was previously defined here.")?;
                 Self::show_note_location(prev_loc, to)
             }
-            TypeCheckError::MethodDuplicated(name, struct_name, loc, prev_loc) => {
-                writeln!(to, "Error: The struct '{struct_name}' already has a field called '{name}'.")?;
+            TypeCheckError::MethodDuplicated(name, loc, prev_loc) => {
+                writeln!(to, "Error: The impl block defines multiple methods called '{name}'.")?;
                 Self::show_location(loc, to)?;
-                writeln!(to, " | Note: A field called '{name}' was previously defined here.")?;
+                writeln!(to, " | Note: A method called '{name}' was previously defined here.")?;
                 Self::show_note_location(prev_loc, to)
             }
             TypeCheckError::CouldNotResolveName(name, loc) => {
@@ -521,6 +549,121 @@ impl<'a> TypeCheck<'a> {
         }
     }
 
+    #[must_use]
+    fn equate_types<'b>(&mut self, a: &Type, b: &Type, types: &CollectedTypes<'a, 'b>, loc: Location<'a>) -> ResolveResult<'a, ()> {
+        let failure = |s: &Self| ResolveResult::Failure(vec![TypeCheckError::IncompatibleTypes { expected: s.display_type(b, types), got: s.display_type(a, types), loc }]);
+
+        match (a, b) {
+            (Type::Errored, _) | (_, Type::Errored) => ResolveResult::Success(()),
+            (Type::Never, Type::Never) => ResolveResult::Success(()),
+            (Type::Boolean, Type::Boolean) => ResolveResult::Success(()),
+            (Type::Unit, Type::Unit) => ResolveResult::Success(()),
+            (Type::SignedInteger(a_bits), Type::SignedInteger(b_bits)) => {
+                if a_bits == b_bits {
+                    ResolveResult::Success(())
+                } else {
+                    failure(self)
+                }
+            },
+            (Type::Struct(StructType(a_struct, a_variant)), Type::Struct(StructType(b_struct, b_variant))) => {
+                if a_struct != b_struct {
+                    return failure(self);
+                }
+                assert_eq!(a_variant.len(), b_variant.len());
+                let mut results = Vec::new();
+                for (a_type_param, b_type_param) in a_variant.into_iter().zip(b_variant) {
+                    results.push(self.equate_types(a_type_param, b_type_param, types, loc));
+                }
+                let result = ResolveResult::collect_results::<()>(results);
+                if result.is_failure() {
+                    return failure(self);
+                }
+                return ResolveResult::Success(());
+            }
+            (Type::TypeParameter(a_key), Type::TypeParameter(b_key)) => {
+                if a_key == b_key {
+                    return ResolveResult::Success(())
+                } else {
+                    return failure(self);
+                }
+            }
+            (&Type::InferenceVariable(key), b) => {
+                let infer_info = self.query_inference_variable_mut(key);
+                if let Some(typ) = &infer_info.ty {
+                    let ty = typ.clone();
+                    return self.equate_types(&ty, b, types, loc);
+                } else {
+                    if let &Type::InferenceVariable(b_key) = b {
+                        if b_key == key {
+                            return ResolveResult::Success(());
+                        }
+                    }
+                    infer_info.ty = Some(b.clone());
+                    return ResolveResult::Success(());
+                }
+            }
+            (a, &Type::InferenceVariable(key)) => {
+                let infer_info = self.query_inference_variable_mut(key);
+                if let Some(typ) = &infer_info.ty {
+                    let ty = typ.clone();
+                    return self.equate_types(a, &ty, types, loc);
+                } else {
+                    if let &Type::InferenceVariable(a_key) = a {
+                        if a_key == key {
+                            return ResolveResult::Success(());
+                        }
+                    }
+                    infer_info.ty = Some(a.clone());
+                    return ResolveResult::Success(());
+                }
+            }
+            _ => {
+                todo!()
+            }
+        }
+    }
+
+    pub fn display_type<'b>(&self, ty: &Type, types: &CollectedTypes<'a, 'b>) -> DisplayType<'a> {
+        match ty {
+            Type::Unit => DisplayType::Unit,
+            Type::Never => DisplayType::Never,
+            Type::Boolean => DisplayType::Boolean,
+            Type::Errored => DisplayType::Errored,
+            Type::SignedInteger(bits) => DisplayType::Integer { is_signed: true, bits: *bits },
+            Type::UnsignedInteger(bits) => DisplayType::Integer { is_signed: false, bits: *bits },
+            Type::Gc(inner) => DisplayType::Gc(Box::new(self.display_type(inner, types))),
+            Type::Ref(inner) => DisplayType::Ref(Box::new(self.display_type(inner, types))),
+            Type::Struct(StructType(struct_key, variant)) => {
+                let struct_info= &types.structs[*struct_key];
+                DisplayType::Struct {
+                    name: struct_info.name.clone(),
+                    variant: variant.iter().map(|t| self.display_type(t, types)).collect(),
+                    loc: struct_info.ast_struct.loc
+                }
+            },
+            Type::Trait(TraitType(trait_key, variant)) => {
+                let trait_info = &types.traits[*trait_key];
+                DisplayType::Struct {
+                    name: trait_info.name.clone(),
+                    variant: variant.iter().map(|t| self.display_type(t, types)).collect(),
+                    loc: trait_info.ast_trait.loc
+                }
+            }
+            Type::Function(FunctionType(params, ret)) => DisplayType::Function {
+                params: params.iter().map(|t| self.display_type(t, types)).collect(),
+                ret: Box::new(self.display_type(ret, types))
+            },
+            Type::TypeParameter(ty_param_key) => {
+                let info = &self.type_parameters[*ty_param_key];
+                DisplayType::TypeParameter { name: info.name.clone(), bound: None }
+            }
+            Type::InferenceVariable(key) => {
+                let info = self.query_inference_variable(*key);
+                DisplayType::InferenceVariable { name: info.name.clone(), inferred: info.ty.as_ref().map(|ty| Box::new(self.display_type(ty, types))) }
+            }
+        }
+    }
+
     pub fn subs(&self, ty: &Type, map: &HashMap<TypeParameterKey, Type>) -> Type {
         match ty {
             Type::Never => Type::Never,
@@ -873,6 +1016,30 @@ mod test {
 
         assert!(resolve_types(ast).is_err_and(|e|
             e.render_to_string().contains("Error: Could not resolve the type 'Thing'.")
+        ));
+    }
+
+    #[test]
+    fn test_error_missing_methods() {
+        let s = source("<test>", r"
+            trait Foo {
+                fn foo(self, other: i32) -> i32;
+            }
+
+            struct Bar { }
+
+            impl Foo for Bar {
+
+            }
+
+            fn main() -> i32 {
+                return 0;
+            }
+        ");
+        let ast = parse_one(&s);
+
+        assert!(resolve_types(ast).is_err_and(|e|
+            e.render_to_string().contains("Error: Implementation is missing a method declared in the implementing trait.")
         ));
     }
 

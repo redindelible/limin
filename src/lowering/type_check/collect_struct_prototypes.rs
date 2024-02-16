@@ -10,7 +10,6 @@ pub(super) struct FileInfo<'a, 'b> {
 
 pub(super) struct StructInfo<'a, 'b> {
     pub name: String,
-    pub containing: tc::NamespaceKey,
     pub ast_struct: &'b ast::Struct<'a>,
     pub struct_ns: tc::NamespaceKey,
     pub type_parameters: IndexMap<String, tc::TypeParameterKey>
@@ -18,15 +17,12 @@ pub(super) struct StructInfo<'a, 'b> {
 
 pub(super) struct TraitInfo<'a, 'b> {
     pub name: String,
-    pub containing: tc::NamespaceKey,
     pub ast_trait: &'b ast::Trait<'a>,
     pub trait_ns: tc::NamespaceKey,
     pub type_parameters: IndexMap<String, tc::TypeParameterKey>
 }
 
 pub(super) struct CollectedStructPrototypes<'a, 'b> {
-    pub ast: &'b ast::AST<'a>,
-
     pub file_info: Vec<FileInfo<'a, 'b>>,
     pub structs: KeyMap<tc::StructKey, StructInfo<'a, 'b>>,
     pub traits: KeyMap<tc::TraitKey, TraitInfo<'a, 'b>>
@@ -61,7 +57,6 @@ pub(super) fn collect_struct_prototypes<'a, 'b>(checker: &mut tc::TypeCheck<'a>,
 
                     structs.insert(struct_key, StructInfo {
                         name: name.clone(),
-                        containing: file_ns,
                         struct_ns,
                         type_parameters,
                         ast_struct
@@ -85,7 +80,6 @@ pub(super) fn collect_struct_prototypes<'a, 'b>(checker: &mut tc::TypeCheck<'a>,
 
                     traits.insert(trait_key, TraitInfo {
                         name: name.clone(),
-                        containing: file_ns,
                         trait_ns,
                         type_parameters,
                         ast_trait
@@ -98,5 +92,5 @@ pub(super) fn collect_struct_prototypes<'a, 'b>(checker: &mut tc::TypeCheck<'a>,
         file_info.push(FileInfo { file_ns, ast_file: file });
     }
 
-    CollectedStructPrototypes { ast, structs, traits, file_info }
+    CollectedStructPrototypes { structs, traits, file_info }
 }

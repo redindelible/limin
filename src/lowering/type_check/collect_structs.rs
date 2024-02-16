@@ -19,8 +19,6 @@ pub(super) struct TraitInfo<'a, 'b> {
 }
 
 pub(super) struct CollectedTypes<'a, 'b> {
-    pub ast: &'b ast::AST<'a>,
-
     pub file_info: Vec<tc::collect_struct_prototypes::FileInfo<'a, 'b>>,
     pub structs: KeyMap<tc::StructKey, StructInfo<'a, 'b>>,
     pub traits: KeyMap<tc::TraitKey, TraitInfo<'a, 'b>>
@@ -32,8 +30,8 @@ impl CollectedTypes<'_, '_> {
     }
 }
 
-pub(super) fn collect_structs<'a, 'b>(checker: &mut tc::TypeCheck<'a>, collected: tc::CollectedStructPrototypes<'a, 'b>) -> CollectedTypes<'a, 'b> {
-    let tc::CollectedStructPrototypes { ast, structs, traits, file_info} = collected;
+pub(super) fn collect_structs<'a, 'b>(_checker: &mut tc::TypeCheck<'a>, collected: tc::CollectedStructPrototypes<'a, 'b>) -> CollectedTypes<'a, 'b> {
+    let tc::CollectedStructPrototypes { structs, traits, file_info, .. } = collected;
 
     let structs = structs.map(|_, struct_info| {
         StructInfo {
@@ -53,5 +51,5 @@ pub(super) fn collect_structs<'a, 'b>(checker: &mut tc::TypeCheck<'a>, collected
         }
     });
 
-    CollectedTypes { ast, file_info, structs, traits }
+    CollectedTypes { file_info, structs, traits }
 }
