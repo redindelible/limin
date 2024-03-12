@@ -117,6 +117,7 @@ pub(super) fn collect_function_bodies<'a, 'b>(mut checker: tc::TypeCheck<'a>, co
         }
 
         hir_impls.insert(impl_key, hir::Impl {
+            type_params: impl_.type_parameters.values().copied().collect(),
             impl_trait: None,
             bounds: vec![],
             for_type: impl_.for_type.clone(),
@@ -617,7 +618,7 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
 
                 let mut object_type = ty;
                 let mut coercions = Vec::new();
-                let (method_key, type_map) = loop {
+                let (method_key, impl_key, type_map) = loop {
                     let mut possible_methods = self.prototypes.get_method(&object_type, method);
                     if possible_methods.is_empty() {
                         match object_type {
@@ -634,7 +635,7 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                     } else if possible_methods.len() > 1 {
                         self.push_error(tc::TypeCheckError::ConflictingMethods {
                             on_type: self.display_type(&object_type), method: method.clone(), loc: *loc,
-                            possible: possible_methods.into_iter().map(|(key, _)| self.prototypes.methods[key].ast_method.loc).collect()
+                            possible: possible_methods.into_iter().map(|(key, _, _)| self.prototypes.methods[key].ast_method.loc).collect()
                         });
                         return AnnotatedExpr::new_errored(*loc, false);
                     } else {
@@ -656,9 +657,19 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                     return AnnotatedExpr::new_errored(*loc, always_diverges);
                 }
 
+                let impl_types = self.prototypes.impls[impl_key].type_parameters.values().map(
+                    |tp| type_map.get(tp).cloned().unwrap_or(Type::TypeParameter(*tp))
+                ).collect();
+
                 AnnotatedExpr {
                     expr: hir::Expr::MethodCall {
-                        object: Box::new(expr), coercions, method: method_key, arguments: resolved_arguments, loc: *loc
+                        object: Box::new(expr),
+                        coercions,
+                        method: method_key,
+                        impl_key,
+                        impl_types,
+                        arguments: resolved_arguments,
+                        loc: *loc
                     },
                     ty: ret,
                     always_diverges

@@ -8,7 +8,7 @@ struct Bar<T> {
 
 impl<T> Foo<T> for Bar<T> {
     fn foo(self) -> T {
-        self.item
+        return self.item;
     }
 }
 

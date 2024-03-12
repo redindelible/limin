@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use indexmap::IndexMap;
 use crate::parsing::ast;
 use crate::lowering::{type_check as tc};
+use crate::lowering::hir::TypeParameterKey;
 use crate::source::Location;
 use crate::util::{KeyMap};
 
@@ -165,25 +166,24 @@ impl<'a, 'b> CollectedPrototypes<'a, 'b> {
     //     impls
     // }
 
-    pub fn get_method(&self, for_type: &tc::Type, method: &str) -> Vec<(tc::MethodKey, tc::TypeMap)> {
+    pub fn get_method(&self, for_type: &tc::Type, method: &str) -> Vec<(tc::MethodKey, tc::ImplKey, tc::TypeMap)> {
         let mut keys = Vec::new();
 
         for (impl_key, impl_info) in &self.impls {
+            let Some(&key) = impl_info.methods.get(method) else { continue; };
+            
             let mut inference_map = HashMap::new();
             for tp in impl_info.type_parameters.values() {
                 inference_map.insert(*tp, None);
             }
-
+            
             if self.unify(for_type, &impl_info.for_type, &mut inference_map) {
-
                 let mut type_map = HashMap::new();
                 for (tp, typ) in inference_map {
                     type_map.insert(tp, typ.unwrap());
                 }
-
-                if let Some(key) = impl_info.methods.get(method) {
-                    keys.push((*key, type_map))
-                }
+            
+                keys.push((key, impl_key, type_map))
             }
         }
 
@@ -320,7 +320,7 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
                 ast::TopLevel::Impl(ast_impl @ ast::Impl { ref type_parameters, ref trait_, ref for_type, methods: ref ast_methods, ref loc }) => {
                     let impl_ns = checker.add_namespace(Some(file_ns));
 
-                    let type_parameters = type_parameters.iter().map(|tp| {
+                    let type_parameters: IndexMap<String, TypeParameterKey> = type_parameters.iter().map(|tp| {
                         let key = checker.add_type_param(tp.name.clone(), tp.loc);
                         checker.add_type(impl_ns, tp.name.clone(), tc::Type::TypeParameter(key));
                         (tp.name.clone(), key)
@@ -339,7 +339,14 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
                         (None, vec![])
                     };
 
-                    let for_type = checker.resolve_type(for_type, file_ns, &types).expect_type(checker);
+                    let for_type = checker.resolve_type(for_type, impl_ns, &types).expect_type(checker);
+                    let mut has_error: bool = false;
+                    for type_param in type_parameters.values() {
+                        if !for_type.uses_type_parameter(*type_param) {
+                            checker.push_error(tc::TypeCheckError::UnboundedTypeParameter { name: checker.type_parameters[*type_param].name.clone(), loc: *loc });
+                            has_error = true;
+                        }
+                    }
 
                     let mut impl_methods = IndexMap::new();
                     for method in ast_methods.iter() {
@@ -418,14 +425,16 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
                         });
                     }
 
-                    impls.add(ImplInfo {
-                        type_parameters,
-                        trait_,
-                        for_type,
-                        methods: impl_methods,
-                        loc: *loc,
-                        ast_impl
-                    });
+                    if !has_error {
+                        impls.add(ImplInfo {
+                            type_parameters,
+                            trait_,
+                            for_type,
+                            methods: impl_methods,
+                            loc: *loc,
+                            ast_impl
+                        });
+                    }
                 }
 
                 _ => { }

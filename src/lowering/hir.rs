@@ -76,16 +76,17 @@ pub enum Type {
 }
 
 impl Type {
-    // fn create_subs(&self) -> HashMap<TypeParameterKey, Type> {
-    //     match self {
-    //         Type::Errored => HashMap::new(),
-    //         Type::Unit => HashMap::new(),
-    //         Type::Never => HashMap::new(),
-    //         Type::Boolean => HashMap::new(),
-    //         Type::SignedInteger(_) => HashMap::new(),
-    //         Type::UnsignedInteger(_) => HashMap::new(),
-    //     }
-    // }
+    pub fn uses_type_parameter(&self, key: TypeParameterKey) -> bool {
+        match self {
+            Type::Gc(inner) => inner.uses_type_parameter(key),
+            Type::Ref(inner) => inner.uses_type_parameter(key),
+            Type::Struct(StructType(_, variant)) => variant.iter().any(|ty| ty.uses_type_parameter(key)),
+            Type::Trait(TraitType(_, variant)) => variant.iter().any(|ty| ty.uses_type_parameter(key)),
+            Type::Function(FunctionType(params, ret)) => ret.uses_type_parameter(key) || params.iter().any(|ty| ty.uses_type_parameter(key)),
+            Type::TypeParameter(ty_key) => *ty_key == key,
+            _ => false
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -158,6 +159,7 @@ pub struct Struct<'ir> {
 }
 
 pub struct Impl<'ir> {
+    pub type_params: Vec<TypeParameterKey>,
     pub impl_trait: Option<()>,
     pub bounds: Vec<()>,
     pub for_type: Type,
@@ -234,7 +236,7 @@ pub enum Expr<'ir> {
     GetAttr { obj: Box<Expr<'ir>>, coercions: Vec<Coercion>, obj_type: StructType, field_ty: Type, attr: String, loc: Location<'ir> },
     Call { callee: Box<Expr<'ir>>, callee_type: FunctionType, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
     GenericCall { generic: Vec<Type>, callee: FunctionKey, arguments: Vec<Expr<'ir>>, ret_type: Type, loc: Location<'ir>},
-    MethodCall { object: Box<Expr<'ir>>, coercions: Vec<Coercion>, method: MethodKey, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
+    MethodCall { object: Box<Expr<'ir>>, coercions: Vec<Coercion>, method: MethodKey, impl_key: ImplKey, impl_types: Vec<Type>, arguments: Vec<Expr<'ir>>, loc: Location<'ir> },
     CreateStruct { struct_type: StructType, fields: IndexMap<String, Box<Expr<'ir>>>, loc: Location<'ir> },
     New { value: Box<Expr<'ir>>, loc: Location<'ir> },
     IfElse { cond: Box<Expr<'ir>>, then_do: Box<Expr<'ir>>, else_do: Box<Expr<'ir>>, yield_type: Type, loc: Location<'ir> },

@@ -119,6 +119,7 @@ pub enum TypeCheckError<'a> {
     UndeclaredMethod { name: String, trait_: DisplayType<'a>, loc: Location<'a> },
     MissingMethods { methods: Vec<String>, trait_: DisplayType<'a>, loc: Location<'a> },
     MissingFields { fields: Vec<String>, typ: String, loc: Location<'a> },
+    UnboundedTypeParameter { name: String, loc: Location<'a> },
     CouldNotInferTypeParameter(String, Location<'a>),
     CouldNotInferParameters(Location<'a>),
     NoMainFunction,
@@ -130,6 +131,10 @@ pub enum TypeCheckError<'a> {
 impl<'a> Message for TypeCheckError<'a> {
     fn write_into<W: fmt::Write>(&self, to: &mut W) -> fmt::Result {
         match self {
+            TypeCheckError::UnboundedTypeParameter { name, loc } => {
+                writeln!(to, "Error: A type parameter '{name}' isn't bounded in the implementing type.")?;
+                Self::show_location(loc, to)
+            }
             TypeCheckError::NameDuplicated(name, loc, prev_loc) => {
                 writeln!(to, "Error: A name called '{name}' was already defined in this scope.")?;
                 Self::show_location(loc, to)?;
@@ -535,15 +540,21 @@ impl<'a> TypeCheck<'a> {
 
                 let type_args_result: ResolveResult<'a, Vec<Type>> = ResolveResult::collect_results(type_args.iter().map(|arg| self.resolve_type(arg, in_ns, ctxt)));
 
-                if let (&Some(key), ResolveResult::Success(type_args)) = (&key_result, &type_args_result) {
-                    let type_params = &ctxt.structs[key].type_parameters;
-                    if type_params.len() != type_args.len() {
-                        return ResolveResult::Failure(vec![TypeCheckError::MismatchedTypeArguments { expected: type_params.len(), got: type_args.len(), loc: *loc }]);
+                match (key_result, type_args_result) {
+                    (Some(key), ResolveResult::Success(type_args)) => {
+                        let type_params = &ctxt.structs[key].type_parameters;
+                        if type_params.len() != type_args.len() {
+                            return ResolveResult::Failure(vec![TypeCheckError::MismatchedTypeArguments { expected: type_params.len(), got: type_args.len(), loc: *loc }]);
+                        }
+                        return ResolveResult::Success(StructType(key, type_args.clone()).into());
                     }
-                    return ResolveResult::Success(StructType(key, type_args.clone()).into());
-                } else {
-                    let key_result: ResolveResult<'a, Type> = ResolveResult::Failure(vec![TypeCheckError::ExpectedStructName { got: name.clone(), loc: *loc }]);
-                    return ResolveResult::Failure(combine_errors!(key_result, type_args_result));
+                    (None, err) => {
+                        let key_result: ResolveResult<'a, Type> = ResolveResult::Failure(vec![TypeCheckError::ExpectedStructName { got: name.clone(), loc: *loc }]);
+                        return ResolveResult::Failure(combine_errors!(key_result, err));
+                    }
+                    (Some(_), ResolveResult::Failure(errs)) => {
+                        return ResolveResult::Failure(errs);
+                    }
                 }
             }
         }
@@ -1177,6 +1188,38 @@ mod test {
 
         assert!(resolved.is_err_and(|e|
             e.render_to_string().contains("Error: Incompatible types. Expected 'i32' but got 'bool'.")
+        ));
+    }
+
+    #[test]
+    fn test_error_unbounded_type_param() {
+        let s = source("<test>", r"
+            trait Foo<T> {
+                fn foo(self, t: T) -> T;
+            }
+            
+            struct Bar<T> {
+                item: T;
+            }
+            
+            impl<T> Foo<T> for Bar<i32> {
+                fn foo(self, t: T) -> T {
+                    return t;
+                }
+            }
+            
+            fn main() -> i32 {
+                let bar = Bar { item: 12 };
+            
+                return bar.foo(bar.item);
+            }
+        ");
+        let ast = parse_one(&s);
+
+        let resolved = resolve_types(ast);
+        
+        assert!(resolved.is_err_and(|e|
+            e.render_to_string().contains("Error: A type parameter 'T' isn't bounded in the implementing type.")
         ));
     }
 }

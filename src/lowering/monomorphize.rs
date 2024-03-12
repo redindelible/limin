@@ -298,8 +298,9 @@ impl Monomorphize {
                 let fn_type = self.function_prototypes[key].fn_type.clone();
                 mir::Expr::Call(fn_type, Box::new(callee), arguments.iter().map(|arg| self.lower_expr(arg, map, hir)).collect())
             },
-            hir::Expr::MethodCall { object, coercions, method, arguments, .. } => {
-                let method_key = self.queue_method(*method, &[], hir);
+            hir::Expr::MethodCall { object, coercions, method, arguments, impl_key, impl_types, .. } => {
+                let impl_types: Vec<mir::Type> = impl_types.iter().map(|t| self.lower_type(t, map, hir)).collect();
+                let method_key = self.queue_method(*method, &[], &impl_types, hir);
                 let callee = mir::Expr::LoadFunction(method_key);
                 let fn_type = self.function_prototypes[method_key].fn_type.clone();
 
@@ -484,8 +485,9 @@ impl Monomorphize {
         key
     }
 
-    fn queue_method(&mut self, method: hir::MethodKey, variant: &[mir::Type], hir: &hir::HIR) -> mir::FunctionKey {
+    fn queue_method(&mut self, method: hir::MethodKey, variant: &[mir::Type], impl_variant: &[mir::Type],  hir: &hir::HIR) -> mir::FunctionKey {
         let proto = &hir.methods[method];
+        let impl_proto = &hir.impls[proto.in_impl];
 
         if !self.methods.contains_key(method) {
             self.methods.insert(method, MethodInfo {
@@ -508,6 +510,9 @@ impl Monomorphize {
         };
 
         let mut generic_map: TypeMap = HashMap::new();
+        for (type_param, typ) in impl_proto.type_params.iter().zip(impl_variant.iter()) {
+            generic_map.insert(*type_param, typ.clone());
+        }
         for (type_param, typ) in proto.type_params.iter().zip(variant.iter()) {
             generic_map.insert(*type_param, typ.clone());
         }

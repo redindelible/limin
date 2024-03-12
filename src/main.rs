@@ -145,4 +145,10 @@ mod test {
         let output = run_file(Path::new("test/test_files/test_impl_generic_variant.lmn"));
         assert_eq!(output.status.code(), Some(12));
     }
+
+    #[test]
+    fn test_impl_generic() {
+        let output = run_file(Path::new("test/test_files/test_impl_generic.lmn"));
+        assert_eq!(output.status.code(), Some(12));
+    }
 }

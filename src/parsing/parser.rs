@@ -277,8 +277,12 @@ impl<'a> Parser<'a> {
 
     fn parse_impl(&mut self) -> ParseResult<TopLevel<'a>> {
         let start = self.expect(TokenType::Impl)?;
-
-        let type_parameters = Vec::new();
+        
+        let type_parameters = if self.curr().typ == TokenType::LeftAngle {
+            self.delimited_parse(TokenType::LeftAngle, TokenType::RightAngle, Self::parse_type_parameter)?.0
+        } else {
+            vec![]
+        };
 
         let trait_ = if self.curr().typ == TokenType::Identifier {
             let trait_name = self.expect(TokenType::Identifier)?;
