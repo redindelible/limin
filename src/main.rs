@@ -16,7 +16,7 @@ mod compiler;
 #[derive(Parser)]
 struct Args {
     #[arg(required=true)]
-    file: Vec<PathBuf>,
+    file: PathBuf,
     #[arg(short, long, required=true)]
     out: PathBuf,
     #[arg(long)]
@@ -26,9 +26,7 @@ struct Args {
 fn main() {
     let args = Args::parse();
     let mut compiler = Compiler::new(args.out, args.clang);
-    for file in args.file {
-        compiler.add_root(&file).unwrap();
-    }
+    compiler.set_root(args.file);
     let res = compiler.compile();
     match res {
         CompileResult::CouldNotParse(errs) => {
@@ -59,7 +57,7 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let output_path = dir.path().join("output");
         let mut compiler = Compiler::debug(output_path.clone(), PathBuf::from("lib/rt.c"), None);
-        compiler.add_root(file).unwrap();
+        compiler.set_root(file.to_owned());
         let res = compiler.compile();
         assert!(matches!(res, CompileResult::Success), "{:?}", res);
 
@@ -150,5 +148,17 @@ mod test {
     fn test_impl_generic() {
         let output = run_file(Path::new("test/test_files/test_impl_generic.lmn"));
         assert_eq!(output.status.code(), Some(12));
+    }
+
+    #[test]
+    fn test_nonlocal_infer_function() {
+        let output = run_file(Path::new("test/test_files/test_nonlocal_infer_function.lmn"));
+        assert_eq!(output.status.code(), Some(4));
+    }
+    
+    #[test]
+    fn test_nonlocal_infer_function_explicit() {
+        let output = run_file(Path::new("test/test_files/test_nonlocal_infer_function_explicit.lmn"));
+        assert_eq!(output.status.code(), Some(256));
     }
 }

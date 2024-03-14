@@ -3,6 +3,7 @@ mod collect_functions;
 mod collect_function_bodies;
 mod collect_structs;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use slotmap::{new_key_type, SlotMap};
@@ -373,7 +374,7 @@ impl<'a, T> ResolveResult<'a, T> {
 }
 
 impl<'a> ResolveResult<'a, Type> {
-    fn expect_type(self, checker: &mut TypeCheck<'a>) -> Type {
+    fn expect_type(self, checker: &TypeCheck<'a>) -> Type {
         match self {
             ResolveResult::Success(ty) => ty,
             ResolveResult::Failure(errors) => {
@@ -408,7 +409,7 @@ struct TypeCheck<'a> {
     namespaces: SlotMap<NamespaceKey, Namespace>,
     root: NamespaceKey,
 
-    errors: Vec<TypeCheckError<'a>>,
+    errors: RefCell<Vec<TypeCheckError<'a>>>,
 
     type_parameters: KeyMap<TypeParameterKey, TypeParameterInfo<'a>>,
     names: KeyMap<NameKey, NameInfo<'a>>,
@@ -455,9 +456,9 @@ impl<'a> TypeCheck<'a> {
     }
 
     #[must_use]
-    pub fn add_function(&mut self, name: impl Into<String>, key: FunctionKey, loc: Location<'a>, ns: NamespaceKey) -> (NameKey, Option<NameKey>) {
+    pub fn add_function(&mut self, name: impl Into<String>, key: FunctionKey, type_params: Vec<TypeParameterKey>, unsub_ty: FunctionType, loc: Location<'a>, ns: NamespaceKey) -> (NameKey, Option<NameKey>) {
         let name = name.into();
-        let info = NameInfo::Function { name: name.clone(), key, loc };
+        let info = NameInfo::Function { name: name.clone(), key, type_params, unsub_ty, loc };
         let key = self.names.add(info);
         (key, self.namespaces[ns].names.insert(name, key))
     }
@@ -718,8 +719,8 @@ impl<'a> TypeCheck<'a> {
         }
     }
 
-    pub fn push_error(&mut self, err: TypeCheckError<'a>) {
-        self.errors.push(err);
+    pub fn push_error(&self, err: TypeCheckError<'a>) {
+        self.errors.borrow_mut().push(err);
     }
 }
 
@@ -982,6 +983,24 @@ mod test {
     }
 
     #[test]
+    fn test_explicit_generic() {
+        let s = source("<test>", r"
+            fn identity<T>(t: T) -> T {
+                return t;
+            }
+            
+            fn main() -> i32 {
+                let b = identity<i32>;
+            
+                return identity<i32>(256);
+            }
+        ");
+        let ast = parse_one(&s);
+
+        resolve_types(ast).unwrap();
+    }
+
+    #[test]
     fn test_implementing_generic_trait() {
         let s = source("<test>", r"
             trait Foo<T> {
@@ -1192,6 +1211,26 @@ mod test {
     }
 
     #[test]
+    fn test_error_could_not_infer_generic_function() {
+        let s = source("<test>", r"
+            fn identity<T>(t: T) -> T { return t; }
+        
+            fn main() -> i32 {
+                let b = identity;
+                return 77;
+            }
+        ");
+        let ast = parse_one(&s);
+
+        let resolved = resolve_types(ast);
+
+
+        assert!(resolved.is_err_and(|e|
+            e.render_to_string().contains("Error: Could not infer the type of 'T'")
+        ));
+    }
+
+    #[test]
     fn test_error_unbounded_type_param() {
         let s = source("<test>", r"
             trait Foo<T> {
@@ -1220,6 +1259,44 @@ mod test {
         
         assert!(resolved.is_err_and(|e|
             e.render_to_string().contains("Error: A type parameter 'T' isn't bounded in the implementing type.")
+        ));
+    }
+
+    #[test]
+    fn test_error_conflicting_impl_names() {
+        let s = source("<test>", r"
+            trait Foo<T> {
+                fn foo(self, t: T) -> T;
+            }
+            
+            struct Bar { }
+            
+            impl Foo<i32> for Bar {
+                fn foo(self, t: i32) -> i32 {
+                    return 32;
+                }
+            }
+            
+            impl Foo<bool> for Bar {
+                fn foo(self, t: bool) -> bool {
+                    return false;
+                }
+            }
+            
+            
+            fn main() -> i32 {
+                let a = Bar { };
+                let b = a.foo(65);
+            
+                return 21;
+            }
+        ");
+        let ast = parse_one(&s);
+
+        let resolved = resolve_types(ast);
+
+        assert!(resolved.is_err_and(|e|
+            e.render_to_string().contains("Error: Method 'foo' is ambiguous for 'Bar'.")
         ));
     }
 }

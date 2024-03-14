@@ -15,7 +15,9 @@ pub fn parse_file(source: &Source) -> Result<File, Vec<ParserError>> {
 pub enum ParserError<'a> {
     UnexpectedToken(Token<'a>, Vec<TokenType>),
     ExpectedSymbol(Token<'a>, &'static str),
-    CouldNotParseNumber(Token<'a>, &'static str)
+    CouldNotParseNumber(Token<'a>, &'static str),
+    
+    CouldNotFindMod(PathBuf, Option<String>, Option<Location<'a>>)
 }
 
 impl<'a> Message for ParserError<'a> {
@@ -38,6 +40,19 @@ impl<'a> Message for ParserError<'a> {
             ParserError::CouldNotParseNumber(token, as_a) => {
                 writeln!(to, "Error: Could not parse integer literal into a {}.", as_a)?;
                 Self::show_location(&token.loc, to)
+            },
+            ParserError::CouldNotFindMod(path, name, loc) => {
+                if let Some(name) = name {
+                    writeln!(to, "Error: Could not locate module '{name}' at '{}'.", path.to_string_lossy())?;
+                } else {
+                    writeln!(to, "Error: Could not locate module at '{}'.", path.to_string_lossy())?;
+                };
+                
+                if let Some(loc) = loc {
+                    Self::show_location(&loc, to)
+                } else {
+                    Ok(())
+                }
             }
         }
     }
@@ -150,6 +165,7 @@ impl<'a> Parser<'a> {
             TokenType::Fn => self.parse_function(),
             TokenType::Impl => self.parse_impl(),
             TokenType::Trait => self.parse_trait(),
+            // TokenType::Use => self.parse_use(),
             _ => {
                 self.errors.push(ParserError::UnexpectedToken(self.curr(), vec![TokenType::Struct, TokenType::Fn]));
                 Err(0)
@@ -512,24 +528,24 @@ impl<'a> Parser<'a> {
                         left = Expr::Call { callee: Box::new(left), arguments, loc };
                     }
                 }
-                TokenType::LeftAngle => {
-                    let state = self.store();
-                    let result: Result<_, usize> = (|| {
-                        let type_arguments = self.delimited_parse(TokenType::LeftAngle, TokenType::RightAngle, Self::parse_type)?;
-                        let arguments = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, Self::parse_expr)?;
-                        Ok((type_arguments, arguments))
-                    })();
-                    match result {
-                        Ok(((generic_arguments, _), (arguments, args_loc))) => {
-                            let loc = left.loc() + args_loc;
-                            left = Expr::GenericCall { callee: Box::new(left), generic_arguments, arguments, loc};
-                        },
-                        Err(_) => {
-                            self.revert(state);
-                            break;
-                        }
-                    }
-                }
+                // TokenType::LeftAngle => {
+                //     let state = self.store();
+                //     let result: Result<_, usize> = (|| {
+                //         let type_arguments = self.delimited_parse(TokenType::LeftAngle, TokenType::RightAngle, Self::parse_type)?;
+                //         let arguments = self.delimited_parse(TokenType::LeftParenthesis, TokenType::RightParenthesis, Self::parse_expr)?;
+                //         Ok((type_arguments, arguments))
+                //     })();
+                //     match result {
+                //         Ok(((generic_arguments, _), (arguments, args_loc))) => {
+                //             let loc = left.loc() + args_loc;
+                //             left = Expr::GenericCall { callee: Box::new(left), generic_arguments, arguments, loc};
+                //         },
+                //         Err(_) => {
+                //             self.revert(state);
+                //             break;
+                //         }
+                //     }
+                // }
                 _ => { break; }
             }
         }
@@ -561,7 +577,7 @@ impl<'a> Parser<'a> {
     fn parse_terminal(&mut self) -> ParseResult<Expr<'a>> {
         match self.curr().typ {
             TokenType::Identifier => {
-                let tok = self.advance();
+                let qual_name = self.parse_qualified_name()?;
 
                 if self.curr().typ == TokenType::LeftBrace {
                     let (fields, loc) = self.delimited_parse(TokenType::LeftBrace, TokenType::RightBrace, |this| {
@@ -573,13 +589,12 @@ impl<'a> Parser<'a> {
                     })?;
 
                     Ok(Expr::CreateStruct {
-                        struct_: tok.text.to_owned(),
-                        type_args: None,
+                        loc: qual_name.loc() + loc,
+                        struct_: qual_name,
                         arguments: fields,
-                        loc: tok.loc + loc
                     })
                 } else {
-                    Ok(Expr::Name { name: tok.text.to_owned(), loc: tok.loc })
+                    Ok(Expr::Name(qual_name))
                 }
             },
             TokenType::Integer => {
@@ -612,6 +627,63 @@ impl<'a> Parser<'a> {
                 Err(0)
             }
         }
+    }
+    
+    fn parse_qualified_name(&mut self) -> ParseResult<QualifiedName<'a>> {
+        let start = self.expect(TokenType::Identifier)?; 
+        let mut left;
+        if self.curr().typ == TokenType::LeftAngle {
+            let state = self.store();
+            let result: Result<_, usize> = (|| {
+                let type_arguments = self.delimited_parse(TokenType::LeftAngle, TokenType::RightAngle, Self::parse_type)?;
+                Ok(type_arguments)
+            })();
+            match result {
+                Ok((generic_arguments, loc)) => {
+                    left = QualifiedName::Base {
+                        name: start.text.to_owned(),
+                        type_args: generic_arguments,
+                        loc: start.loc + loc
+                    }
+                },
+                Err(_) => {
+                    self.revert(state);
+                    left = QualifiedName::Base {
+                        name: start.text.to_owned(),
+                        type_args: Vec::new(),
+                        loc: start.loc
+                    };
+                }
+            }
+        } else {
+            left = QualifiedName::Base {
+                name: start.text.to_owned(),
+                type_args: Vec::new(),
+                loc: start.loc
+            };
+        }
+        while self.curr().typ == TokenType::Colon && self.peek().typ == TokenType::Colon {
+            self.advance(); self.advance();
+            let name = self.expect(TokenType::Identifier)?;
+            if self.curr().typ == TokenType::LeftAngle {
+                let (type_args, loc) = self.delimited_parse(TokenType::LeftAngle, TokenType::RightAngle, Self::parse_type)?;
+                left = QualifiedName::GetName {
+                    loc: left.loc() + loc,
+                    ns: Box::new(left),
+                    name: name.text.to_owned(),
+                    type_args,
+                };
+            } else {
+                left = QualifiedName::GetName {
+                    loc: left.loc() + name.loc,
+                    ns: Box::new(left),
+                    name: name.text.to_owned(),
+                    type_args: Vec::new(),
+                };
+            }
+        }
+        
+        Ok(left)
     }
 
     fn parse_type(&mut self) -> ParseResult<Type<'a>> {
@@ -655,7 +727,7 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod test {
     use crate::error::Message;
-    use crate::parsing::ast::{BinOp, Expr, Function, TopLevel, Type};
+    use crate::parsing::ast::{BinOp, Expr, Function, QualifiedName, TopLevel, Type};
     use crate::parsing::parser::{parse_file, Parser};
     use crate::source::Source;
 
@@ -669,7 +741,7 @@ mod test {
         let mut p = Parser::new(&s);
         let e = p.parse_expr().unwrap();
 
-        assert!(matches!(e, Expr::Name { name, ..} if name == "hello"));
+        assert!(matches!(e, Expr::Name(QualifiedName::Base { name, .. }) if name == "hello"));
     }
 
     #[test]
@@ -679,10 +751,10 @@ mod test {
         let e = p.parse_expr().unwrap_or_else(|_| panic!("{:?}", p.errors));
 
         let Expr::Call { callee, arguments, .. } = e else { panic!() };
-        let Expr::Name { name, ..} = callee.as_ref() else { panic!() };
+        let Expr::Name(QualifiedName::Base { name, .. }) = callee.as_ref() else { panic!() };
         assert_eq!(name, "hello");
         assert_eq!(arguments.len(), 1);
-        let Expr::Name { name, .. } = &arguments[0] else { panic!() };
+        let Expr::Name(QualifiedName::Base { name, .. }) = &arguments[0] else { panic!() };
         assert_eq!(name, "ad");
     }
 
@@ -693,9 +765,9 @@ mod test {
         let e = p.parse_expr().unwrap();
 
         let Expr::BinOp { left, op: BinOp::LessThan, right, .. } = e else { panic!() };
-        let Expr::Name { name, .. } = left.as_ref() else { panic!() };
+        let Expr::Name(QualifiedName::Base { name, .. }) = left.as_ref() else { panic!() };
         assert_eq!(name, "hello");
-        let Expr::Name { name, .. } = right.as_ref() else { panic!() };
+        let Expr::Name(QualifiedName::Base { name, .. }) = right.as_ref() else { panic!() };
         assert_eq!(name, "ad");
     }
 
@@ -705,27 +777,27 @@ mod test {
         let mut p = Parser::new(&s);
         let e = p.parse_expr().unwrap();
 
-        let Expr::GenericCall { callee, generic_arguments, arguments, .. } = e else { panic!() };
-        let Expr::Name { name, ..} = callee.as_ref() else { panic!() };
+        let Expr::Call { callee, arguments, .. } = e else { panic!() };
+        let Expr::Name(QualifiedName::Base { name, type_args, .. }) = callee.as_ref() else { panic!() };
         assert_eq!(name, "hello");
-        assert_eq!(generic_arguments.len(), 1);
-        let Type::Name { name, ..} = &generic_arguments[0] else { panic!() };
+        assert_eq!(type_args.len(), 1);
+        let Type::Name { name, ..} = &type_args[0] else { panic!() };
         assert_eq!(name, "ad");
 
         assert_eq!(arguments.len(), 2);
-        let Expr::Name { name, .. } = &arguments[0] else { panic!() };
+        let Expr::Name(QualifiedName::Base { name, .. }) = &arguments[0] else { panic!() };
         assert_eq!(name, "a");
-        let Expr::Name { name, .. } = &arguments[1] else { panic!() };
+        let Expr::Name(QualifiedName::Base { name, .. }) = &arguments[1] else { panic!() };
         assert_eq!(name, "b");
     }
 
     #[test]
-    fn test_expr_generic_false() {
+    fn test_expr_generic_changed() {
         let s = source("test", "hello < ad > a");
         let mut p = Parser::new(&s);
         let e = p.parse_expr().unwrap();
 
-        let Expr::BinOp { op: BinOp::GreaterThan, .. } = e else { panic!("{:?}", e) };
+        let Expr::Name { .. } = e else { panic!("{:?}", e) };
     }
 
     #[test]

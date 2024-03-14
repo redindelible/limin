@@ -6,6 +6,6 @@ fn identity<T>(t: T) -> T {
 fn main() -> i32 {
     let b = identity;
 
-    return identity(256);
+    return b(4);
 }
 

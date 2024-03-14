@@ -25,15 +25,7 @@ pub struct File<'a> {
 }
 
 impl<'a> File<'a> {
-    pub fn iter_structs(&self) -> impl Iterator<Item = &Struct<'a>>  {
-        self.top_levels.iter().filter_map(|t|
-            if let TopLevel::Struct(struct_) = t {
-                Some(struct_)
-            } else {
-                None
-            }
-        )
-    }
+    
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -41,7 +33,14 @@ pub enum TopLevel<'a> {
     Function(Function<'a>),
     Struct(Struct<'a>),
     Impl(Impl<'a>),
-    Trait(Trait<'a>)
+    Trait(Trait<'a>),
+    Mod(Mod<'a>)
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct Mod<'a> {
+    pub name: String,
+    pub loc: Location<'a>
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -126,11 +125,52 @@ pub enum Stmt<'a> {
     Expr { expr: Box<Expr<'a>>, loc: Location<'a> }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum QualifiedName<'a> {
+    Base { name: String, type_args: Vec<Type<'a>>, loc: Location<'a> },
+    GetName { ns: Box<QualifiedName<'a>>, name: String, type_args: Vec<Type<'a>>, loc: Location<'a> }
+}
+
+impl<'a> QualifiedName<'a> {
+    pub fn get_name(&self) -> &str {
+        match self {
+            QualifiedName::Base { name, .. } => name,
+            QualifiedName::GetName { name, .. } => name
+        }
+    }
+    
+    pub fn get_type_args(&self) -> &Vec<Type<'a>> {
+        match self {
+            QualifiedName::Base { type_args, .. } => type_args,
+            QualifiedName::GetName { type_args, .. } => type_args
+        }
+    }
+}
+
+impl<'a> HasLoc<'a> for QualifiedName<'a> {
+    fn loc(&self) -> Location<'a> {
+        match self {
+            QualifiedName::Base { loc, .. } => *loc,
+            QualifiedName::GetName { loc, .. } => *loc
+        }
+    }
+}
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum BinOp {
-    LessThan,
-    GreaterThan
+pub enum Expr<'a> {
+    Name(QualifiedName<'a>),
+    GetAttr { obj: Box<Expr<'a>>, attr: String, loc: Location<'a> },
+    BinOp { left: Box<Expr<'a>>, op: BinOp, right: Box<Expr<'a>>, loc: Location<'a> },
+    Call { callee: Box<Expr<'a>>, arguments: Vec<Expr<'a>>, loc: Location<'a> },
+    // GenericCall { callee: Box<Expr<'a>>, generic_arguments: Vec<Type<'a>>, arguments: Vec<Expr<'a>>, loc: Location<'a> },
+    MethodCall { object: Box<Expr<'a>>, method: String, arguments: Vec<Expr<'a>>, loc: Location<'a> },
+    Integer { number: u64, loc: Location<'a> },
+    Bool { value: bool, loc: Location<'a> },
+    Block(Block<'a>),
+    New { value: Box<Expr<'a>>, loc: Location<'a> },
+    CreateStruct { struct_: QualifiedName<'a>, arguments: Vec<StructArgument<'a>>, loc: Location<'a> },
+    IfElse { cond: Box<Expr<'a>>, then_do: Box<Expr<'a>>, else_do: Box<Expr<'a>>, loc: Location<'a> },
+    Closure { parameters: Vec<ClosureParameter<'a>>, body: Box<Expr<'a>>, loc: Location<'a> }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -141,20 +181,9 @@ pub struct Block<'a> {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum Expr<'a> {
-    Name { name: String, loc: Location<'a> },
-    GetAttr { obj: Box<Expr<'a>>, attr: String, loc: Location<'a> },
-    BinOp { left: Box<Expr<'a>>, op: BinOp, right: Box<Expr<'a>>, loc: Location<'a> },
-    Call { callee: Box<Expr<'a>>, arguments: Vec<Expr<'a>>, loc: Location<'a> },
-    GenericCall { callee: Box<Expr<'a>>, generic_arguments: Vec<Type<'a>>, arguments: Vec<Expr<'a>>, loc: Location<'a> },
-    MethodCall { object: Box<Expr<'a>>, method: String, arguments: Vec<Expr<'a>>, loc: Location<'a> },
-    Integer { number: u64, loc: Location<'a> },
-    Bool { value: bool, loc: Location<'a> },
-    Block(Block<'a>),
-    New { value: Box<Expr<'a>>, loc: Location<'a> },
-    CreateStruct { struct_: String, type_args: Option<Vec<Type<'a>>>, arguments: Vec<StructArgument<'a>>, loc: Location<'a> },
-    IfElse { cond: Box<Expr<'a>>, then_do: Box<Expr<'a>>, else_do: Box<Expr<'a>>, loc: Location<'a> },
-    Closure { parameters: Vec<ClosureParameter<'a>>, body: Box<Expr<'a>>, loc: Location<'a> }
+pub enum BinOp {
+    LessThan,
+    GreaterThan
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -174,11 +203,11 @@ pub struct ClosureParameter<'a> {
 impl<'a> HasLoc<'a> for Expr<'a> {
     fn loc(&self) -> Location<'a> {
         match self {
-            Expr::Name { loc, .. } => *loc,
+            Expr::Name(qual_name) => qual_name.loc(),
             Expr::GetAttr { loc, .. } => *loc,
             Expr::BinOp { loc, .. } => *loc,
             Expr::Call { loc, .. } => *loc,
-            Expr::GenericCall { loc, .. } => *loc,
+            // Expr::GenericCall { loc, .. } => *loc,
             Expr::MethodCall { loc, .. } => *loc,
             Expr::Integer { loc, .. } => *loc,
             Expr::Block(Block{ loc, .. }) => *loc,

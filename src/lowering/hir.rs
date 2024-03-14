@@ -26,6 +26,8 @@ pub enum NameInfo<'a> {
     Function {
         name: String,
         key: FunctionKey,
+        type_params: Vec<TypeParameterKey>,
+        unsub_ty: FunctionType,
         loc: Location<'a>
     }
 }
@@ -35,6 +37,13 @@ impl<'a> NameInfo<'a> {
         match self {
             NameInfo::Local { name, .. } => name,
             NameInfo::Function { name, .. } => name
+        }
+    }
+    
+    pub fn unsub_ty(&self) -> Type {
+        match self {
+            NameInfo::Local { ty, .. } => ty.clone(),
+            NameInfo::Function { unsub_ty, .. } => unsub_ty.clone().into()
         }
     }
 
@@ -227,7 +236,7 @@ pub enum Coercion {
 
 #[derive(Debug)]
 pub enum Expr<'ir> {
-    Name(NameKey, Location<'ir>),
+    Name(NameKey, HashMap<TypeParameterKey, Type>, Location<'ir>),
     Integer(u64, Location<'ir>),
     Bool(bool, Location<'ir>),
     Unit(Location<'ir>),
@@ -250,7 +259,7 @@ pub enum Expr<'ir> {
 impl<'a> Expr<'a> {
     pub fn loc(&self) -> Location<'a> {
         match self {
-            Expr::Name(_, loc) => *loc,
+            Expr::Name(_, _, loc) => *loc,
             Expr::Integer(_, loc) => *loc,
             Expr::Bool(_, loc) => *loc,
             Expr::Unit(loc) => *loc,

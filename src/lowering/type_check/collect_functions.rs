@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use indexmap::IndexMap;
 use crate::parsing::ast;
 use crate::lowering::{type_check as tc};
-use crate::lowering::hir::TypeParameterKey;
 use crate::source::Location;
 use crate::util::{KeyMap};
 
@@ -24,7 +23,7 @@ pub(super) struct MethodPrototype<'a> {
 }
 
 pub(super) struct StructInfo<'a, 'b> {
-    pub type_parameters: IndexMap<String, tc::TypeParameterKey>,
+    pub type_parameters: Vec<tc::TypeParameterKey>,
     pub fields: IndexMap<String, FieldInfo<'a>>,
 
     pub self_type: tc::StructType,
@@ -65,7 +64,7 @@ pub(super) struct ParameterInfo<'a> {
 }
 
 pub(super) struct FunctionInfo<'a, 'b> {
-    pub type_parameters: IndexMap<String, tc::TypeParameterKey>,
+    pub type_parameters: Vec<tc::TypeParameterKey>,
     pub params: IndexMap<String, ParameterInfo<'a>>,
     pub ret: tc::Type,
 
@@ -221,7 +220,7 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
         }
 
         collected_structs.insert(struct_key, StructInfo {
-            type_parameters: type_parameters.clone(),
+            type_parameters: type_parameters.values().copied().collect(),
             fields,
             self_type,
             ast_struct
@@ -268,10 +267,10 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
                     let func_ns = checker.add_namespace(Some(file_ns));
                     let function_key = functions.reserve();
 
-                    let mut type_parameters: IndexMap<String, tc::TypeParameterKey> = IndexMap::new();
+                    let mut type_parameters: Vec<tc::TypeParameterKey> = Vec::new();
                     for type_param in &func.type_parameters {
                         let key = checker.add_type_param(type_param.name.clone(), type_param.loc);
-                        type_parameters.insert(type_param.name.clone(), key);
+                        type_parameters.push(key);
                         checker.add_type(func_ns, type_param.name.clone(), tc::Type::TypeParameter(key));
                     }
 
@@ -286,7 +285,11 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
                         None => tc::Type::Unit
                     };
 
-                    let (name_key, prev) = checker.add_function(&func.name, function_key, func.loc, file_ns);
+                    let (name_key, prev) = checker.add_function(
+                        &func.name, function_key, type_parameters.clone(),
+                        tc::FunctionType(params.values().map(|v| v.ty.clone()).collect(), Box::new(ret.clone())),
+                        func.loc, file_ns
+                    );
                     if let Some(prev_key) = prev {
                         let prev_info = &checker.names[prev_key];
                         checker.push_error(tc::TypeCheckError::NameDuplicated(prev_info.name().clone(), func.loc, prev_info.loc()));
@@ -320,7 +323,7 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
                 ast::TopLevel::Impl(ast_impl @ ast::Impl { ref type_parameters, ref trait_, ref for_type, methods: ref ast_methods, ref loc }) => {
                     let impl_ns = checker.add_namespace(Some(file_ns));
 
-                    let type_parameters: IndexMap<String, TypeParameterKey> = type_parameters.iter().map(|tp| {
+                    let type_parameters: IndexMap<String, tc::TypeParameterKey> = type_parameters.iter().map(|tp| {
                         let key = checker.add_type_param(tp.name.clone(), tp.loc);
                         checker.add_type(impl_ns, tp.name.clone(), tc::Type::TypeParameter(key));
                         (tp.name.clone(), key)

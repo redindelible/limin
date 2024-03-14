@@ -241,7 +241,7 @@ impl Monomorphize {
             hir::Expr::Integer(num, _) => mir::Expr::Integer(*num),
             hir::Expr::Unit(_) => mir::Expr::Unit,
             hir::Expr::Block(block) => mir::Expr::Block(self.lower_block(block, map, hir)),
-            hir::Expr::Name(decl, _) => {
+            hir::Expr::Name(decl, type_map, _) => {
                 match &hir.names[*decl] {
                     hir::NameInfo::Local { level, .. } => {
                         if *level < self.current_level {
@@ -251,9 +251,13 @@ impl Monomorphize {
                         self.used_blocks.last_mut().unwrap().insert(block);
                         mir::Expr::LoadLocal(self.locals_map[decl])
                     }
-                    hir::NameInfo::Function { key, .. } => {
-                        assert!(!self.functions[*key].is_generic);
-                        mir::Expr::LoadFunction(self.functions[*key].variants[&vec![]])
+                    hir::NameInfo::Function { key, type_params, .. } => {
+                        let variant: Vec<mir::Type> = type_params.iter().map(|tp| { 
+                            self.lower_type(&type_map[tp], map, hir)
+                        }).collect();
+                        let mir_key = self.queue_function(*key, &variant, hir);
+                        // assert!(!self.functions[*key].is_generic);
+                        mir::Expr::LoadFunction(mir_key)
                     }
                 }
             },

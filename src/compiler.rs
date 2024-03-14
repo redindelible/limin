@@ -1,3 +1,4 @@
+use std::collections::{HashSet, VecDeque};
 use std::fs::File;
 use std::io;
 use std::io::Write;
@@ -10,6 +11,7 @@ use crate::source::Source;
 use crate::lowering::{lower, TypeCheckError};
 use crate::parsing::{ast, parse_file, ParserError};
 
+
 #[derive(Debug)]
 pub enum CompileResult<'a> {
     CouldNotParse(Vec<ParserError<'a>>),
@@ -21,10 +23,15 @@ pub enum CompileResult<'a> {
 }
 
 pub struct Compiler {
-    sources: Arena<Source>,
+    // sources: Arena<Source>,
     output: PathBuf,
     clang: PathBuf,
     rt_path: PathBuf,
+    
+    root: Option<PathBuf>,
+    libs: Vec<PathBuf>,
+
+    sources: Arena<Source>,
 }
 
 impl Compiler {
@@ -35,7 +42,10 @@ impl Compiler {
             sources: Arena::new(),
             output,
             clang: clang.unwrap_or(PathBuf::from("clang")),
-            rt_path
+            rt_path,
+            
+            root: None,
+            libs: Vec::new()
         }
     }
 
@@ -44,27 +54,44 @@ impl Compiler {
             sources: Arena::new(),
             output,
             clang: clang.unwrap_or(PathBuf::from("clang")),
-            rt_path
+            rt_path,
+
+            root: None,
+            libs: Vec::new()
         }
     }
-
-    pub fn add_root(&self, path: &Path) -> io::Result<&Source> {
-        let source = Source::from_file(path)?;
-        Ok(self.sources.alloc(source))
+    
+    pub fn set_root(&mut self, root: PathBuf) {
+        self.root = Some(root);
     }
 
     pub fn compile(&mut self) -> CompileResult {
+        let mut parse_errors: Vec<ParserError> = Vec::new();
         let mut files = Vec::new();
-        let mut errors = Vec::new();
-        for source in self.sources.iter_mut() {
-            let s = parse_file(source);
-            match s {
-                Ok(f) => files.push(f),
-                Err(e) => errors.extend(e)
+        
+        let mut to_parse = VecDeque::from([
+            (self.root.clone().unwrap(), None, None)
+        ]);
+        let mut parsed = HashSet::new();
+        while let Some((source_file, name, loc)) = to_parse.pop_front() {
+            if parsed.contains(&source_file) {
+                continue;
             }
+            parsed.insert(source_file.clone());
+            
+            let source = match Source::from_file(&source_file) {
+                Ok(source) => self.sources.alloc(source),
+                Err(_) => { parse_errors.push(ParserError::CouldNotFindMod(source_file, name, loc)); continue }
+            };
+            
+            let file = match parse_file(source) {
+                Ok(file) => file,
+                Err(e) => { parse_errors.extend(e); continue }
+            };
+            files.push(file);
         }
-        if !errors.is_empty() {
-            return CompileResult::CouldNotParse(errors);
+        if !parse_errors.is_empty() {
+            return CompileResult::CouldNotParse(parse_errors);
         }
         let ast = ast::AST::from_files("test".into(), files);
 

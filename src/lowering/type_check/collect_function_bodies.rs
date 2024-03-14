@@ -4,6 +4,7 @@ use crate::parsing::ast;
 use crate::lowering::hir::{self, Coercion, FunctionType, InferenceVariableKey, StructType, TraitType, Type};
 use crate::lowering::type_check as tc;
 use crate::lowering::type_check::ResolveResult;
+use crate::parsing::ast::QualifiedName;
 use crate::source::{HasLoc, Location};
 use crate::util::KeyMap;
 
@@ -38,7 +39,7 @@ pub(super) fn collect_function_bodies<'a, 'b>(mut checker: tc::TypeCheck<'a>, co
         hir_functions.insert(func_key, hir::Function {
             name: func_info.ast_func.name.clone(),
             decl: func_info.name_key,
-            type_params: func_info.type_parameters.values().copied().collect(),
+            type_params: func_info.type_parameters.clone(),
             params: parameters,
             ret: func_info.ret.clone(),
             body,
@@ -59,7 +60,7 @@ pub(super) fn collect_function_bodies<'a, 'b>(mut checker: tc::TypeCheck<'a>, co
 
         hir_structs.insert(struct_key, hir::Struct {
             name: struct_info.ast_struct.name.clone(),
-            type_params: struct_info.type_parameters.values().copied().collect(),
+            type_params: struct_info.type_parameters.clone(),
             super_struct: None,
             fields,
             loc: struct_info.ast_struct.loc
@@ -125,9 +126,22 @@ pub(super) fn collect_function_bodies<'a, 'b>(mut checker: tc::TypeCheck<'a>, co
             loc: impl_.loc
         });
     }
+    
+    for (_, inference_info) in &checker.inference_variables {
+        if inference_info.ty.is_none() {
+            checker.push_error(tc::TypeCheckError::CouldNotInferTypeParameter(inference_info.name.clone(), inference_info.loc));
+        }
+    }
 
-
-    let tc::TypeCheck { name, names, type_parameters, inference_variables, errors, .. } = checker;
+    let tc::TypeCheck { 
+        name, 
+        names, 
+        type_parameters, 
+        inference_variables, 
+        errors, 
+        .. 
+    } = checker;
+    let errors = errors.into_inner();
 
     let &Some(main_function) = main_function else {
         return ResolveResult::Failure(errors);
@@ -158,6 +172,7 @@ type ExpectedType = Option<Type>;
 struct AnnotatedExpr<'a> {
     expr: hir::Expr<'a>,
     ty: Type,
+    // free_vars: Vec<InferenceVariableKey>,
     always_diverges: bool
 }
 
@@ -170,6 +185,25 @@ impl AnnotatedExpr<'_> {
 struct AnnotatedStmt<'a> {
     stmt: hir::Stmt<'a>,
     always_diverges: bool
+}
+
+struct AnnotatedNameAsStruct {
+    key: tc::StructKey,
+    type_map: tc::TypeMap,
+    free_vars: Vec<InferenceVariableKey>
+}
+
+struct AnnotatedName {
+    key: tc::NameKey,
+    ty: Type,
+    type_map: tc::TypeMap,
+    free_vars: Vec<InferenceVariableKey>
+}
+
+struct AnnotatedNamespace {
+    key: tc::NamespaceKey,
+    type_map: tc::TypeMap,
+    free_vars: Vec<InferenceVariableKey>
 }
 
 
@@ -194,18 +228,120 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
         }
     }
 
-    fn push_error(&mut self, error: tc::TypeCheckError<'a>) {
+    fn push_error(&self, error: tc::TypeCheckError<'a>) {
         self.checker.push_error(error)
     }
 
-    fn resolve_name(&self, name: &str) -> Option<tc::NameKey> {
+    fn resolve_name(&mut self, name: &QualifiedName<'a>) -> Option<AnnotatedName> {
         self._resolve_name(self.namespace, name)
     }
+    
+    fn resolve_name_as_struct(&mut self, name: &QualifiedName<'a>) -> Option<AnnotatedNameAsStruct> {
+        self._resolve_name_as_struct(self.namespace, name)
+    }
 
-    fn _resolve_name(&self, ns: tc::NamespaceKey, name: &str) -> Option<tc::NameKey> {
-        match self.checker.namespaces[ns].names.get(name) {
-            Some(n) => Some(*n),
-            None => self.checker.namespaces[ns].parent.and_then(|p| self._resolve_name(p, name))
+    fn _resolve_name(&mut self, ns: tc::NamespaceKey, qual_name: &QualifiedName<'a>) -> Option<AnnotatedName> {
+        let AnnotatedNamespace { key: mut curr, mut type_map, mut free_vars } = match qual_name {
+            QualifiedName::Base { .. } => AnnotatedNamespace { key: ns, type_map: HashMap::new(), free_vars: Vec::new() },
+            QualifiedName::GetName { ns: base, .. } => self._resolve_namespace(ns, base)?
+        };
+
+        let name_key = loop {
+            if let Some(&name_key) = self.checker.namespaces[curr].names.get(qual_name.get_name()) {
+                break name_key;
+            } else if let Some(next) = self.checker.namespaces[curr].parent {
+                curr = next;
+            } else {
+                self.push_error(tc::TypeCheckError::CouldNotResolveName(qual_name.get_name().to_owned(), qual_name.loc()));
+                return None;
+            }
+        };
+
+        let type_params = match &self.checker.names[name_key] {
+            tc::NameInfo::Local { .. } => Vec::new(),
+            tc::NameInfo::Function { type_params, .. } => type_params.clone()
+        };
+        let type_args = qual_name.get_type_args();
+        
+        if type_args.is_empty() {
+            for type_param in type_params {
+                let type_param_name = self.checker.type_parameters[type_param].name.clone();
+                let inference_key = self.checker.add_inference_variable(type_param_name, qual_name.loc());
+                type_map.insert(type_param, Type::InferenceVariable(inference_key));
+                free_vars.push(inference_key);
+            }
+        } else if type_args.len() == type_params.len() {
+            for (type_arg, type_param) in type_args.iter().zip(type_params) {
+                type_map.insert(type_param, self.resolve_type(type_arg));
+            }
+        } else {
+            self.push_error(tc::TypeCheckError::MismatchedTypeArguments {
+                expected: type_params.len(),
+                got: type_args.len(),
+                loc: qual_name.loc()
+            });
+            return None;
+        }
+        let ty = self.checker.subs(&self.checker.names[name_key].unsub_ty(), &type_map);
+        return Some(AnnotatedName { key: name_key, ty, type_map, free_vars });
+    }
+
+    fn _resolve_name_as_struct(&mut self, ns: tc::NamespaceKey, qual_name: &QualifiedName<'a>) -> Option<AnnotatedNameAsStruct> {
+        let AnnotatedNamespace { key: mut curr, mut type_map, mut free_vars } = match qual_name {
+            QualifiedName::Base { .. } => AnnotatedNamespace { key: ns, type_map: HashMap::new(), free_vars: Vec::new() },
+            QualifiedName::GetName { ns: base, .. } => self._resolve_namespace(ns, base)?
+        };
+
+        let struct_key = loop {
+            if let Some(&struct_key) = self.checker.namespaces[curr].structs.get(qual_name.get_name()) {
+                break struct_key;
+            } else if let Some(next) = self.checker.namespaces[curr].parent {
+                curr = next;
+            } else {
+                self.push_error(tc::TypeCheckError::CouldNotResolveName(qual_name.get_name().to_owned(), qual_name.loc()));
+                return None;
+            }
+        };
+
+        let type_params: Vec<tc::TypeParameterKey> = self.prototypes.structs[struct_key].type_parameters.clone();
+        let type_args = qual_name.get_type_args();
+
+        if type_args.is_empty() {
+            for type_param in type_params {
+                let type_param_name = self.checker.type_parameters[type_param].name.clone();
+                let inference_key = self.checker.add_inference_variable(type_param_name, qual_name.loc());
+                type_map.insert(type_param, Type::InferenceVariable(inference_key));
+                free_vars.push(inference_key);
+            }
+        } else if type_args.len() == type_params.len() {
+            for (type_arg, type_param) in type_args.iter().zip(type_params) {
+                type_map.insert(type_param, self.resolve_type(type_arg));
+            }
+        } else {
+            self.push_error(tc::TypeCheckError::MismatchedTypeArguments {
+                expected: type_params.len(),
+                got: type_args.len(),
+                loc: qual_name.loc()
+            });
+            return None;
+        }
+        return Some(AnnotatedNameAsStruct { key: struct_key, type_map, free_vars });
+    }
+    
+    fn _resolve_namespace(&self, ns: tc::NamespaceKey, qual_name: &QualifiedName<'a>) -> Option<AnnotatedNamespace> {
+        let AnnotatedNamespace { key: mut curr, type_map, free_vars } = match qual_name {
+            QualifiedName::Base { .. } => AnnotatedNamespace { key: ns, type_map: HashMap::new(), free_vars: Vec::new() },
+            QualifiedName::GetName { ns: base, .. } => self._resolve_namespace(ns, base)?
+        };
+
+        loop {
+            if let Some(&namespace_key) = self.checker.namespaces[curr].namespaces.get(qual_name.get_name()) {
+                return Some(AnnotatedNamespace { key: namespace_key, type_map, free_vars })
+            } else if let Some(next) = self.checker.namespaces[curr].parent {
+                curr = next;
+            } else {
+                return None;
+            }
         }
     }
 
@@ -213,7 +349,7 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
         self.checker.add_local(name, ty, self.level, loc, self.namespace)
     }
 
-    fn resolve_type(&mut self, typ: &ast::Type<'a>) -> Type {
+    fn resolve_type(&self, typ: &ast::Type<'a>) -> Type {
         self.checker.resolve_type(typ, self.namespace, self.types).expect_type(self.checker)
     }
 
@@ -448,28 +584,13 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
             ast::Expr::Bool { value, loc} => {
                 AnnotatedExpr { expr: hir::Expr::Bool(*value, *loc), ty: Type::Boolean, always_diverges: false }
             }
-            ast::Expr::Name { name, loc } => {
-                let resolved = self.resolve_name(name);
-                let decl = match resolved {
-                    Some(key) => key,
-                    None => {
-                        self.push_error(tc::TypeCheckError::CouldNotResolveName(name.clone(), *loc));
-                        return AnnotatedExpr::new_errored(*loc, false);
-                    }
+            ast::Expr::Name(qual_name) => {
+                let ann_name = match self.resolve_name(qual_name) {
+                    Some(ann_name) => ann_name,
+                    None => return AnnotatedExpr::new_errored(qual_name.loc(), false)
                 };
-                match &self.checker.names[decl] {
-                    hir::NameInfo::Local { ty, .. } => {
-                        AnnotatedExpr { expr: hir::Expr::Name(decl, *loc), ty: ty.clone(), always_diverges: false }
-                    }
-                    hir::NameInfo::Function { key, .. } => {
-                        if let Some(fn_ty) = self.prototypes.functions[*key].typ() {
-                            AnnotatedExpr { expr: hir::Expr::Name(decl, *loc), ty: fn_ty.into(), always_diverges: false }
-                        } else {
 
-                            return AnnotatedExpr::new_errored(*loc, false);
-                        }
-                    }
-                }
+                AnnotatedExpr { expr: hir::Expr::Name(ann_name.key, ann_name.type_map, qual_name.loc()), ty: ann_name.ty, always_diverges: false }
             },
             ast::Expr::Block(block) => {
                 let block_ns = self.checker.add_namespace(Some(self.namespace));
@@ -478,79 +599,80 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
             }
             ast::Expr::Call { callee, arguments, loc } => {
                 match callee.as_ref() {
-                    ast::Expr::Name { name, loc: name_loc } => {
-                        let Some(name_key) = self.resolve_name(name) else {
-                            self.push_error(tc::TypeCheckError::CouldNotResolveName(name.clone(), *name_loc));
-                            return AnnotatedExpr::new_errored(*name_loc, false);
+                    ast::Expr::Name(qual_name) => {
+                        let Some(ann_name) = self.resolve_name(qual_name) else { 
+                            return AnnotatedExpr::new_errored(*loc, false)
                         };
-                        match self.checker.names[name_key] {
+                        match self.checker.names[ann_name.key] {
                             hir::NameInfo::Function { key, .. } => {
-                                self.resolve_generic_call(key, arguments, &yield_type, *loc)
+                                self.resolve_generic_call(key, &ann_name.type_map, arguments, &yield_type, *loc)
                             }
-                            _ => {
-                                self.resolve_call(callee, arguments, *loc)
-                            }
+                            _ => self.resolve_call(callee, arguments, *loc)
                         }
                     }
-                    _ => {
-                        self.resolve_call(callee, arguments, *loc)
-                    }
+                    _ => self.resolve_call(callee, arguments, *loc)
                 }
             }
             ast::Expr::CreateStruct { struct_, arguments, loc, .. } => {
                 let mut diverges = false;
-                let Some(struct_key) = self.checker.resolve_struct(struct_, self.namespace) else {
-                    self.push_error(tc::TypeCheckError::ExpectedStructName { got: struct_.clone(), loc: *loc });
+                
+                let Some(ann_struct) = self.resolve_name_as_struct(struct_) else {
+                    // self.push_error(tc::TypeCheckError::ExpectedStructName { got: struct_.clone(), loc: *loc });
                     return AnnotatedExpr::new_errored(*loc, false);
                 };
 
-                let mut map = HashMap::new();
-                let mut inference_variables = Vec::new();
-                for (_, type_param) in &self.types.structs[struct_key].type_parameters {
-                    let name = self.checker.type_parameters[*type_param].name.clone();
-                    let inference_key = self.checker.add_inference_variable(name, *loc);
-                    inference_variables.push((*type_param, inference_key));
-                    map.insert(*type_param, Type::InferenceVariable(inference_key));
-                }
+                // let mut map = HashMap::new();
+                // let mut inference_variables = Vec::new();
+                // for (_, type_param) in &self.types.structs[struct_key].type_parameters {
+                //     let name = self.checker.type_parameters[*type_param].name.clone();
+                //     let inference_key = self.checker.add_inference_variable(name, *loc);
+                //     inference_variables.push((*type_param, inference_key));
+                //     map.insert(*type_param, Type::InferenceVariable(inference_key));
+                // }
 
-                let mut expected_fields = self.prototypes.structs[struct_key].fields.clone();
+                let mut expected_fields = self.prototypes.structs[ann_struct.key].fields.clone();
                 let mut resolved_fields = IndexMap::new();
                 let mut extraneous_fields_provided = false;
                 for argument in arguments {
                     let name = argument.name.clone();
                     if let Some(field_info) = expected_fields.remove(&name) {
-                        let expected_type = Some(self.checker.subs(&field_info.ty, &map));
+                        let expected_type = Some(self.checker.subs(&field_info.ty, &ann_struct.type_map));
                         let resolved = self.resolve_expr(&argument.argument, expected_type);
                         diverges |= resolved.always_diverges;
                         resolved_fields.insert(name, Box::new(resolved.expr));
                     } else {
-                        self.push_error(tc::TypeCheckError::NoSuchFieldName { field: name.clone(), typ: struct_.clone(), loc: argument.name_loc });
+                        self.push_error(tc::TypeCheckError::NoSuchFieldName { field: name.clone(), typ: struct_.get_name().to_owned(), loc: argument.name_loc });
                         extraneous_fields_provided = true;
                     }
                 };
                 if !expected_fields.is_empty() {
-                    self.push_error(tc::TypeCheckError::MissingFields { fields: expected_fields.into_iter().map(|(name, _)| name).collect(), typ: struct_.clone(), loc: *loc });
+                    self.push_error(tc::TypeCheckError::MissingFields { 
+                        fields: expected_fields.into_iter().map(|(name, _)| name).collect(), 
+                        typ: struct_.get_name().to_owned(), 
+                        loc: *loc });
                     return AnnotatedExpr::new_errored(*loc, false);
                 }
                 if extraneous_fields_provided {
                     return AnnotatedExpr::new_errored(*loc, false);
                 }
 
-                let mut variant = vec![];
-                for (type_param_key, inference_variable) in inference_variables {
-                    let info = self.checker.query_inference_variable_mut(inference_variable);
-                    if let Some(typ) = &info.ty {
-                        variant.push(typ.clone());
-                    } else {
-                        let name = self.checker.type_parameters[type_param_key].name.clone();
-                        self.push_error(tc::TypeCheckError::CouldNotInferTypeParameter(name, *loc));
-                    }
-                }
-                if variant.len() != map.len() {
-                    return AnnotatedExpr::new_errored(*loc, false);
-                }
-
-                let struct_type = StructType(struct_key, variant);
+                // let mut variant = vec![];
+                // for (type_param_key, inference_variable) in inference_variables {
+                //     let info = self.checker.query_inference_variable_mut(inference_variable);
+                //     if let Some(typ) = &info.ty {
+                //         variant.push(typ.clone());
+                //     } else {
+                //         let name = self.checker.type_parameters[type_param_key].name.clone();
+                //         self.push_error(tc::TypeCheckError::CouldNotInferTypeParameter(name, *loc));
+                //     }
+                // }
+                // if variant.len() != map.len() {
+                //     return AnnotatedExpr::new_errored(*loc, false);
+                // }
+                let variant = self.prototypes.structs[ann_struct.key].type_parameters.iter().map(|ty| {
+                    ann_struct.type_map[ty].clone()
+                }).collect();
+                let struct_type = StructType(ann_struct.key, variant);
 
                 AnnotatedExpr {
                     ty: struct_type.clone().into(),
@@ -675,7 +797,6 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
                     always_diverges
                 }
             }
-            ast::Expr::GenericCall { .. } => todo!(),
             ast::Expr::BinOp { .. } => todo!(),
             ast::Expr::IfElse { cond, then_do, else_do, loc } => {
                 let resolved_cond = self.resolve_expr(cond, Some(Type::Boolean));
@@ -838,28 +959,28 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
         }
     }
 
-    fn resolve_generic_call(&mut self, func: hir::FunctionKey, arguments: &'b Vec<ast::Expr<'a>>, yield_type: &ExpectedType, loc: Location<'a>) -> AnnotatedExpr<'a> {
+    fn resolve_generic_call(&mut self, func: hir::FunctionKey, map: &tc::TypeMap, arguments: &'b Vec<ast::Expr<'a>>, yield_type: &ExpectedType, loc: Location<'a>) -> AnnotatedExpr<'a> {
         let info = &self.prototypes.functions[func];
 
         let mut diverges = false;
 
-        let mut map = HashMap::new();
-        let mut inference_variables: Vec<InferenceVariableKey> = Vec::new();
-        for type_param in info.type_parameters.values() {
-            let name = self.checker.type_parameters[*type_param].name.clone();
-            let inference_key = self.checker.add_inference_variable(name, loc);
-            map.insert(*type_param, Type::InferenceVariable(inference_key));
-            inference_variables.push(inference_key);
-        }
+        // let mut map = HashMap::new();
+        // let mut inference_variables: Vec<InferenceVariableKey> = Vec::new();
+        // for type_param in &info.type_parameters {
+        //     let name = self.checker.type_parameters[*type_param].name.clone();
+        //     let inference_key = self.checker.add_inference_variable(name, loc);
+        //     map.insert(*type_param, Type::InferenceVariable(inference_key));
+        //     inference_variables.push(inference_key);
+        // }
 
-        let ret = self.checker.subs(&info.ret, &map);
+        let ret = self.checker.subs(&info.ret, map);
         if let Some(ty) = yield_type {
             let _ = self.checker.equate_types(&ret, ty, self.types, loc);
         }
 
         let mut resolved_arguments = Vec::new();
         for (param, arg) in info.params.values().zip(arguments.iter()) {
-            let resolved_arg = self.resolve_expr(arg, Some(self.checker.subs(&param.ty, &map)));
+            let resolved_arg = self.resolve_expr(arg, Some(self.checker.subs(&param.ty, map)));
             diverges |= resolved_arg.always_diverges;
             resolved_arguments.push(resolved_arg.expr);
         }
@@ -869,19 +990,7 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
             return AnnotatedExpr::new_errored(loc, diverges);
         }
 
-        let mut generic_tuple = vec![];
-        for (type_param, inference_variable) in info.type_parameters.values().zip(inference_variables) {
-            let info = self.checker.query_inference_variable_mut(inference_variable);
-            if let Some(ty) = &info.ty {
-                generic_tuple.push(ty.clone());
-            } else {
-                let name = self.checker.type_parameters[*type_param].name.clone();
-                self.push_error(tc::TypeCheckError::CouldNotInferTypeParameter(name, loc));
-            }
-        };
-        if generic_tuple.len() != map.len() {
-            return AnnotatedExpr::new_errored(loc, diverges);
-        }
+        let generic_tuple = info.type_parameters.iter().map(|tp| map[tp].clone()).collect();
 
         AnnotatedExpr {
             expr: hir::Expr::GenericCall { generic: generic_tuple, callee: func, arguments: resolved_arguments, ret_type: ret.clone(), loc },

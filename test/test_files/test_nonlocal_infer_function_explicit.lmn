@@ -4,8 +4,8 @@ fn identity<T>(t: T) -> T {
 }
 
 fn main() -> i32 {
-    let b = identity;
+    let b = identity<i32>;
 
-    return identity(256);
+    return b(256);
 }
 
