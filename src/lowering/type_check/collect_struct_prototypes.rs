@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
 use indexmap::IndexMap;
 use crate::parsing::ast;
 use crate::lowering::type_check as tc;
@@ -23,21 +25,31 @@ pub(super) struct TraitInfo<'a, 'b> {
 }
 
 pub(super) struct CollectedStructPrototypes<'a, 'b> {
-    pub file_info: Vec<FileInfo<'a, 'b>>,
+    pub file_info: HashMap<PathBuf, FileInfo<'a, 'b>>,
     pub structs: KeyMap<tc::StructKey, StructInfo<'a, 'b>>,
     pub traits: KeyMap<tc::TraitKey, TraitInfo<'a, 'b>>
 }
 
 pub(super) fn collect_struct_prototypes<'a, 'b>(checker: &mut tc::TypeCheck<'a>, ast: &'b ast::AST<'a>) -> CollectedStructPrototypes<'a, 'b> {
-    let mut file_info = Vec::new();
+    let mut file_info = HashMap::new();
+    for (file_oath, file) in &ast.files {
+        let file_ns = checker.add_namespace(Some(checker.root()));
+        file_info.insert(file_oath.clone(), FileInfo { file_ns, ast_file: file });
+    }
+    
     let mut structs: KeyMap<tc::StructKey, StructInfo> = KeyMap::new();
     let mut traits: KeyMap<tc::TraitKey, TraitInfo> = KeyMap::new();
 
-    for (_, file) in &ast.files {
-        let file_ns = checker.add_namespace(Some(checker.root()));
+    for (file_path, file) in &ast.files {
+        let file_ns = file_info[file_path].file_ns;
 
         for top_level in &file.top_levels {
             match top_level {
+                ast::TopLevel::Mod(ast::Mod { name, loc }) => {
+                    let include_path = file_path.with_file_name(format!("{}.lmn", name));
+                    let include_ns = file_info[&include_path].file_ns;
+                    let prev = checker.namespaces[file_ns].namespaces.insert(name.to_owned(), include_ns);
+                }
                 ast::TopLevel::Struct(ast_struct) => {
                     let ast::Struct { name, loc, .. } = ast_struct;
                     let struct_key = structs.reserve();
@@ -88,8 +100,6 @@ pub(super) fn collect_struct_prototypes<'a, 'b>(checker: &mut tc::TypeCheck<'a>,
                 _ => { }
             }
         }
-
-        file_info.push(FileInfo { file_ns, ast_file: file });
     }
 
     CollectedStructPrototypes { structs, traits, file_info }

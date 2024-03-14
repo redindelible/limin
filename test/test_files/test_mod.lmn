@@ -1,0 +1,8 @@
+mod included;
+
+
+fn main() -> i32 {
+    let b = included::Holder { held: 32 };
+
+    return b.get_held();
+}

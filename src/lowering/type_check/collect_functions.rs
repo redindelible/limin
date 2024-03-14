@@ -260,7 +260,7 @@ pub(super) fn collect_functions<'a, 'b>(checker: &mut tc::TypeCheck<'a>, types: 
     let mut impls: KeyMap<tc::ImplKey, ImplInfo> = KeyMap::new();
     let mut methods: KeyMap<tc::MethodKey, MethodInfo> = KeyMap::new();
 
-    for &tc::collect_struct_prototypes::FileInfo { file_ns, ast_file } in file_info.iter() {
+    for &tc::collect_struct_prototypes::FileInfo { file_ns, ast_file } in file_info.values() {
         for top_level in &ast_file.top_levels {
             match top_level {
                 ast::TopLevel::Function(func) => {

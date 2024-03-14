@@ -161,4 +161,10 @@ mod test {
         let output = run_file(Path::new("test/test_files/test_nonlocal_infer_function_explicit.lmn"));
         assert_eq!(output.status.code(), Some(256));
     }
+
+    #[test]
+    fn test_mod() {
+        let output = run_file(Path::new("test/test_files/test_mod.lmn"));
+        assert_eq!(output.status.code(), Some(32));
+    }
 }

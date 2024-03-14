@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use indexmap::IndexMap;
 use crate::parsing::ast;
 use crate::lowering::type_check as tc;
@@ -19,7 +20,7 @@ pub(super) struct TraitInfo<'a, 'b> {
 }
 
 pub(super) struct CollectedTypes<'a, 'b> {
-    pub file_info: Vec<tc::collect_struct_prototypes::FileInfo<'a, 'b>>,
+    pub file_info: HashMap<PathBuf, tc::collect_struct_prototypes::FileInfo<'a, 'b>>,
     pub structs: KeyMap<tc::StructKey, StructInfo<'a, 'b>>,
     pub traits: KeyMap<tc::TraitKey, TraitInfo<'a, 'b>>
 }

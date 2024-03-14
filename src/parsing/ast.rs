@@ -25,7 +25,14 @@ pub struct File<'a> {
 }
 
 impl<'a> File<'a> {
-    
+    pub fn mods<'b>(&'b self) -> impl Iterator<Item=&'b Mod<'a>> {
+        self.top_levels.iter().filter_map(|top| {
+            match top {
+                TopLevel::Mod(mod_) => Some(mod_),
+                _ => None
+            }
+        })
+    } 
 }
 
 #[derive(Debug, Eq, PartialEq)]

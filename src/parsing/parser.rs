@@ -165,12 +165,21 @@ impl<'a> Parser<'a> {
             TokenType::Fn => self.parse_function(),
             TokenType::Impl => self.parse_impl(),
             TokenType::Trait => self.parse_trait(),
+            TokenType::Mod => self.parse_mod(),
             // TokenType::Use => self.parse_use(),
             _ => {
                 self.errors.push(ParserError::UnexpectedToken(self.curr(), vec![TokenType::Struct, TokenType::Fn]));
                 Err(0)
             }
         }
+    }
+    
+    fn parse_mod(&mut self) -> ParseResult<TopLevel<'a>> {
+        let start = self.expect(TokenType::Mod)?;
+        let name = self.expect(TokenType::Identifier)?;
+        let end = self.expect(TokenType::Semicolon)?;
+        
+        Ok(TopLevel::Mod(Mod { name: name.text.to_owned(), loc: start.loc + end.loc }))
     }
 
     fn parse_trait(&mut self) -> ParseResult<TopLevel<'a>> {

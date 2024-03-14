@@ -1,11 +1,7 @@
-
-fn identity<T>(t: T) -> T {
-    return t;
-}
+mod other;
 
 fn main() -> i32 {
-    let b = identity;
+    let b = other::Holder { held: 32 };
 
-    return identity(256);
+    return b.get_held();
 }
-

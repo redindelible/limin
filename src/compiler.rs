@@ -88,6 +88,11 @@ impl Compiler {
                 Ok(file) => file,
                 Err(e) => { parse_errors.extend(e); continue }
             };
+            
+            for mod_ in file.mods() {
+                to_parse.push_back((source_file.with_file_name(format!("{}.lmn", &mod_.name)), Some(mod_.name.clone()), Some(mod_.loc)));
+            }
+            
             files.push(file);
         }
         if !parse_errors.is_empty() {

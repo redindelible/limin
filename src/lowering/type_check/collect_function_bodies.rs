@@ -340,6 +340,7 @@ impl<'a, 'b> ResolveContext<'a, 'b> where 'a: 'b  {
             } else if let Some(next) = self.checker.namespaces[curr].parent {
                 curr = next;
             } else {
+                self.push_error(tc::TypeCheckError::CouldNotResolveName(qual_name.get_name().to_owned(), qual_name.loc()));
                 return None;
             }
         }
