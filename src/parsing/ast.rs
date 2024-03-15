@@ -2,26 +2,37 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use crate::source::{HasLoc, Location};
 
+#[derive(Debug, Eq, PartialEq, Clone, Hash)]
+pub struct LibID(pub String);
+
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub struct LibInfo {
+    pub root_path: PathBuf,
+    pub libs: HashMap<String, LibID>
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct AST<'a> {
     pub name: String,
-    pub files: HashMap<PathBuf, File<'a>>
+    pub files: HashMap<PathBuf, File<'a>>,
+    pub libs: HashMap<LibID, LibInfo>
 }
 
 impl AST<'_> {
-    pub fn from_files(name: String, files: Vec<File>) -> AST {
+    pub fn from_files(name: String, files: Vec<File>, libs: HashMap<LibID, LibInfo>) -> AST {
         let mut map = HashMap::new();
         for file in files {
             map.insert(file.path.clone(), file);
         }
-        AST { name, files: map }
+        AST { name, files: map, libs }
     }
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct File<'a> {
     pub path: PathBuf,
-    pub top_levels: Vec<TopLevel<'a>>
+    pub top_levels: Vec<TopLevel<'a>>,
+    pub in_lib: LibID,
 }
 
 impl<'a> File<'a> {

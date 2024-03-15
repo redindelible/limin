@@ -32,9 +32,23 @@ pub(super) struct CollectedStructPrototypes<'a, 'b> {
 
 pub(super) fn collect_struct_prototypes<'a, 'b>(checker: &mut tc::TypeCheck<'a>, ast: &'b ast::AST<'a>) -> CollectedStructPrototypes<'a, 'b> {
     let mut file_info = HashMap::new();
-    for (file_oath, file) in &ast.files {
-        let file_ns = checker.add_namespace(Some(checker.root()));
-        file_info.insert(file_oath.clone(), FileInfo { file_ns, ast_file: file });
+    let mut lib_root_namespaces = HashMap::new();
+    for (lid_id, _) in &ast.libs {
+        let lib_ns = checker.add_namespace(Some(checker.root()));
+        lib_root_namespaces.insert(lid_id.clone(), lib_ns);
+    }
+    
+    for (file_path, file) in &ast.files {
+        let lib_ns = lib_root_namespaces[&file.in_lib];
+        let file_ns = checker.add_namespace(Some(lib_ns));
+        file_info.insert(file_path.clone(), FileInfo { file_ns, ast_file: file });
+    }
+    
+    for (lid_id, lib_info) in &ast.libs {
+        let lib_ns = lib_root_namespaces[lid_id];
+        for (lib_dep_name, lib_dep_path) in &lib_info.libs {
+            checker.namespaces[lib_ns].namespaces.insert(lib_dep_name.clone(), file_info[&ast.libs[lib_dep_path].root_path].file_ns);
+        }
     }
     
     let mut structs: KeyMap<tc::StructKey, StructInfo> = KeyMap::new();
@@ -45,7 +59,7 @@ pub(super) fn collect_struct_prototypes<'a, 'b>(checker: &mut tc::TypeCheck<'a>,
 
         for top_level in &file.top_levels {
             match top_level {
-                ast::TopLevel::Mod(ast::Mod { name, loc }) => {
+                ast::TopLevel::Mod(ast::Mod { name, .. }) => {
                     let include_path = file_path.with_file_name(format!("{}.lmn", name));
                     let include_ns = file_info[&include_path].file_ns;
                     let prev = checker.namespaces[file_ns].namespaces.insert(name.to_owned(), include_ns);

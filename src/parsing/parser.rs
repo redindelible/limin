@@ -7,8 +7,8 @@ use crate::parsing::lexer::{Lexer, Token, TokenType};
 use crate::util::map_join;
 
 
-pub fn parse_file(source: &Source) -> Result<File, Vec<ParserError>> {
-    Parser::parse_file(source)
+pub fn parse_file(source: &Source, in_lib: LibID) -> Result<File, Vec<ParserError>> {
+    Parser::parse_file(source, in_lib)
 }
 
 #[derive(Debug)]
@@ -70,7 +70,7 @@ struct Parser<'a> {
 struct Point { idx: usize, err_len: usize }
 
 impl<'a> Parser<'a> {
-    fn parse_file(source: &'a Source) -> Result<File<'a>, Vec<ParserError<'a>>> {
+    fn parse_file(source: &'a Source, in_lib: LibID) -> Result<File<'a>, Vec<ParserError<'a>>> {
         let mut parser = Self::new(source);
 
         let mut top_levels = Vec::new();
@@ -81,7 +81,7 @@ impl<'a> Parser<'a> {
             };
             top_levels.push(top_level);
         };
-        let file = File { path: PathBuf::from(source.path.clone()),  top_levels };
+        let file = File { path: PathBuf::from(source.path.clone()), top_levels, in_lib };
         Ok(file)
     }
 
@@ -736,7 +736,7 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod test {
     use crate::error::Message;
-    use crate::parsing::ast::{BinOp, Expr, Function, QualifiedName, TopLevel, Type};
+    use crate::parsing::ast::{BinOp, Expr, Function, LibID, QualifiedName, TopLevel, Type};
     use crate::parsing::parser::{parse_file, Parser};
     use crate::source::Source;
 
@@ -866,7 +866,7 @@ mod test {
             }
         ");
 
-        parse_file(&s).unwrap();
+        parse_file(&s, LibID("<main>".into())).unwrap();
     }
 
     #[test]
@@ -893,7 +893,7 @@ mod test {
             }
         ");
 
-        parse_file(&s).unwrap();
+        parse_file(&s, LibID("<main>".into())).unwrap();
     }
 
     #[ignore = "Should be fixed when new syntax for structs lands"]
@@ -934,7 +934,7 @@ mod test {
             }
         ");
 
-        parse_file(&s).unwrap();
+        parse_file(&s, LibID("<main>".into())).unwrap();
     }
 
     #[test]
@@ -946,7 +946,7 @@ mod test {
             }
         ");
 
-        parse_file(&s).unwrap_err().render_to_string();
+        parse_file(&s, LibID("<main>".into())).unwrap_err().render_to_string();
     }
 
     #[test]
@@ -958,7 +958,7 @@ mod test {
             }
         ");
 
-        parse_file(&s).unwrap_err().render_to_string();
+        parse_file(&s, LibID("<main>".into())).unwrap_err().render_to_string();
     }
 
     #[test]
@@ -967,6 +967,6 @@ mod test {
             struct Foo { a: i32 }
         ");
 
-        parse_file(&s).unwrap_err().render_to_string();
+        parse_file(&s, LibID("<main>".into())).unwrap_err().render_to_string();
     }
 }

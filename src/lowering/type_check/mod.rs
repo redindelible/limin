@@ -741,7 +741,7 @@ mod test {
         let file = crate::parsing::parse_file(s).unwrap();
         let mut map = HashMap::new();
         map.insert(file.path.clone(), file);
-        ast::AST { name: "".into(), files: map }
+        ast::AST { name: "".into(), files: map, libs: HashMap::new() }
     }
 
     #[test]

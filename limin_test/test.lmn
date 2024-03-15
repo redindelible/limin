@@ -1,7 +1,6 @@
-mod other;
+
 
 fn main() -> i32 {
-    let b = other::Holder { held: 32 };
-
-    return b.get_held();
+    let b = std::io::seven();
+    return b;
 }
