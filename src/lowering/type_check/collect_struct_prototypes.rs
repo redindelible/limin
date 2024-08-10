@@ -5,6 +5,7 @@ use crate::parsing::ast;
 use crate::lowering::type_check as tc;
 use crate::util::KeyMap;
 
+#[derive(Debug)]
 pub(super) struct FileInfo<'a, 'b> {
     pub file_ns: tc::NamespaceKey,
     pub ast_file: &'b ast::File<'a>

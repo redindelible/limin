@@ -56,7 +56,7 @@ mod test {
     fn run_file(file: &Path) -> std::process::Output {
         let dir = tempfile::tempdir().unwrap();
         let output_path = dir.path().join("output");
-        let mut compiler = Compiler::debug(output_path.clone(), PathBuf::from("lib/rt.c"), None);
+        let mut compiler = Compiler::debug(output_path.clone(), dunce::canonicalize(PathBuf::from("lib")).unwrap(), None);
         compiler.set_root(file.to_owned());
         let res = compiler.compile();
         assert!(matches!(res, CompileResult::Success), "{:?}", res);

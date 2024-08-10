@@ -58,19 +58,18 @@ impl Compiler {
         compiler
     }
 
-    pub fn debug(output: PathBuf, rt_path: PathBuf, clang: Option<PathBuf>) -> Compiler {
+    pub fn debug(output: PathBuf, lib_path: PathBuf, clang: Option<PathBuf>) -> Compiler {
         let mut compiler = Compiler {
             sources: Arena::new(),
             output,
             clang: clang.unwrap_or(PathBuf::from("clang")),
-            rt_path,
+            rt_path: lib_path.join("rt.c"),
 
             root: None,
             libs: HashMap::new(),
             std_id: LibID("".into()),
             main_id: LibID("".into()),
         };
-        let lib_path = std::env::current_exe().expect("Error: Could not get the path to this executable.").with_file_name("lib");
         let std_id = compiler.add_lib("<std>".into(), lib_path.join("std").join("lib.lmn"));
         compiler.std_id = std_id;
         
@@ -116,7 +115,9 @@ impl Compiler {
             
             let source = match Source::from_file(&source_file) {
                 Ok(source) => self.sources.alloc(source),
-                Err(_) => { parse_errors.push(ParserError::CouldNotFindMod(source_file, name, loc)); continue }
+                Err(_) => {
+                    parse_errors.push(ParserError::CouldNotFindMod(source_file, name, loc)); continue
+                }
             };
             
             let file = match parse_file(source, in_lib.clone()) {

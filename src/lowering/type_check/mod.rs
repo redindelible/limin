@@ -731,6 +731,7 @@ mod test {
     use crate::error::Message;
     use crate::parsing::ast;
     use crate::lowering::type_check::resolve_types;
+    use crate::parsing::ast::{LibID, LibInfo};
     use crate::source::Source;
 
     fn source(name: &str, text: &str) -> Source {
@@ -738,10 +739,10 @@ mod test {
     }
 
     fn parse_one(s: &Source) -> ast::AST {
-        let file = crate::parsing::parse_file(s).unwrap();
+        let file = crate::parsing::parse_file(s, LibID("test".into())).unwrap();
         let mut map = HashMap::new();
         map.insert(file.path.clone(), file);
-        ast::AST { name: "".into(), files: map, libs: HashMap::new() }
+        ast::AST { name: "".into(), files: map, libs: HashMap::from([(LibID("test".into()), LibInfo { root_path: "test".into(), libs: HashMap::new() })]) }
     }
 
     #[test]
